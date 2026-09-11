@@ -5,8 +5,8 @@ structure the previous one creates, and two of the most important decisions
 here are about what to build *late*.
 
 **Where we are:** phase 0 partially done (kernel contracts, roster import),
-phase 1 mostly done (saga engine, session lifecycle, integration profile), with
-the persistence layer written but never run.
+phase 1 mostly done (saga engine, session lifecycle, integration profile,
+Slack interaction endpoint), with the persistence layer written but never run.
 
 ---
 
@@ -36,10 +36,13 @@ The load-bearing wall. Everything after this assumes it.
 - [x] Fake adapters for every slot
 - [ ] Postgres `SagaStore`
 - [ ] pg-boss wiring for the timer tick
-- [ ] Slack interaction endpoint — verify the signature, acknowledge inside the
+- [x] Slack interaction endpoint — verify the signature, acknowledge inside the
       platform's deadline, write `agreement.responded`, advance asynchronously.
-      **This is what makes the flow real for actual humans**, and it is the
-      single highest-value next task.
+      `packages/integrations/src/slack/interactions.ts`; tested against a real
+      HMAC signature and against the actual `SessionLifecycle` saga, not just
+      mocks (`packages/testkit/src/__tests__/slack-webhook.test.ts`). Not yet
+      mounted behind a live HTTP server, and the "suggest another" button acks
+      but does not open a modal yet — see ADR-0004's open gap.
 - [ ] Google Calendar adapter against a live tenant
 - [ ] Monitoring: saga instances not advanced in N days; dead-letter review
 - [ ] Nudge rate limits, dedupe keys, quiet hours — build before the first real

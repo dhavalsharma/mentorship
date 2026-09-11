@@ -431,6 +431,21 @@ export class World implements SagaResolvers, RosterSink {
     );
     return mine[mine.length - 1] ?? null;
   }
+
+  /**
+   * What a Postgres `identity_links` lookup joined to `participants` would
+   * return. Exists so a real interaction handler (see
+   * `@mentorship/integrations`'s `ChatIdentityResolver`) can be exercised
+   * against this in-memory world instead of only against mocks.
+   */
+  resolveParticipantIdByChatRef(chatRef: string): string | null {
+    const user = [...this.users.values()].find((u) => u.chatRef === chatRef);
+    if (!user) return null;
+    const participant = [...this.participants.values()].find(
+      (p) => p.userId === user.userId,
+    );
+    return participant?.participantId ?? null;
+  }
 }
 
 function idFromRef(ref: string): string {

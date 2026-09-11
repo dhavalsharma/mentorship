@@ -22,7 +22,7 @@ program, on different tooling, without touching `packages/core`.
 
 ```bash
 pnpm install
-pnpm test        # 78 tests, ~2s, no database and no model
+pnpm test        # 98 tests, ~2s, no database and no model
 pnpm demo        # the full session cycle printed as a trace
 pnpm typecheck
 ```
@@ -230,7 +230,8 @@ Keep this table honest as you go; it is the first thing a contributor reads.
 | Integration registry, capability negotiation, degradation | Working, tested |
 | Fake adapters | Working — used by tests and the demo |
 | Postgres schema, RLS, `withTenant` | **Written, never run.** No migration has been applied. |
-| Slack + Google Calendar adapters | **API shapes written, never run against a live tenant.** |
+| Slack interaction endpoint — signature verification, payload parsing, `agreement.responded` | Working, tested against a real HMAC signature and against the actual saga (not just mocks). **Not mounted behind a live HTTP server**; "suggest another" acks but does not open a modal (ADR-0004's open gap). |
+| Slack conversation + Google Calendar adapters | **API shapes written, never run against a live tenant.** |
 | Session intelligence | Deterministic stub at the `SessionIntel` seam |
 | Matching, nudge planner, progress & risk | Not started. Contracts defined in `core`. |
 | Web app, API, auth, authorization, dashboards | Not started |
