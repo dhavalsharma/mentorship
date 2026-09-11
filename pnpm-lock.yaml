@@ -34,6 +34,21 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.2)
 
+  apps/api:
+    dependencies:
+      '@mentorship/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@mentorship/integrations':
+        specifier: workspace:*
+        version: link:../../packages/integrations
+      '@mentorship/roster':
+        specifier: workspace:*
+        version: link:../../packages/roster
+      '@mentorship/testkit':
+        specifier: workspace:*
+        version: link:../../packages/testkit
+
   apps/worker:
     dependencies:
       '@mentorship/core':

@@ -40,9 +40,18 @@ The load-bearing wall. Everything after this assumes it.
       platform's deadline, write `agreement.responded`, advance asynchronously.
       `packages/integrations/src/slack/interactions.ts`; tested against a real
       HMAC signature and against the actual `SessionLifecycle` saga, not just
-      mocks (`packages/testkit/src/__tests__/slack-webhook.test.ts`). Not yet
-      mounted behind a live HTTP server, and the "suggest another" button acks
-      but does not open a modal yet — see ADR-0004's open gap.
+      mocks (`packages/testkit/src/__tests__/slack-webhook.test.ts`). The
+      "suggest another" button acks but does not open a modal yet — see
+      ADR-0004's open gap.
+- [x] Mount it behind a real HTTP server — `apps/api` (`node:http`, no
+      framework: the route needs the exact raw bytes Slack signed, and a
+      body-parser that touches them first breaks signature verification).
+      `pnpm serve:api` runs it seeded against the in-memory testkit world;
+      manually curled with a genuine signature and confirmed 200/401.
+      `apps/api/src/__tests__/server.test.ts` exercises it over a real socket.
+      **Still backed by testkit, not Postgres** — swapping `harness.world` for
+      real `identity_links` / `agreements` queries is the remaining step, and
+      the route itself does not change when that happens.
 - [ ] Google Calendar adapter against a live tenant
 - [ ] Monitoring: saga instances not advanced in N days; dead-letter review
 - [ ] Nudge rate limits, dedupe keys, quiet hours — build before the first real

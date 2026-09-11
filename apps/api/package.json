@@ -1,0 +1,12 @@
+{
+  "name": "@mentorship/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@mentorship/core": "workspace:*",
+    "@mentorship/integrations": "workspace:*",
+    "@mentorship/roster": "workspace:*",
+    "@mentorship/testkit": "workspace:*"
+  }
+}

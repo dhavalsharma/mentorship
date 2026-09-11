@@ -13,8 +13,9 @@ The status of each piece is marked below.
 
 ```bash
 pnpm install
-pnpm test      # 98 tests, ~2s, no database and no model
+pnpm test      # 102 tests, ~2s, no database and no model
 pnpm demo      # full walk-through printed as a readable trace
+pnpm serve:api # the Slack interaction endpoint, live, seeded against testkit
 pnpm typecheck
 ```
 
@@ -297,7 +298,7 @@ db           imported only by api, jobs, workflows
 | Integration registry, capability negotiation, degradation | **Working, tested** |
 | Fake adapters (chat, dm, calendar, transcript, document) | **Working** — used by tests and the demo |
 | Postgres schema, RLS policies, `withTenant` | **Written, not yet run** — no migration has been applied |
-| Slack interaction endpoint — signature verification, payload parsing, `agreement.responded` | **Working, tested** against a real HMAC signature and the actual saga, not just mocks. Not yet mounted behind a live HTTP server; "suggest another" acks but does not open a modal (ADR-0004's open gap) |
+| Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | **Working, tested** over a real socket with a genuine HMAC signature and the actual saga. Backed by the in-memory testkit world, not Postgres, which is the remaining step; "suggest another" acks but does not open a modal (ADR-0004's open gap) |
 | Slack conversation and Google Calendar adapters | **API shapes written, never run against a live tenant** |
 | Session intelligence | **Deterministic stub** — `heuristicSessionIntel`, cue-phrase based. The seam is `SessionIntel`. |
 | Matching, nudge planner, progress & risk | **Not started** — contracts defined in `core` |
