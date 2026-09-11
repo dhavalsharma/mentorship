@@ -1,0 +1,137 @@
+import {
+  defaultPolicy,
+  sequentialIds,
+  type Interval,
+  type ProgramPolicy,
+} from "@mentorship/core";
+import { EventLog } from "@mentorship/events";
+import {
+  FakeCalendar,
+  FakeConversation,
+  FakeDm,
+  FakeDocument,
+  FakeTranscript,
+  IntegrationRegistry,
+  Recorder,
+} from "@mentorship/integrations";
+import {
+  createEffectRunner,
+  createSessionLifecycle,
+  Dispatcher,
+  heuristicSessionIntel,
+  MemorySagaStore,
+  SagaEngine,
+  SESSION_LIFECYCLE,
+  type TraceLine,
+} from "@mentorship/workflows";
+import { Clock, World } from "./world.js";
+
+export const ORG_ID = "org_wekan";
+
+/**
+ * The integration profile: which adapter fills each slot. Swapping "fake-chat"
+ * for "slack" and "fake-calendar" for "google" is the whole change needed to
+ * run this against real tooling — the saga does not move.
+ */
+export const DEMO_PROFILE = {
+  conversation: "fake-chat",
+  dm: "fake-dm",
+  calendar: "fake-calendar",
+  conferencing: "fake-calendar",
+  transcript: "fake-transcript",
+  document: "fake-doc",
+  sheet: null,
+  dashboard: null,
+};
+
+export interface BootstrapOptions {
+  startAt?: string;
+  policy?: Partial<Parameters<typeof defaultPolicy>[0]>;
+  busy?: Record<string, Interval[]>;
+  /** How many fetches before the fake transcript appears — exercises the backoff. */
+  transcriptAvailableAfter?: number;
+  transcription?: "native" | "byo" | "none";
+  recordingConsent?: boolean;
+  /** Leave slots out to see the documented degraded paths. */
+  omitSlots?: ("conversation" | "dm" | "calendar" | "transcript" | "document")[];
+  onTrace?: (line: TraceLine) => void;
+  onWarn?: (message: string, detail?: Record<string, unknown>) => void;
+}
+
+export function bootstrap(opts: BootstrapOptions = {}) {
+  const clock = new Clock(opts.startAt ?? "2026-09-11T06:00:00.000Z");
+  const ids = sequentialIds();
+  const log = new EventLog(ids, clock.now);
+  const recorder = new Recorder();
+  const omit = new Set(opts.omitSlots ?? []);
+
+  const policy: ProgramPolicy = defaultPolicy({
+    pairing: { mode: "imported", mentorCapacityDefault: 2 },
+    cadence: { everyDays: 14, label: "fortnightly", reminderLeadHours: 24 },
+    consent: { aiProcessing: "optional", recording: "opt_in" },
+    ...(opts.policy ?? {}),
+  });
+
+  const registry = new IntegrationRegistry();
+  if (!omit.has("conversation")) {
+    registry.bind(new FakeConversation(recorder));
+  }
+  if (!omit.has("dm")) registry.bind(new FakeDm(recorder));
+  if (!omit.has("calendar")) {
+    registry.bind(new FakeCalendar(recorder, opts.busy ?? {}));
+  }
+  if (!omit.has("transcript")) {
+    registry.bind(
+      new FakeTranscript(recorder, {
+        autoTranscription: opts.transcription ?? "native",
+        availableAfterFetches: opts.transcriptAvailableAfter ?? 1,
+      }),
+    );
+  }
+  if (!omit.has("document")) registry.bind(new FakeDocument(recorder));
+
+  const world = new World(
+    ORG_ID,
+    policy,
+    log,
+    registry,
+    clock,
+    { aiProcessing: true, recording: opts.recordingConsent ?? true },
+    ids,
+  );
+
+  const store = new MemorySagaStore();
+  const engine = new SagaEngine({
+    store,
+    resolvers: world,
+    ids,
+    now: clock.now,
+    // Both the roster importer and the matching primitive emit pair.activated.
+    starters: [{ on: ["pair.activated"], sagaName: SESSION_LIFECYCLE }],
+    onTrace: opts.onTrace,
+    runEffect: createEffectRunner({
+      registry,
+      log,
+      resolvers: world,
+      intel: heuristicSessionIntel(ids),
+      ids,
+      onWarn: opts.onWarn,
+    }),
+  });
+  engine.register(createSessionLifecycle());
+
+  const dispatcher = new Dispatcher(log, engine);
+
+  return { clock, ids, log, recorder, registry, world, store, engine, dispatcher, policy };
+}
+
+export type Harness = ReturnType<typeof bootstrap>;
+
+/** Fast-forward to the next pending timer and let everything settle. */
+export async function advanceToNextTimer(h: Harness): Promise<string | null> {
+  const next = await h.engine.nextTimeout();
+  if (!next) return null;
+  h.clock.advanceTo(next);
+  await h.dispatcher.settle();
+  return next;
+}

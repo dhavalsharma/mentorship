@@ -1,0 +1,14 @@
+{
+  "name": "@mentorship/workflows",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@mentorship/core": "workspace:*",
+    "@mentorship/events": "workspace:*",
+    "@mentorship/integrations": "workspace:*",
+    "zod": "^3.24.1"
+  }
+}

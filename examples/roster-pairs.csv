@@ -1,0 +1,11 @@
+Mentor Email,Mentor Name,Mentee Email,Mentee Name,Cadence,Mentor Slack,Mentee Slack,Mentor TZ,Mentee TZ,Notes
+arjun.rao@wekancode.com,Arjun Rao,priya.menon@wekancode.com,Priya Menon,fortnightly,U-ARJUN,U-PRIYA,+05:30,+05:30,Carried over from FY25
+arjun.rao@wekancode.com,Arjun Rao,sam.okafor@wekancode.com,Sam Okafor,monthly,U-ARJUN,U-SAM,+05:30,+01:00,
+arjun.rao@wekancode.com,Arjun Rao,lena.fischer@wekancode.com,Lena Fischer,monthly,U-ARJUN,U-LENA,+05:30,+02:00,Third mentee — check load
+meera.iyer@wekancode.com,Meera Iyer,tom.brady@wekancode.com,Tom Brady,biweekly,U-MEERA,U-TOM,+05:30,-05:00,"Prefers mornings, his time"
+meera.iyer@wekancode.com,Meera Iyer,priya.menon@wekancode.com,Priya Menon,weekly,U-MEERA,U-PRIYA,+05:30,+05:30,Second mentor for Priya
+arjun.rao@wekancode.com,Arjun Rao,priya.menon@wekancode.com,Priya Menon,fortnightly,U-ARJUN,U-PRIYA,+05:30,+05:30,Accidental duplicate row
+dev.sharma@wekancode.com,Dev Sharma,dev.sharma@wekancode.com,Dev Sharma,monthly,U-DEV,U-DEV,+05:30,+05:30,Typo — same person twice
+kavya.nair@wekancode.com,Kavya Nair,not-an-email,Broken Row,monthly,U-KAVYA,,+05:30,+05:30,Bad mentee address
+ravi.kumar@wekancode.com,Ravi Kumar,ana.silva@wekancode.com,Ana Silva,every 3 weeks,U-RAVI,U-ANA,+05:30,-03:00,Unrecognised cadence
+nisha.gupta@wekancode.com,Nisha Gupta,omar.haddad@wekancode.com,Omar Haddad,21d,,,+05:30,+03:00,No verified chat ids
