@@ -22,7 +22,7 @@ program, on different tooling, without touching `packages/core`.
 
 ```bash
 pnpm install
-pnpm test        # 102 tests, ~2s, no database and no model
+pnpm test        # 110 tests, ~2s, no database and no model
 pnpm demo        # the full session cycle printed as a trace
 pnpm serve:api   # the Slack interaction endpoint, live, seeded against testkit
 pnpm typecheck
@@ -244,7 +244,7 @@ Keep this table honest as you go; it is the first thing a contributor reads.
 | `createWorker` + `pnpm serve:worker` | Working, tested end to end and run by hand: a `pair.activated` row becomes a proposed, agreed and booked session on Postgres, driven by two real signed Slack clicks. Bound to the fake adapters, because Slack and Google have still never run live. |
 | `PostgresSagaStore` | Working, tested — round-trip, optimistic concurrency under a real race, and parity with `MemorySagaStore`. Imported from `@mentorship/workflows/postgres` so the default entry stays driver-free. |
 | Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | Working, tested over a real socket with a genuine HMAC signature and against the actual saga. Runs on Postgres when DATABASE_URL is set (verified identity links, response and outbox event in one transaction) or on the in-memory world without one. **No relay drains the outbox yet**, so on Postgres the click is recorded and the saga does not move. "Suggest another" acks but does not open a modal (ADR-0004's open gap). |
-| Slack conversation + Google Calendar adapters | **API shapes written, never run against a live tenant.** |
+| Slack conversation + Google Calendar adapters | **API shapes written, never run against a live tenant.** `SandboxGuard` + `docs/live-tenant-testing.md` are the safe route to changing that; Google's `sendUpdates` is now configurable, because `"all"` mails every attendee. |
 | Session intelligence | Deterministic stub at the `SessionIntel` seam |
 | Matching, nudge planner, progress & risk | Not started. Contracts defined in `core`. |
 | Web app, API, auth, authorization, dashboards | Not started |

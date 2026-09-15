@@ -89,6 +89,10 @@ The load-bearing wall. Everything after this assumes it.
       what the ports were for. **Nothing advances the saga on that path yet**,
       because the relay below is not built.
 - [ ] Google Calendar adapter against a live tenant
+- [ ] Slack adapter against a live workspace
+      Both are blocked only on credentials now: `docs/live-tenant-testing.md`
+      has the isolation plan, and `SandboxGuard` refuses any recipient not on
+      an allowlist so a stray row cannot reach a colleague.
 - [ ] Monitoring: saga instances not advanced in N days; dead-letter review
 - [ ] Nudge rate limits, dedupe keys, quiet hours — build before the first real
       notification, because retrofitting does not un-spam anyone

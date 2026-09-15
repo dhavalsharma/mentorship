@@ -56,18 +56,27 @@ export interface GoogleCalendarOptions {
    */
   transcriptEntitlement?: "native" | "none";
   calendarId?: string;
+  /**
+   * Who Google emails when an event is created. "all" is the production
+   * behaviour and the irreversible one: the invitation is in someone's inbox
+   * before you can look at what you just wrote. A live-tenant test should say
+   * "none" and read the event back from the API instead.
+   */
+  sendUpdates?: "all" | "externalOnly" | "none";
 }
 
 export class GoogleCalendarAdapter implements CalendarAdapter {
   readonly slot = "calendar" as const;
   readonly id = "google";
   private readonly calendarId: string;
+  private readonly sendUpdates: "all" | "externalOnly" | "none";
 
   constructor(
     private readonly call: GoogleTransport,
     private readonly opts: GoogleCalendarOptions = {},
   ) {
     this.calendarId = opts.calendarId ?? "primary";
+    this.sendUpdates = opts.sendUpdates ?? "all";
   }
 
   async probe(): Promise<AdapterCapabilities> {
@@ -116,7 +125,7 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
   }): Promise<CalendarEventRef> {
     const res = await this.call(`/calendars/${this.calendarId}/events`, {
       method: "POST",
-      query: { conferenceDataVersion: "1", sendUpdates: "all" },
+      query: { conferenceDataVersion: "1", sendUpdates: this.sendUpdates },
       body: {
         summary: input.title,
         description: input.description,

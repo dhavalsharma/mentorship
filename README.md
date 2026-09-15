@@ -13,7 +13,7 @@ The status of each piece is marked below.
 
 ```bash
 pnpm install
-pnpm test      # 102 tests, ~2s, no database and no model
+pnpm test      # 110 tests, ~2s, no database and no model
 pnpm demo      # full walk-through printed as a readable trace
 pnpm serve:api # the Slack interaction endpoint, live, seeded against testkit
 pnpm typecheck
@@ -307,7 +307,7 @@ db           imported only by api, jobs, workflows
 | `createWorker` + `pnpm serve:worker` | **Working, tested end to end** — a `pair.activated` row becomes a proposed, agreed and booked session on Postgres, driven by two real signed Slack clicks. Bound to the fake adapters |
 | `PostgresSagaStore` | **Working, tested** — round-trip, optimistic concurrency under a real race, and parity with the in-memory store |
 | Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | **Working, tested** over a real socket with a genuine HMAC signature and the actual saga. Runs on Postgres when DATABASE_URL is set (verified identity links, response and outbox event in one transaction) or on the in-memory world without one. **No relay drains the outbox yet**, so on Postgres the click is recorded and the saga does not move; "suggest another" acks but does not open a modal (ADR-0004's open gap) |
-| Slack conversation and Google Calendar adapters | **API shapes written, never run against a live tenant** |
+| Slack conversation and Google Calendar adapters | **API shapes written, never run against a live tenant** — see [docs/live-tenant-testing.md](./docs/live-tenant-testing.md) and `SandboxGuard` for the safe route |
 | Session intelligence | **Deterministic stub** — `heuristicSessionIntel`, cue-phrase based. The seam is `SessionIntel`. |
 | Matching, nudge planner, progress & risk | **Not started** — contracts defined in `core` |
 | Web app, API, auth, dashboards | **Not started** |
