@@ -43,7 +43,10 @@ The load-bearing wall. Everything after this assumes it.
 - [x] Fake adapters for every slot
 - [x] Postgres `SagaStore` — `@mentorship/workflows/postgres`. Kept off the
       package root so the default suite never loads the driver.
-- [ ] pg-boss wiring for the timer tick
+- [ ] pg-boss wiring for the timer tick, and the outbox relay that drains
+      `events.relayed_at is null` into the engine. **This is now the gap that
+      matters**: on Postgres a Slack click is durably recorded and then
+      nothing happens, because there is no relay to pick the event up.
 - [x] Slack interaction endpoint — verify the signature, acknowledge inside the
       platform's deadline, write `agreement.responded`, advance asynchronously.
       `packages/integrations/src/slack/interactions.ts`; tested against a real
@@ -57,9 +60,12 @@ The load-bearing wall. Everything after this assumes it.
       `pnpm serve:api` runs it seeded against the in-memory testkit world;
       manually curled with a genuine signature and confirmed 200/401.
       `apps/api/src/__tests__/server.test.ts` exercises it over a real socket.
-      **Still backed by testkit, not Postgres** — swapping `harness.world` for
-      real `identity_links` / `agreements` queries is the remaining step, and
-      the route itself does not change when that happens.
+      Runs on Postgres when DATABASE_URL is set: verified `identity_links`
+      for the clicking user, and the response recorded alongside its
+      `agreement.responded` event in one transaction
+      (`apps/api/src/postgres-ports.ts`). The route did not change — that is
+      what the ports were for. **Nothing advances the saga on that path yet**,
+      because the relay below is not built.
 - [ ] Google Calendar adapter against a live tenant
 - [ ] Monitoring: saga instances not advanced in N days; dead-letter review
 - [ ] Nudge rate limits, dedupe keys, quiet hours — build before the first real

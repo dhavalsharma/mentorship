@@ -27,7 +27,7 @@ pnpm demo        # the full session cycle printed as a trace
 pnpm serve:api   # the Slack interaction endpoint, live, seeded against testkit
 pnpm typecheck
 
-# the database-backed tests — 17 more, skipped above rather than failing
+# the database-backed tests — 24 more, skipped above rather than failing
 docker compose up -d db && pnpm db:migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
 ```
@@ -236,7 +236,7 @@ Keep this table honest as you go; it is the first thing a contributor reads.
 | Fake adapters | Working — used by tests and the demo |
 | Postgres schema, RLS, `withTenant` | Working, tested. Migrations applied; the cross-tenant leak test proves the policy bites (`packages/db/src/__tests__/rls.test.ts`). |
 | `PostgresSagaStore` | Working, tested — round-trip, optimistic concurrency under a real race, and parity with `MemorySagaStore`. Imported from `@mentorship/workflows/postgres` so the default entry stays driver-free. |
-| Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | Working, tested over a real socket with a genuine HMAC signature and against the actual saga. **Backed by the in-memory testkit world, not Postgres** — that swap is the remaining step. "Suggest another" acks but does not open a modal (ADR-0004's open gap). |
+| Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | Working, tested over a real socket with a genuine HMAC signature and against the actual saga. Runs on Postgres when DATABASE_URL is set (verified identity links, response and outbox event in one transaction) or on the in-memory world without one. **No relay drains the outbox yet**, so on Postgres the click is recorded and the saga does not move. "Suggest another" acks but does not open a modal (ADR-0004's open gap). |
 | Slack conversation + Google Calendar adapters | **API shapes written, never run against a live tenant.** |
 | Session intelligence | Deterministic stub at the `SessionIntel` seam |
 | Matching, nudge planner, progress & risk | Not started. Contracts defined in `core`. |

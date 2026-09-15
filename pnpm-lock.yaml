@@ -39,6 +39,9 @@ importers:
       '@mentorship/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@mentorship/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@mentorship/integrations':
         specifier: workspace:*
         version: link:../../packages/integrations
@@ -48,6 +51,9 @@ importers:
       '@mentorship/testkit':
         specifier: workspace:*
         version: link:../../packages/testkit
+      drizzle-orm:
+        specifier: ^0.38.3
+        version: 0.38.4(postgres@3.4.9)
 
   apps/worker:
     dependencies:

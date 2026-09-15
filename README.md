@@ -18,7 +18,7 @@ pnpm demo      # full walk-through printed as a readable trace
 pnpm serve:api # the Slack interaction endpoint, live, seeded against testkit
 pnpm typecheck
 
-# 17 more tests that need a database, skipped above rather than failing
+# 24 more tests that need a database, skipped above rather than failing
 docker compose up -d db && pnpm db:migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
 ```
@@ -303,7 +303,7 @@ db           imported only by api, jobs, workflows
 | Fake adapters (chat, dm, calendar, transcript, document) | **Working** — used by tests and the demo |
 | Postgres schema, RLS policies, `withTenant` | **Working, tested** — migrations applied, and a cross-tenant leak test proves the policy bites rather than assuming it |
 | `PostgresSagaStore` | **Working, tested** — round-trip, optimistic concurrency under a real race, and parity with the in-memory store |
-| Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | **Working, tested** over a real socket with a genuine HMAC signature and the actual saga. Backed by the in-memory testkit world, not Postgres, which is the remaining step; "suggest another" acks but does not open a modal (ADR-0004's open gap) |
+| Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | **Working, tested** over a real socket with a genuine HMAC signature and the actual saga. Runs on Postgres when DATABASE_URL is set (verified identity links, response and outbox event in one transaction) or on the in-memory world without one. **No relay drains the outbox yet**, so on Postgres the click is recorded and the saga does not move; "suggest another" acks but does not open a modal (ADR-0004's open gap) |
 | Slack conversation and Google Calendar adapters | **API shapes written, never run against a live tenant** |
 | Session intelligence | **Deterministic stub** — `heuristicSessionIntel`, cue-phrase based. The seam is `SessionIntel`. |
 | Matching, nudge planner, progress & risk | **Not started** — contracts defined in `core` |

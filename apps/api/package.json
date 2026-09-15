@@ -5,8 +5,10 @@
   "type": "module",
   "dependencies": {
     "@mentorship/core": "workspace:*",
+    "@mentorship/db": "workspace:*",
     "@mentorship/integrations": "workspace:*",
     "@mentorship/roster": "workspace:*",
-    "@mentorship/testkit": "workspace:*"
+    "@mentorship/testkit": "workspace:*",
+    "drizzle-orm": "^0.38.3"
   }
 }
