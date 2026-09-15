@@ -151,6 +151,50 @@ implemented and already tested, and it is what makes exposing the endpoint
 acceptable: an unverified interaction endpoint lets anyone book meetings for
 anyone.
 
+## Running it
+
+Everything above is now wired, not just planned. `apps/worker/src/live-registry.ts`
+builds a registry with real Slack (`SlackConversationAdapter`, and the new
+`SlackDmAdapter` — there was no DM adapter until this doc needed one) and real
+Google (`GoogleCalendarAdapter`, `sendUpdates: "none"`), every one of them
+passed through `guardAdapter` before it is bound. Transcript and document stay
+`FakeTranscript` / `FakeDocument`, because no real adapter for either exists —
+this is the honest boundary of what a live run currently proves.
+
+```bash
+# 1. Fill in .env (copy .env.example), then export it into the shell, or
+#    prefix each command — these examples do the latter.
+
+# 2. One pair, seeded directly into Postgres — the same shape a roster
+#    import produces, so the worker cannot tell the difference (ADR-0003).
+#    Prints the ORG_ID to export for the next two commands.
+DATABASE_URL=… MENTOR_SLACK_ID=U-… MENTEE_SLACK_ID=U-… \
+MENTOR_EMAIL=dhavals+mentor@wekancode.com MENTEE_EMAIL=dhavals+mentee@wekancode.com \
+pnpm seed:live-pair
+
+export ORG_ID=<printed above>
+
+# 3. The worker: real Slack + Google, guarded, polling.
+DATABASE_URL=… ORG_ID=$ORG_ID SLACK_BOT_TOKEN=… GOOGLE_ACCESS_TOKEN=… \
+GOOGLE_CALENDAR_ID=… SANDBOX_ALLOWLIST=dhavals+mentor@wekancode.com,dhavals+mentee@wekancode.com \
+pnpm serve:worker:live
+
+# 4. The endpoint, in another shell, behind the tunnel from "Reaching your
+#    laptop from Slack" below.
+DATABASE_URL=… ORG_ID=$ORG_ID SLACK_SIGNING_SECRET=… pnpm serve:api
+```
+
+The worker's next pass posts a proposal to a group DM with both Slack ids.
+Click a time as one plus-addressed account, then the other — same as any
+Slack user would, no curling required — and the saga should move to `armed`
+with a real (unmailed) calendar event underneath it.
+
+A recipient not on `SANDBOX_ALLOWLIST` never reaches Slack or Google at all:
+`buildLiveRegistry` throws immediately if any of the four required variables
+is missing, and every guarded call throws `SandboxRefusal` before the
+transport is invoked. `apps/worker/src/__tests__/live-registry.test.ts` proves
+both without a network call.
+
 ## What a first live run is actually checking
 
 The fakes cannot be wrong about these, because they are not real:

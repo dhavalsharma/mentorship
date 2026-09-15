@@ -22,7 +22,7 @@ program, on different tooling, without touching `packages/core`.
 
 ```bash
 pnpm install
-pnpm test        # 110 tests, ~2s, no database and no model
+pnpm test        # 118 tests, ~2s, no database and no model
 pnpm demo        # the full session cycle printed as a trace
 pnpm serve:api   # the Slack interaction endpoint, live, seeded against testkit
 pnpm typecheck
@@ -32,8 +32,12 @@ docker compose up -d db && pnpm db:migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
 
 # the Postgres path, running: DATABASE_URL + ORG_ID for both
-pnpm serve:worker   # drains the outbox, fires due timers
+pnpm serve:worker   # drains the outbox, fires due timers — fake adapters
 pnpm serve:api      # the Slack endpoint, on Postgres when DATABASE_URL is set
+
+# real Slack + Google, guarded — docs/live-tenant-testing.md before running any of this
+pnpm seed:live-pair    # one pair, straight into Postgres
+pnpm serve:worker:live # same loop, real adapters wrapped in SandboxGuard
 ```
 
 `pnpm demo` is the fastest way to understand the system. It imports a roster,
@@ -244,7 +248,7 @@ Keep this table honest as you go; it is the first thing a contributor reads.
 | `createWorker` + `pnpm serve:worker` | Working, tested end to end and run by hand: a `pair.activated` row becomes a proposed, agreed and booked session on Postgres, driven by two real signed Slack clicks. Bound to the fake adapters, because Slack and Google have still never run live. |
 | `PostgresSagaStore` | Working, tested — round-trip, optimistic concurrency under a real race, and parity with `MemorySagaStore`. Imported from `@mentorship/workflows/postgres` so the default entry stays driver-free. |
 | Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | Working, tested over a real socket with a genuine HMAC signature and against the actual saga. Runs on Postgres when DATABASE_URL is set (verified identity links, response and outbox event in one transaction) or on the in-memory world without one. **No relay drains the outbox yet**, so on Postgres the click is recorded and the saga does not move. "Suggest another" acks but does not open a modal (ADR-0004's open gap). |
-| Slack conversation + Google Calendar adapters | **API shapes written, never run against a live tenant.** `SandboxGuard` + `docs/live-tenant-testing.md` are the safe route to changing that; Google's `sendUpdates` is now configurable, because `"all"` mails every attendee. |
+| `SlackConversationAdapter`, `SlackDmAdapter`, `GoogleCalendarAdapter` | API shapes real; wired into `pnpm serve:worker:live` through `SandboxGuard`, which throws before any disallowed recipient reaches the transport (`live-registry.test.ts`, no network). **Still never run against an actual workspace** — that is a credentials step, not a code one, per `docs/live-tenant-testing.md`. |
 | Session intelligence | Deterministic stub at the `SessionIntel` seam |
 | Matching, nudge planner, progress & risk | Not started. Contracts defined in `core`. |
 | Web app, API, auth, authorization, dashboards | Not started |
