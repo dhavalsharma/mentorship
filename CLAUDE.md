@@ -30,6 +30,10 @@ pnpm typecheck
 # the database-backed tests — 48 more, skipped above rather than failing
 docker compose up -d db && pnpm db:migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
+
+# the Postgres path, running: DATABASE_URL + ORG_ID for both
+pnpm serve:worker   # drains the outbox, fires due timers
+pnpm serve:api      # the Slack endpoint, on Postgres when DATABASE_URL is set
 ```
 
 `pnpm demo` is the fastest way to understand the system. It imports a roster,
@@ -237,7 +241,7 @@ Keep this table honest as you go; it is the first thing a contributor reads.
 | Postgres schema, RLS, `withTenant` | Working, tested. Migrations applied; the cross-tenant leak test proves the policy bites (`packages/db/src/__tests__/rls.test.ts`). |
 | Outbox relay (`relayOnce` / `relayLoop`) | Working, tested — claim with `SKIP LOCKED`, at-least-once, backoff and dead-lettering. |
 | `PostgresSagaResolvers`, `PostgresEventSink`, `PostgresProjector` | Working, tested — the counterparts to testkit's `World`, including the projections that make read models appear. |
-| `createWorker` (`apps/worker`) | Working, tested end to end: a `pair.activated` row in the outbox becomes a proposed, agreed and booked session on Postgres. **Nothing schedules it yet** — `pass()` is what pg-boss or an interval would call. |
+| `createWorker` + `pnpm serve:worker` | Working, tested end to end and run by hand: a `pair.activated` row becomes a proposed, agreed and booked session on Postgres, driven by two real signed Slack clicks. Bound to the fake adapters, because Slack and Google have still never run live. |
 | `PostgresSagaStore` | Working, tested — round-trip, optimistic concurrency under a real race, and parity with `MemorySagaStore`. Imported from `@mentorship/workflows/postgres` so the default entry stays driver-free. |
 | Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | Working, tested over a real socket with a genuine HMAC signature and against the actual saga. Runs on Postgres when DATABASE_URL is set (verified identity links, response and outbox event in one transaction) or on the in-memory world without one. **No relay drains the outbox yet**, so on Postgres the click is recorded and the saga does not move. "Suggest another" acks but does not open a modal (ADR-0004's open gap). |
 | Slack conversation + Google Calendar adapters | **API shapes written, never run against a live tenant.** |

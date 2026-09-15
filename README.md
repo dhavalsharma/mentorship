@@ -304,7 +304,7 @@ db           imported only by api, jobs, workflows
 | Postgres schema, RLS policies, `withTenant` | **Working, tested** — migrations applied, and a cross-tenant leak test proves the policy bites rather than assuming it |
 | Outbox relay (`relayOnce` / `relayLoop`) | **Working, tested** — claim with `SKIP LOCKED`, at-least-once, backoff and dead-lettering |
 | `PostgresSagaResolvers`, `PostgresEventSink`, `PostgresProjector` | **Working, tested** — the counterparts to testkit's `World`, projections included |
-| `createWorker` (`apps/worker`) | **Working, tested end to end** — a `pair.activated` row becomes a proposed, agreed and booked session on Postgres. Nothing schedules it yet |
+| `createWorker` + `pnpm serve:worker` | **Working, tested end to end** — a `pair.activated` row becomes a proposed, agreed and booked session on Postgres, driven by two real signed Slack clicks. Bound to the fake adapters |
 | `PostgresSagaStore` | **Working, tested** — round-trip, optimistic concurrency under a real race, and parity with the in-memory store |
 | Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | **Working, tested** over a real socket with a genuine HMAC signature and the actual saga. Runs on Postgres when DATABASE_URL is set (verified identity links, response and outbox event in one transaction) or on the in-memory world without one. **No relay drains the outbox yet**, so on Postgres the click is recorded and the saga does not move; "suggest another" acks but does not open a modal (ADR-0004's open gap) |
 | Slack conversation and Google Calendar adapters | **API shapes written, never run against a live tenant** |

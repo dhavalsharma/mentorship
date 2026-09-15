@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx packages/db/src/migrate-cli.ts"
+    "db:migrate": "tsx packages/db/src/migrate-cli.ts",
+    "serve:worker": "tsx apps/worker/src/main.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

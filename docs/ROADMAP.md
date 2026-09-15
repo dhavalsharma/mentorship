@@ -57,8 +57,12 @@ The load-bearing wall. Everything after this assumes it.
       the counterpart to `World.project()`. Without it the saga emitted
       `agreement.opened` and no row appeared, so the response arriving two
       days later had nothing to attach itself to.
-- [ ] Schedule it: pg-boss, or a supervised interval. `createWorker().pass()`
-      is the unit either would call, and `relayLoop` is the naive version.
+- [x] Schedule it — `pnpm serve:worker`, a polling loop with graceful
+      shutdown. Not pg-boss, despite ADR-0008 naming it: its headline
+      feature is making sure only one worker runs a job, and this loop does
+      not need that, because the relay claims with `SKIP LOCKED` and the
+      engine saves with `WHERE version = $expected`. pg-boss still earns its
+      place for cron-shaped work — the temporal sweep, when that exists.
 - [ ] A relay that serves every tenant. Today's is scoped to one org because
       its resolvers are; a multi-tenant one has to build resolvers per event.
 - [x] **Postgres `SagaResolvers`** — `pairContext`, `freeBusy`, `agreement`,

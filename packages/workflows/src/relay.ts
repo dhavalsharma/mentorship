@@ -190,14 +190,15 @@ export async function relayLoop(
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    // The listener has to be removed when the timer wins, not just when the
+    // abort fires: `once` only cleans up on dispatch, so in a loop that mostly
+    // times out they accumulate one per pass until Node warns about a leak.
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
   });
 }
