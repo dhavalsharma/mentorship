@@ -43,10 +43,20 @@ The load-bearing wall. Everything after this assumes it.
 - [x] Fake adapters for every slot
 - [x] Postgres `SagaStore` — `@mentorship/workflows/postgres`. Kept off the
       package root so the default suite never loads the driver.
-- [ ] pg-boss wiring for the timer tick, and the outbox relay that drains
-      `events.relayed_at is null` into the engine. **This is now the gap that
-      matters**: on Postgres a Slack click is durably recorded and then
-      nothing happens, because there is no relay to pick the event up.
+- [x] The outbox relay — `relayOnce` / `relayLoop` in
+      `@mentorship/workflows/postgres`. Claims with `FOR UPDATE SKIP LOCKED`
+      and holds the lock across delivery, so a crashed worker needs no lease
+      expiry or sweeper. At-least-once by design; duplicates are absorbed by
+      the effect ledger. A throwing subscriber backs off and is parked after
+      `maxAttempts` rather than blocking the events behind it.
+- [ ] A worker process that runs the relay and the timer tick, on pg-boss or
+      a plain interval. **Blocked on the item below, not on scheduling**: the
+      relay hands events to `SagaEngine.deliver`, and the engine reads through
+      `SagaResolvers`, which has no Postgres implementation yet.
+- [ ] **Postgres `SagaResolvers`** — `pairContext`, `freeBusy`, `agreement`,
+      `capabilities` over the real tables. This is what `testkit`'s `World`
+      stands in for, and now the last thing between a recorded click and a
+      saga that moves.
 - [x] Slack interaction endpoint — verify the signature, acknowledge inside the
       platform's deadline, write `agreement.responded`, advance asynchronously.
       `packages/integrations/src/slack/interactions.ts`; tested against a real

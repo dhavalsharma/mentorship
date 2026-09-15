@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import {
   recordResponse,
   subjectRef,
@@ -156,7 +156,7 @@ export class PostgresAgreementResponder implements AgreementResponder {
   }
 }
 
-/** Unrelayed events, oldest first — what the relay will drain. */
+/** Unrelayed events for this org, oldest first — what the relay will drain. */
 export async function pendingOutbox(
   db: Db,
   orgId: string,
@@ -170,7 +170,12 @@ export async function pendingOutbox(
         subjectRef: events.subjectRef,
       })
       .from(events)
-      .where(sql`${events.relayedAt} is null`)
+      // The `org_id` predicate is not redundant with RLS. RLS is the net that
+      // catches a query which forgot it — and it catches nothing at all on a
+      // superuser connection, which is what local and CI runs use. A query
+      // whose correctness depends on the connecting role is a query that
+      // behaves differently in dev and in production.
+      .where(and(eq(events.orgId, orgId), isNull(events.relayedAt)))
       .orderBy(events.occurredAt)
       .limit(limit),
   );

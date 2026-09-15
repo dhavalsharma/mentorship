@@ -6,7 +6,7 @@
   "main": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./postgres": "./src/postgres-store.ts"
+    "./postgres": "./src/postgres.ts"
   },
   "dependencies": {
     "@mentorship/core": "workspace:*",

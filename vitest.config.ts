@@ -10,9 +10,7 @@ export default defineConfig({
       "@mentorship/db/testing": p("./packages/db/src/testing.ts"),
       "@mentorship/db": p("./packages/db/src/index.ts"),
       "@mentorship/events": p("./packages/events/src/index.ts"),
-      "@mentorship/workflows/postgres": p(
-        "./packages/workflows/src/postgres-store.ts",
-      ),
+      "@mentorship/workflows/postgres": p("./packages/workflows/src/postgres.ts"),
       "@mentorship/workflows": p("./packages/workflows/src/index.ts"),
       "@mentorship/integrations": p("./packages/integrations/src/index.ts"),
       "@mentorship/roster": p("./packages/roster/src/index.ts"),

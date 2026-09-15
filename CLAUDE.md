@@ -27,7 +27,7 @@ pnpm demo        # the full session cycle printed as a trace
 pnpm serve:api   # the Slack interaction endpoint, live, seeded against testkit
 pnpm typecheck
 
-# the database-backed tests — 24 more, skipped above rather than failing
+# the database-backed tests — 33 more, skipped above rather than failing
 docker compose up -d db && pnpm db:migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
 ```
@@ -235,6 +235,7 @@ Keep this table honest as you go; it is the first thing a contributor reads.
 | Integration registry, capability negotiation, degradation | Working, tested |
 | Fake adapters | Working — used by tests and the demo |
 | Postgres schema, RLS, `withTenant` | Working, tested. Migrations applied; the cross-tenant leak test proves the policy bites (`packages/db/src/__tests__/rls.test.ts`). |
+| Outbox relay (`relayOnce` / `relayLoop`) | Working, tested — claim with `SKIP LOCKED`, at-least-once, backoff and dead-lettering. Nothing runs it as a process yet, because the engine still needs Postgres `SagaResolvers`. |
 | `PostgresSagaStore` | Working, tested — round-trip, optimistic concurrency under a real race, and parity with `MemorySagaStore`. Imported from `@mentorship/workflows/postgres` so the default entry stays driver-free. |
 | Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | Working, tested over a real socket with a genuine HMAC signature and against the actual saga. Runs on Postgres when DATABASE_URL is set (verified identity links, response and outbox event in one transaction) or on the in-memory world without one. **No relay drains the outbox yet**, so on Postgres the click is recorded and the saga does not move. "Suggest another" acks but does not open a modal (ADR-0004's open gap). |
 | Slack conversation + Google Calendar adapters | **API shapes written, never run against a live tenant.** |

@@ -324,10 +324,20 @@ export const events = pgTable(
       .defaultNow(),
     /** Outbox relay bookkeeping. */
     relayedAt: timestamp("relayed_at", { withTimezone: true }),
+    attempts: integer("attempts").notNull().default(0),
+    /** Backoff: the relay ignores a row until this passes. */
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    /**
+     * Parked after too many failures. A subscriber that throws must never
+     * block the events behind it, and must never be retried forever either.
+     */
+    deadLetteredAt: timestamp("dead_lettered_at", { withTimezone: true }),
   },
   (t) => [
     index("events_subject_idx").on(t.orgId, t.subjectRef, t.occurredAt),
     index("events_relay_idx").on(t.relayedAt),
+    index("events_pending_idx").on(t.relayedAt, t.deadLetteredAt, t.occurredAt),
   ],
 );
 
