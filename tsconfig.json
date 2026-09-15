@@ -1,7 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "strict": true,
@@ -12,19 +14,60 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "baseUrl": ".",
     "paths": {
-      "@mentorship/core": ["packages/core/src/index.ts"],
-      "@mentorship/db": ["packages/db/src/index.ts"],
-      "@mentorship/db/testing": ["packages/db/src/testing.ts"],
-      "@mentorship/events": ["packages/events/src/index.ts"],
-      "@mentorship/workflows": ["packages/workflows/src/index.ts"],
-      "@mentorship/workflows/postgres": ["packages/workflows/src/postgres.ts"],
-      "@mentorship/integrations": ["packages/integrations/src/index.ts"],
-      "@mentorship/roster": ["packages/roster/src/index.ts"],
-      "@mentorship/testkit": ["packages/testkit/src/index.ts"]
+      "@mentorship/core": [
+        "packages/core/src/index.ts"
+      ],
+      "@mentorship/db": [
+        "packages/db/src/index.ts"
+      ],
+      "@mentorship/db/testing": [
+        "packages/db/src/testing.ts"
+      ],
+      "@mentorship/events": [
+        "packages/events/src/index.ts"
+      ],
+      "@mentorship/workflows": [
+        "packages/workflows/src/index.ts"
+      ],
+      "@mentorship/workflows/postgres": [
+        "packages/workflows/src/postgres.ts"
+      ],
+      "@mentorship/integrations": [
+        "packages/integrations/src/index.ts"
+      ],
+      "@mentorship/roster": [
+        "packages/roster/src/index.ts"
+      ],
+      "@mentorship/testkit": [
+        "packages/testkit/src/index.ts"
+      ],
+      "@mentorship/primitive-matching": [
+        "packages/primitives/matching/src/index.ts"
+      ],
+      "@mentorship/primitive-nudge": [
+        "packages/primitives/nudge/src/index.ts"
+      ],
+      "@mentorship/primitive-session-intel": [
+        "packages/primitives/session-intel/src/index.ts"
+      ],
+      "@mentorship/primitive-progress": [
+        "packages/primitives/progress/src/index.ts"
+      ],
+      "@mentorship/ai": [
+        "packages/ai/src/index.ts"
+      ],
+      "@mentorship/ai/postgres": [
+        "packages/ai/src/postgres.ts"
+      ]
     }
   },
-  "include": ["packages/**/*.ts", "apps/**/*.ts"]
+  "include": [
+    "packages/**/*.ts",
+    "apps/**/*.ts"
+  ]
 }

@@ -40,10 +40,15 @@ export const EVENT_NAMES = [
   "extraction.confirmed",
   "extraction.edited",
   "feedback.submitted",
+  "nudge.planned",
+  "nudge.sent",
+  "nudge.suppressed",
   "nudge.muted",
   // derived state
   "pair.health_updated",
   "pair.at_risk",
+  "mentor.overloaded",
+  "match.proposed",
   // safety — bypasses all automation
   "safeguarding.flagged",
   // operational

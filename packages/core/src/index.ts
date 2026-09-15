@@ -7,3 +7,4 @@ export * from "./agreement.js";
 export * from "./time.js";
 export * from "./resolvers.js";
 export * from "./saga.js";
+export * from "./primitive.js";
