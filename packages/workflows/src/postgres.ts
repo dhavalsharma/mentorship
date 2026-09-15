@@ -5,3 +5,4 @@
  */
 export * from "./postgres-store.js";
 export * from "./relay.js";
+export * from "./postgres-resolvers.js";

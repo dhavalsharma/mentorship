@@ -6,9 +6,9 @@ here are about what to build *late*.
 
 **Where we are:** phase 0 partially done (kernel contracts, roster import,
 migrations applied and RLS verified), phase 1 mostly done (saga engine, session
-lifecycle, integration profile, Slack interaction endpoint, Postgres
-`SagaStore`). The sagas still *run* on the in-memory world: what is missing is
-Postgres-backed `SagaResolvers`, not storage.
+lifecycle, integration profile, Slack interaction endpoint, and now the
+Postgres store, relay and resolvers). Every piece of the Postgres path exists
+and is tested; no process runs them together yet.
 
 ---
 
@@ -50,13 +50,13 @@ The load-bearing wall. Everything after this assumes it.
       the effect ledger. A throwing subscriber backs off and is parked after
       `maxAttempts` rather than blocking the events behind it.
 - [ ] A worker process that runs the relay and the timer tick, on pg-boss or
-      a plain interval. **Blocked on the item below, not on scheduling**: the
-      relay hands events to `SagaEngine.deliver`, and the engine reads through
-      `SagaResolvers`, which has no Postgres implementation yet.
-- [ ] **Postgres `SagaResolvers`** — `pairContext`, `freeBusy`, `agreement`,
-      `capabilities` over the real tables. This is what `testkit`'s `World`
-      stands in for, and now the last thing between a recorded click and a
-      saga that moves.
+      a plain interval. Everything it needs now exists — store, relay and
+      resolvers — so what is left is the process, an effect runner wired to
+      real adapters, and deciding what owns the schedule.
+- [x] **Postgres `SagaResolvers`** — `pairContext`, `freeBusy`, `agreement`,
+      `capabilities` over the real tables, the counterpart to `testkit`'s
+      `World`. An unverified chat link is not a member ref, and absent or
+      revoked consent is not consent.
 - [x] Slack interaction endpoint — verify the signature, acknowledge inside the
       platform's deadline, write `agreement.responded`, advance asynchronously.
       `packages/integrations/src/slack/interactions.ts`; tested against a real
@@ -154,3 +154,10 @@ These are not a phase; they are things that go stale if ignored.
 - Replace `tzOffsetMinutes` with IANA zones resolved per instant before any
   cohort spans a DST boundary.
 - Every new adapter owes a real `probe()`, not a guess.
+- **A malformed `programs.policy` silently becomes the default program.**
+  Every field in `ProgramPolicySchema` has a default, which is what makes
+  `defaultPolicy({})` work, so reading a stored policy cannot tell "unset"
+  from "corrupted" — a tenant whose consent settings were mangled would
+  quietly get `opt_in` back. Wants a stricter read-side schema in core, and
+  a decision about which fields a stored policy must state explicitly.
+  Documented by a test in `postgres-resolvers.test.ts`.
