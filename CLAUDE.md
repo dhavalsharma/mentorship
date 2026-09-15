@@ -61,7 +61,7 @@ So there are five layers, and the boundaries between them are the design:
 | --- | --- | --- |
 | **Kernel** | `core`, `db`, `events` | Rarely. It is the load-bearing wall. |
 | **Orchestration** | `workflows` | Per release. Sagas — the things people call "agents". |
-| **Primitives** | `primitives/*` (not yet built) | Per release. The inference steps sagas call. |
+| **Primitives** | `ai`, `primitives/*` | Per release. The inference steps sagas call. |
 | **Program policy** | data, in `programs.policy` | Per tenant, **at runtime**. Not code. |
 | **Surfaces** | `integrations/*`, `apps/*` | Constantly. One adapter per destination. |
 
@@ -249,8 +249,9 @@ Keep this table honest as you go; it is the first thing a contributor reads.
 | `PostgresSagaStore` | Working, tested — round-trip, optimistic concurrency under a real race, and parity with `MemorySagaStore`. Imported from `@mentorship/workflows/postgres` so the default entry stays driver-free. |
 | Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | Working, tested over a real socket with a genuine HMAC signature and against the actual saga. Runs on Postgres when DATABASE_URL is set (verified identity links, response and outbox event in one transaction) or on the in-memory world without one. **No relay drains the outbox yet**, so on Postgres the click is recorded and the saga does not move. "Suggest another" acks but does not open a modal (ADR-0004's open gap). |
 | `SlackConversationAdapter`, `SlackDmAdapter`, `GoogleCalendarAdapter` | API shapes real; wired into `pnpm serve:worker:live` through `SandboxGuard`, which throws before any disallowed recipient reaches the transport (`live-registry.test.ts`, no network). **Still never run against an actual workspace** — that is a credentials step, not a code one, per `docs/live-tenant-testing.md`. |
+| `Primitive` contract, `LlmProvider` port, `packages/ai` | Working, tested. `runPrimitive` never throws because the model failed — refusal, timeout or a schema violation surviving one repair all end at the primitive's `fallback`, with the run recorded either way. |
 | Session intelligence | Deterministic stub at the `SessionIntel` seam |
-| Matching, nudge planner, progress & risk | Not started. Contracts defined in `core`. |
+| Matching, nudge planner, progress & risk | Not started. |
 | Web app, API, auth, authorization, dashboards | Not started |
 
 The `testkit` package is an in-memory stand-in for `db` + `api`. Every method
