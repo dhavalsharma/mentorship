@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
   GateDecision,
+  SchemaFor,
   LlmProvider,
   LlmUsage,
   Primitive,
@@ -159,7 +160,7 @@ export async function runPrimitive<Trigger, Ctx, Out, Reader>(
  */
 export async function structuredWithRepair<T>(
   llm: LlmProvider,
-  request: Parameters<LlmProvider["structured"]>[0] & { schema: import("zod").ZodType<T> },
+  request: Parameters<LlmProvider["structured"]>[0] & { schema: SchemaFor<T> },
 ): Promise<{ value: T; usage: LlmUsage }> {
   try {
     return (await llm.structured(request)) as { value: T; usage: LlmUsage };

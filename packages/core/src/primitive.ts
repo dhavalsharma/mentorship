@@ -39,11 +39,22 @@ export interface LlmUsage {
   latencyMs: number;
 }
 
+/**
+ * A schema whose *output* is `T` and whose input is unconstrained.
+ *
+ * `z.ZodType<T>` pins all three of zod's type parameters, which quietly
+ * forbids the most ordinary thing a schema does: `.default()` makes a field
+ * optional on the way in and present on the way out, so input and output stop
+ * being the same type and the schema no longer fits. Every primitive that
+ * defaults an empty list hit this.
+ */
+export type SchemaFor<T> = z.ZodType<T, z.ZodTypeDef, unknown>;
+
 export interface LlmStructuredRequest<T> {
   /** Stable instructions. Kept separate from `prompt` so it can be cached. */
   system?: string;
   prompt: string;
-  schema: z.ZodType<T>;
+  schema: SchemaFor<T>;
   /** Names the schema for the provider; also the tool name where one is used. */
   schemaName: string;
   maxTokens?: number;
@@ -68,7 +79,7 @@ export interface Primitive<Trigger, Ctx, Out, Reader = unknown> {
   name: string;
   /** Stamped on every `ai_runs` row, so "did v4 help?" has an answer. */
   promptVersion: string;
-  outputSchema: z.ZodType<Out>;
+  outputSchema: SchemaFor<Out>;
 
   /**
    * Deterministic context assembly. No model. This is the cheap, testable
