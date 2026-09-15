@@ -4,9 +4,11 @@ The order matters more than the contents. Each phase depends on data or
 structure the previous one creates, and two of the most important decisions
 here are about what to build *late*.
 
-**Where we are:** phase 0 partially done (kernel contracts, roster import),
-phase 1 mostly done (saga engine, session lifecycle, integration profile,
-Slack interaction endpoint), with the persistence layer written but never run.
+**Where we are:** phase 0 partially done (kernel contracts, roster import,
+migrations applied and RLS verified), phase 1 mostly done (saga engine, session
+lifecycle, integration profile, Slack interaction endpoint, Postgres
+`SagaStore`). The sagas still *run* on the in-memory world: what is missing is
+Postgres-backed `SagaResolvers`, not storage.
 
 ---
 
@@ -17,9 +19,14 @@ The load-bearing wall. Everything after this assumes it.
 - [x] Program policy schema, cadence resolution, pairing state machine
 - [x] Roster import — the first pairing path, plan-then-commit
 - [x] Drizzle schema with `org_id` on every table, RLS policies
-- [ ] **Apply the migrations.** Nothing has touched a live database yet.
-- [ ] Run the RLS verification query in `0002_rls.sql`. Do not assume it bites.
-- [ ] Cross-tenant leak test in CI: two orgs, assert zero visibility
+- [x] **Apply the migrations.** `pnpm db:migrate` — a sixty-line runner over
+      `packages/db/migrations`, applied from scratch and re-run idempotently.
+- [x] Run the RLS verification query in `0002_rls.sql`. It bites — and doing it
+      found that `withoutTenantIsolation` would have read *zero* rows rather
+      than all of them, since FORCE RLS binds the owner too. Fixed in
+      `0004_admin_policy.sql`.
+- [x] Cross-tenant leak test in CI: two orgs, assert zero visibility
+      (`packages/db/src/__tests__/rls.test.ts`, including the write path)
 - [ ] Auth adapter (SAML for universities, magic link for small teams)
 - [ ] Identity mapping with a verification flow at enrolment — participant ↔
       chat member ↔ calendar account. Boring, and the thing that blocks a pilot
@@ -34,7 +41,8 @@ The load-bearing wall. Everything after this assumes it.
 - [x] `SessionLifecycle` — every deterministic state
 - [x] Integration profile, capability probing, degradation
 - [x] Fake adapters for every slot
-- [ ] Postgres `SagaStore`
+- [x] Postgres `SagaStore` — `@mentorship/workflows/postgres`. Kept off the
+      package root so the default suite never loads the driver.
 - [ ] pg-boss wiring for the timer tick
 - [x] Slack interaction endpoint — verify the signature, acknowledge inside the
       platform's deadline, write `agreement.responded`, advance asynchronously.

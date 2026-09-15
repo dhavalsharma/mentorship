@@ -4,11 +4,16 @@
   "private": true,
   "type": "module",
   "main": "src/index.ts",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts",
+    "./postgres": "./src/postgres-store.ts"
+  },
   "dependencies": {
     "@mentorship/core": "workspace:*",
+    "@mentorship/db": "workspace:*",
     "@mentorship/events": "workspace:*",
     "@mentorship/integrations": "workspace:*",
+    "drizzle-orm": "^0.38.3",
     "zod": "^3.24.1"
   }
 }

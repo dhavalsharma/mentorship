@@ -39,6 +39,16 @@ export const uuidIds: IdFactory = {
   next: (prefix) => `${prefix}_${randomUUID()}`,
 };
 
+/**
+ * The same thing without the prefix, for when ids land in Postgres `uuid`
+ * columns — which is every id column in the schema. The prefix is a debugging
+ * affordance, not a storage format: what carries the kind in the database is
+ * `subject_ref` ("pairing:<uuid>"), which is `text` precisely so it can.
+ */
+export const bareUuidIds: IdFactory = {
+  next: () => randomUUID(),
+};
+
 export function sequentialIds(): IdFactory {
   const counters = new Map<string, number>();
   return {

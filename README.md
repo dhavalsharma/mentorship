@@ -17,6 +17,10 @@ pnpm test      # 102 tests, ~2s, no database and no model
 pnpm demo      # full walk-through printed as a readable trace
 pnpm serve:api # the Slack interaction endpoint, live, seeded against testkit
 pnpm typecheck
+
+# 17 more tests that need a database, skipped above rather than failing
+docker compose up -d db && pnpm db:migrate
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
 ```
 
 `pnpm demo` imports a roster of existing pairs, drives one pair through a
@@ -297,7 +301,8 @@ db           imported only by api, jobs, workflows
 | Roster import — parse, plan, validate, commit | **Working, tested** |
 | Integration registry, capability negotiation, degradation | **Working, tested** |
 | Fake adapters (chat, dm, calendar, transcript, document) | **Working** — used by tests and the demo |
-| Postgres schema, RLS policies, `withTenant` | **Written, not yet run** — no migration has been applied |
+| Postgres schema, RLS policies, `withTenant` | **Working, tested** — migrations applied, and a cross-tenant leak test proves the policy bites rather than assuming it |
+| `PostgresSagaStore` | **Working, tested** — round-trip, optimistic concurrency under a real race, and parity with the in-memory store |
 | Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | **Working, tested** over a real socket with a genuine HMAC signature and the actual saga. Backed by the in-memory testkit world, not Postgres, which is the remaining step; "suggest another" acks but does not open a modal (ADR-0004's open gap) |
 | Slack conversation and Google Calendar adapters | **API shapes written, never run against a live tenant** |
 | Session intelligence | **Deterministic stub** — `heuristicSessionIntel`, cue-phrase based. The seam is `SessionIntel`. |
