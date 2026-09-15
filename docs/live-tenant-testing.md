@@ -78,8 +78,9 @@ owns.
 
 ## Credentials
 
-Create the apps yourself and put the secrets in `.env`, which is gitignored.
-Nothing in this repo should ever hold a token.
+Create the apps yourself and put the secrets in `.env` (copy `.env.example`,
+which is tracked; `.env` itself is gitignored). Nothing in this repo should
+ever hold a token.
 
 ```
 SLACK_BOT_TOKEN=xoxb-…
@@ -93,6 +94,47 @@ Slack bot scopes, and no more: `chat:write` to post, `im:write` for the private
 feedback DMs, `mpim:write` for the per-pair group DM. Skip `users:read` — the
 identity mapping is explicit and verified by design (ADR-0006), so nothing
 needs to enumerate the directory.
+
+### Creating the Slack app
+
+1. Make the sandbox workspace first (step 1, above) — not the app.
+2. [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** →
+   **From an app manifest** → select the sandbox workspace → paste
+   [`docs/slack-app-manifest.json`](./slack-app-manifest.json). It sets the
+   three scopes above and nothing else.
+3. The manifest's `request_url` is a placeholder. Interactivity can be left
+   pointed at it for now — Slack only re-verifies the URL when you save a
+   change to it, so fix it once the tunnel (below) is actually up, from
+   **Features → Interactivity & Shortcuts**.
+4. **Install App to Workspace**. Copy the **Bot User OAuth Token** (starts
+   `xoxb-`) from **OAuth & Permissions**, and the **Signing Secret** from
+   **Basic Information → App Credentials**.
+5. Invite `dhavals+mentor@wekancode.com` and `dhavals+mentee@wekancode.com` to
+   the sandbox workspace as members, and invite the bot into any channel or DM
+   you test from.
+
+### Creating the Google OAuth client
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → a fresh
+   project → enable the **Google Calendar API** (APIs & Services → Library).
+2. **OAuth consent screen**: External, publishing status **Testing**. Add
+   `dhavals@wekan.company` (and `dhavals@wekancode.com` if it needs to
+   authorize too) under **Test users**. Testing mode is deliberate here — it
+   caps the app at 100 users and nobody outside the test list can ever
+   authorize it, which is the same shape of guarantee as the Slack sandbox
+   workspace.
+3. **Credentials → Create Credentials → OAuth client ID → Desktop app.**
+4. Get a token without writing an OAuth callback server: the
+   [OAuth 2.0 Playground](https://developers.google.com/oauthplayground) →
+   gear icon → **Use your own OAuth credentials** → paste the client ID/secret
+   → scope `https://www.googleapis.com/auth/calendar` → **Authorize APIs**,
+   signing in as the test account → **Exchange authorization code for
+   tokens**. The access token is short-lived; re-exchange when it expires
+   rather than trying to keep a refresh flow alive for a one-off test.
+5. On that account, create a **new, dedicated calendar** (not Primary) —
+   Google Calendar → **Add calendar → Create new calendar**. Its Calendar ID
+   is under that calendar's **Settings and sharing → Integrate calendar**.
+   This is `GOOGLE_CALENDAR_ID`.
 
 ## Reaching your laptop from Slack
 
