@@ -49,10 +49,18 @@ The load-bearing wall. Everything after this assumes it.
       expiry or sweeper. At-least-once by design; duplicates are absorbed by
       the effect ledger. A throwing subscriber backs off and is parked after
       `maxAttempts` rather than blocking the events behind it.
-- [ ] A worker process that runs the relay and the timer tick, on pg-boss or
-      a plain interval. Everything it needs now exists — store, relay and
-      resolvers — so what is left is the process, an effect runner wired to
-      real adapters, and deciding what owns the schedule.
+- [x] A worker that runs the relay and the timer tick — `createWorker` in
+      `apps/worker`. One pass drains the outbox, then fires due timers. An
+      end-to-end test takes a `pair.activated` row all the way to a booked
+      session on Postgres.
+- [x] Read-model projections as relay subscribers (`PostgresProjector`) —
+      the counterpart to `World.project()`. Without it the saga emitted
+      `agreement.opened` and no row appeared, so the response arriving two
+      days later had nothing to attach itself to.
+- [ ] Schedule it: pg-boss, or a supervised interval. `createWorker().pass()`
+      is the unit either would call, and `relayLoop` is the naive version.
+- [ ] A relay that serves every tenant. Today's is scoped to one org because
+      its resolvers are; a multi-tenant one has to build resolvers per event.
 - [x] **Postgres `SagaResolvers`** — `pairContext`, `freeBusy`, `agreement`,
       `capabilities` over the real tables, the counterpart to `testkit`'s
       `World`. An unverified chat link is not a member ref, and absent or

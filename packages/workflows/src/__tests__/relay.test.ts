@@ -72,7 +72,7 @@ describe.skipIf(!DATABASE_URL)("the outbox relay", () => {
     await seed("feedback.submitted", "2026-09-03T10:00:00.000Z");
 
     const engine = recorder();
-    const result = await relayOnce(handle.db, engine);
+    const result = await relayOnce(handle.db, engine, { orgId });
 
     expect(result).toEqual({ delivered: 3, failed: 0, deadLettered: 0 });
     expect(engine.seen.map((e) => e.name)).toEqual([
@@ -92,7 +92,7 @@ describe.skipIf(!DATABASE_URL)("the outbox relay", () => {
       nested: { deep: [1, 2, 3] },
     });
     const engine = recorder();
-    await relayOnce(handle.db, engine);
+    await relayOnce(handle.db, engine, { orgId });
     expect(engine.seen[0]!.payload).toEqual({
       agreementId: "a1",
       optionId: "opt_2",
@@ -104,8 +104,8 @@ describe.skipIf(!DATABASE_URL)("the outbox relay", () => {
     await seed("pair.activated", "2026-09-01T10:00:00.000Z");
     const engine = recorder();
 
-    await relayOnce(handle.db, engine);
-    await relayOnce(handle.db, engine);
+    await relayOnce(handle.db, engine, { orgId });
+    await relayOnce(handle.db, engine, { orgId });
 
     expect(engine.seen).toHaveLength(1);
   });
@@ -122,7 +122,7 @@ describe.skipIf(!DATABASE_URL)("the outbox relay", () => {
       },
     };
 
-    const result = await relayOnce(handle.db, engine, { now: () => at });
+    const result = await relayOnce(handle.db, engine, { orgId, now: () => at });
     expect(result).toEqual({ delivered: 1, failed: 1, deadLettered: 0 });
 
     const [row] = await handle.db.select().from(events).where(eq(events.id, poison));
@@ -142,11 +142,11 @@ describe.skipIf(!DATABASE_URL)("the outbox relay", () => {
       },
     };
     const at = new Date("2026-09-10T00:00:00.000Z");
-    await relayOnce(handle.db, engine, { now: () => at });
+    await relayOnce(handle.db, engine, { orgId, now: () => at });
 
     // A second pass one second later must not touch it.
     const soon = new Date(at.getTime() + 1000);
-    const result = await relayOnce(handle.db, engine, { now: () => soon });
+    const result = await relayOnce(handle.db, engine, { orgId, now: () => soon });
     expect(result).toEqual({ delivered: 0, failed: 0, deadLettered: 0 });
 
     const [row] = await handle.db.select().from(events).where(eq(events.id, poison));
@@ -166,6 +166,7 @@ describe.skipIf(!DATABASE_URL)("the outbox relay", () => {
     const parked: DomainEvent[] = [];
     for (let i = 0; i < 3; i++) {
       await relayOnce(handle.db, engine, {
+        orgId,
         now: () => at,
         maxAttempts: 3,
         onDeadLettered: (event) => parked.push(event),
@@ -181,6 +182,7 @@ describe.skipIf(!DATABASE_URL)("the outbox relay", () => {
 
     // And a parked event is never picked up again.
     const after = await relayOnce(handle.db, engine, {
+      orgId,
       now: () => new Date("2027-01-01T00:00:00.000Z"),
       maxAttempts: 3,
     });
@@ -198,8 +200,8 @@ describe.skipIf(!DATABASE_URL)("the outbox relay", () => {
     const a = recorder();
     const b = recorder();
     const [ra, rb] = await Promise.all([
-      relayOnce(handle.db, a),
-      relayOnce(handle.db, b),
+      relayOnce(handle.db, a, { orgId }),
+      relayOnce(handle.db, b, { orgId }),
     ]);
 
     expect(ra.delivered + rb.delivered).toBe(8);
@@ -212,14 +214,14 @@ describe.skipIf(!DATABASE_URL)("the outbox relay", () => {
       await seed("session.held", `2026-09-0${i + 1}T10:00:00.000Z`);
     }
     const engine = recorder();
-    const result = await relayOnce(handle.db, engine, { batchSize: 2 });
+    const result = await relayOnce(handle.db, engine, { orgId, batchSize: 2 });
     expect(result.delivered).toBe(2);
     expect(engine.seen).toHaveLength(2);
   });
 
   it("reports nothing to do on an empty outbox", async () => {
     const engine = recorder();
-    expect(await relayOnce(handle.db, engine)).toEqual({
+    expect(await relayOnce(handle.db, engine, { orgId })).toEqual({
       delivered: 0,
       failed: 0,
       deadLettered: 0,

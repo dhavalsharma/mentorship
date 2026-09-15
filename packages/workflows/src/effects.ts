@@ -11,7 +11,7 @@ import type {
   TranscriptAdapter,
 } from "@mentorship/core";
 import { subjectRef, uuidIds } from "@mentorship/core";
-import type { EventLog } from "@mentorship/events";
+import type { EmitInput, EventSink } from "@mentorship/events";
 import type { IntegrationRegistry } from "@mentorship/integrations";
 import type { EffectContext, EffectRunner } from "./engine.js";
 
@@ -32,7 +32,7 @@ export interface SessionIntel {
 
 export interface EffectRunnerOptions {
   registry: IntegrationRegistry;
-  log: EventLog;
+  log: EventSink;
   resolvers: SagaResolvers;
   intel: SessionIntel;
   ids?: IdFactory;
@@ -110,7 +110,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
     const pairingId = pairingIdOf(ctx);
     const pair = await opts.resolvers.pairContext(pairingId);
     const emit = (
-      name: Parameters<EventLog["emit"]>[0]["name"],
+      name: EmitInput["name"],
       payload?: Record<string, unknown>,
       subject?: string,
     ) =>

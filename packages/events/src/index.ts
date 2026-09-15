@@ -10,6 +10,17 @@ export interface EmitInput {
   payload?: Record<string, unknown>;
 }
 
+/**
+ * What a producer needs: somewhere to append an event. `EventLog` is the
+ * in-memory implementation; in Postgres it is a row in `events` written in the
+ * same transaction as the state change, drained by the relay. The effect
+ * runner depends on this rather than on the class, so the same saga code runs
+ * against either.
+ */
+export interface EventSink {
+  emit(input: EmitInput): Promise<DomainEvent>;
+}
+
 export interface DeadLetter {
   event: DomainEvent;
   error: string;
@@ -25,7 +36,7 @@ export interface DeadLetter {
  * parked — it must never block the producer, which is why failures land in
  * `deadLetters` here rather than propagating to the caller.
  */
-export class EventLog {
+export class EventLog implements EventSink {
   private handlers: EventHandler[] = [];
   private readonly events: DomainEvent[] = [];
   readonly deadLetters: DeadLetter[] = [];

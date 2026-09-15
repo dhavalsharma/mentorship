@@ -18,7 +18,7 @@ pnpm demo      # full walk-through printed as a readable trace
 pnpm serve:api # the Slack interaction endpoint, live, seeded against testkit
 pnpm typecheck
 
-# 44 more tests that need a database, skipped above rather than failing
+# 48 more tests that need a database, skipped above rather than failing
 docker compose up -d db && pnpm db:migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
 ```
@@ -303,7 +303,8 @@ db           imported only by api, jobs, workflows
 | Fake adapters (chat, dm, calendar, transcript, document) | **Working** — used by tests and the demo |
 | Postgres schema, RLS policies, `withTenant` | **Working, tested** — migrations applied, and a cross-tenant leak test proves the policy bites rather than assuming it |
 | Outbox relay (`relayOnce` / `relayLoop`) | **Working, tested** — claim with `SKIP LOCKED`, at-least-once, backoff and dead-lettering |
-| `PostgresSagaResolvers` | **Working, tested** — the counterpart to testkit's `World`. **No worker process runs store + relay + resolvers together yet** |
+| `PostgresSagaResolvers`, `PostgresEventSink`, `PostgresProjector` | **Working, tested** — the counterparts to testkit's `World`, projections included |
+| `createWorker` (`apps/worker`) | **Working, tested end to end** — a `pair.activated` row becomes a proposed, agreed and booked session on Postgres. Nothing schedules it yet |
 | `PostgresSagaStore` | **Working, tested** — round-trip, optimistic concurrency under a real race, and parity with the in-memory store |
 | Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | **Working, tested** over a real socket with a genuine HMAC signature and the actual saga. Runs on Postgres when DATABASE_URL is set (verified identity links, response and outbox event in one transaction) or on the in-memory world without one. **No relay drains the outbox yet**, so on Postgres the click is recorded and the saga does not move; "suggest another" acks but does not open a modal (ADR-0004's open gap) |
 | Slack conversation and Google Calendar adapters | **API shapes written, never run against a live tenant** |

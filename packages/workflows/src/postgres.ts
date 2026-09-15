@@ -6,3 +6,5 @@
 export * from "./postgres-store.js";
 export * from "./relay.js";
 export * from "./postgres-resolvers.js";
+export * from "./postgres-sink.js";
+export * from "./postgres-projector.js";

@@ -60,6 +60,9 @@ importers:
       '@mentorship/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@mentorship/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@mentorship/events':
         specifier: workspace:*
         version: link:../../packages/events

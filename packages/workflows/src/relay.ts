@@ -23,6 +23,13 @@ import { events, type Db } from "@mentorship/db";
  */
 
 export interface RelayOptions {
+  /**
+   * Drain only this organisation's events. A worker built for one tenant has
+   * tenant-scoped resolvers, so handing it another org's event would resolve
+   * the wrong pairing — or throw. A relay that genuinely serves every tenant
+   * leaves this unset and must construct its resolvers per event.
+   */
+  orgId?: string;
   /** How many events to deliver before returning. */
   batchSize?: number;
   /** Attempts before the event is parked rather than retried forever. */
@@ -30,6 +37,13 @@ export interface RelayOptions {
   /** Backoff for attempt n, in milliseconds. */
   backoffMs?: (attempt: number) => number;
   now?: () => Date;
+  /**
+   * Read-model projections, applied before the engine sees the event. They run
+   * in their own committed transaction rather than the relay's, because the
+   * engine reads on a different connection and would not see an uncommitted
+   * row — which is also why they have to be idempotent.
+   */
+  project?: (event: DomainEvent) => Promise<void>;
   onDelivered?: (event: DomainEvent, advanced: number) => void;
   onFailed?: (event: DomainEvent, error: Error, attempts: number) => void;
   onDeadLettered?: (event: DomainEvent, error: Error) => void;
@@ -75,6 +89,7 @@ export async function relayOnce(
           // a template binds a JS Date straight to the driver, skipping the
           // column's type mapping, and postgres-js rejects it.
           and(
+            ...(options.orgId ? [eq(events.orgId, options.orgId)] : []),
             isNull(events.relayedAt),
             isNull(events.deadLetteredAt),
             or(isNull(events.nextAttemptAt), lte(events.nextAttemptAt, at)),
@@ -97,6 +112,7 @@ export async function relayOnce(
       };
 
       try {
+        await options.project?.(event);
         const advanced = await engine.deliver(event);
         await tx
           .update(events)

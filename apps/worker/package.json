@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@mentorship/core": "workspace:*",
+    "@mentorship/db": "workspace:*",
     "@mentorship/events": "workspace:*",
     "@mentorship/integrations": "workspace:*",
     "@mentorship/roster": "workspace:*",

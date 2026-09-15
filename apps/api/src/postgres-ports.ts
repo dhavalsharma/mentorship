@@ -68,6 +68,10 @@ export class PostgresChatIdentityResolver implements ChatIdentityResolver {
           )
           .where(
             and(
+              // Explicit, not left to RLS: on a superuser connection RLS is
+              // bypassed, and an identity lookup that spans tenants resolves a
+              // Slack id in one org to a participant in another.
+              eq(identityLinks.orgId, orgId),
               eq(identityLinks.provider, this.provider),
               eq(identityLinks.externalId, externalId),
               isNotNull(identityLinks.verifiedAt),
@@ -103,7 +107,12 @@ export class PostgresAgreementResponder implements AgreementResponder {
         const [row] = await tx
           .select()
           .from(agreements)
-          .where(eq(agreements.id, input.agreementId))
+          .where(
+            and(
+              eq(agreements.orgId, orgId),
+              eq(agreements.id, input.agreementId),
+            ),
+          )
           .for("update")
           .limit(1);
         if (!row) throw new Error(`unknown agreement ${input.agreementId}`);
@@ -133,7 +142,12 @@ export class PostgresAgreementResponder implements AgreementResponder {
         await tx
           .update(agreements)
           .set({ responses: next.responses, updatedAt: new Date(at) })
-          .where(eq(agreements.id, input.agreementId));
+          .where(
+            and(
+              eq(agreements.orgId, orgId),
+              eq(agreements.id, input.agreementId),
+            ),
+          );
 
         // Written in the same transaction as the state change: the outbox.
         // The saga advances when the relay picks this up, which is why the
