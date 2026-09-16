@@ -5,7 +5,12 @@ import {
   PostgresAgreementResponder,
   PostgresChatIdentityResolver,
 } from "./postgres-ports.js";
-import { createServer, type ApiServerDeps } from "./server.js";
+import { listOpenRiskFindings, listRecentNudges } from "./postgres-reads.js";
+import {
+  createServer,
+  notImplementedReads,
+  type ApiServerDeps,
+} from "./server.js";
 
 /**
  * Two backends behind the same route.
@@ -80,6 +85,11 @@ function postgresDeps(url: string): ApiServerDeps {
     identity: new PostgresChatIdentityResolver(options),
     responder: new PostgresAgreementResponder(options),
     onUnhandled,
+    admin: {
+      riskFindings: (orgId, limit) =>
+        listOpenRiskFindings(db, orgId, limit, TENANT_ROLE),
+      nudges: (orgId, limit) => listRecentNudges(db, orgId, limit, TENANT_ROLE),
+    },
   };
 }
 
@@ -129,5 +139,13 @@ async function memoryDeps(): Promise<ApiServerDeps> {
         ),
     },
     onUnhandled,
+    // The in-memory `World` predates `risk_findings`/`nudges` — those are
+    // Postgres-only concepts from this session, and there is nothing here to
+    // read. A deliberate 501 beats an empty array that reads as "no findings"
+    // when the honest answer is "this backend doesn't track that."
+    admin: {
+      riskFindings: notImplementedReads(),
+      nudges: notImplementedReads(),
+    },
   };
 }
