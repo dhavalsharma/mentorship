@@ -13,4 +13,5 @@ export * from "./gates.js";
 export * from "./outcomes.js";
 export * from "./planner.js";
 export * from "./prompts.js";
+export * from "./sweep.js";
 export * from "./templates.js";

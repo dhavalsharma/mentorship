@@ -1,310 +1,257 @@
 import { describe, expect, it } from "vitest";
-import {
-  deficitDedupeKey,
-  isoWeek,
-  sweep,
-  toEventInput,
-  type SweepInput,
+import { defaultPolicy } from "@mentorship/core";
+import { DeterministicProvider, NullAiRunSink } from "@mentorship/ai";
+import { ThompsonBandit, runNudgeSweep, seededRng } from "@mentorship/primitive-nudge";
+import type {
+  Deficit,
+  NudgeDispatchSink,
+  NudgePlanDraft,
+  NudgeReader,
+  NudgeRecordSink,
 } from "@mentorship/primitive-nudge";
+import { FakeNudgeReader, MENTOR, cadenceDeficit, pairView, recipient } from "./fixtures.js";
 
 /**
- * The sweep is the half of the system that has no other way of being tested:
- * every case here is a moment at which nothing happened, and the only way to
- * see the difference between "not yet" and "now" is to run the same input at
- * two values of `now`.
+ * `runNudgeSweep` end to end: the loop a scheduler would call, mirroring
+ * `runProgressSweep`'s test — one planner run per deficit, dispatched only
+ * when the gate chain lets it through, recorded regardless of outcome, and
+ * one recipient's dispatch failure never costing another.
  */
 
-const NOW = "2026-09-15T12:00:00.000Z";
+const policy = defaultPolicy({});
 
-const pair = (over: Partial<NonNullable<SweepInput["pairs"]>[number]> = {}) => ({
-  pairingId: "p_001",
-  orgId: "org_1",
-  state: "active" as const,
-  cadenceEveryDays: 14,
-  activatedAt: "2026-08-01T09:00:00.000Z",
-  lastSessionAt: "2026-09-01T12:00:00.000Z",
+const draft = (over: Partial<NudgePlanDraft> = {}): NudgePlanDraft => ({
+  shouldNudge: true,
+  recipientParticipantId: "pt_mentor",
+  templateId: "cadence.gentle.offer",
+  channel: "dm",
+  tone: "gentle",
+  body: "Sam — want me to find a time with Priya this week?",
+  rationale: "Sam has not replied since August",
+  evidenceQuotes: ["WAITING_ON id=pt_mentor"],
   ...over,
 });
 
-const input = (over: Partial<SweepInput> = {}): SweepInput => ({
-  now: NOW,
-  pairs: [pair()],
-  ...over,
-});
+const provider = (value: unknown) => new DeterministicProvider({ fallbackValue: value });
 
-describe("sweep — cadence", () => {
-  it("is silent while the pair is merely due, and speaks once the grace is spent", () => {
-    // Due 2026-09-15 (14 days after the last session), grace 2 days.
-    expect(sweep(input({ now: "2026-09-15T12:00:00.000Z" }))).toHaveLength(0);
-    expect(sweep(input({ now: "2026-09-17T11:59:59.000Z" }))).toHaveLength(0);
+interface RecordedNudge {
+  orgId: string;
+  pairingId: string;
+  recipientParticipantId: string | null;
+  channel: string;
+  state: "planned" | "sent" | "dropped";
+  escalationLevel: number;
+  body: string;
+  dedupeKey: string;
+  droppedReason: string | null;
+  sentAt: string | null;
+}
 
-    const found = sweep(input({ now: "2026-09-17T12:00:00.000Z" }));
-    expect(found).toHaveLength(1);
-    expect(found[0]!.name).toBe("pair.cadence_deficit");
-    expect(found[0]!.subjectRef).toBe("pairing:p_001");
-    expect(found[0]!.overdueDays).toBe(2);
-  });
+class FakeDispatchSink implements NudgeDispatchSink {
+  sent: { channel: string; recipientParticipantId: string; body: string }[] = [];
+  private readonly failFor: Set<string>;
 
-  it("runs the clock from activation when the pair has never met at all", () => {
-    const never = input({
-      pairs: [pair({ lastSessionAt: null, activatedAt: "2026-08-01T09:00:00.000Z" })],
-      now: "2026-08-20T09:00:00.000Z",
-    });
-    const found = sweep(never);
-    expect(found).toHaveLength(1);
-    expect(found[0]!.detail.everMet).toBe(false);
-  });
+  constructor(failFor: string[] = []) {
+    this.failFor = new Set(failFor);
+  }
 
-  it("says nothing when a session is already on the calendar", () => {
-    const booked = input({
-      now: "2026-09-20T12:00:00.000Z",
-      pairs: [pair({ nextScheduledSessionAt: "2026-09-22T10:00:00.000Z" })],
-    });
-    expect(sweep(booked)).toHaveLength(0);
-
-    // A session in the past does not count — that is what lastSessionAt is for.
-    const stale = input({
-      now: "2026-09-20T12:00:00.000Z",
-      pairs: [pair({ nextScheduledSessionAt: "2026-09-02T10:00:00.000Z" })],
-    });
-    expect(sweep(stale)).toHaveLength(1);
-  });
-
-  it("leaves ad-hoc programs alone — no cadence means no expectation to miss", () => {
-    const adhoc = input({
-      now: "2027-01-01T00:00:00.000Z",
-      pairs: [pair({ cadenceEveryDays: 0 })],
-    });
-    expect(sweep(adhoc)).toHaveLength(0);
-  });
-
-  it("does not chase a paused pair", () => {
-    for (const state of ["paused", "completed", "ended_early", "offered"] as const) {
-      const off = input({ now: "2026-10-30T12:00:00.000Z", pairs: [pair({ state })] });
-      expect(sweep(off), state).toHaveLength(0);
+  async send(input: { channel: string; recipientParticipantId: string; body: string }) {
+    if (this.failFor.has(input.recipientParticipantId)) {
+      throw new Error(`delivery down for ${input.recipientParticipantId}`);
     }
-  });
+    this.sent.push(input);
+  }
+}
 
-  it("grades severity against the pair's own cadence, not an absolute", () => {
-    const at = (now: string) => sweep(input({ now }))[0]!.severity;
-    expect(at("2026-09-18T12:00:00.000Z")).toBe("low"); // 3 of 14 days late
-    expect(at("2026-09-23T12:00:00.000Z")).toBe("medium"); // 8 of 14
-    expect(at("2026-09-30T12:00:00.000Z")).toBe("high"); // a full cycle missed
-  });
+class FakeRecordSink implements NudgeRecordSink {
+  written: RecordedNudge[] = [];
+  async record(input: RecordedNudge) {
+    this.written.push(input);
+  }
+}
 
-  it("passes through who the pair is waiting on, and never invents one", () => {
-    const known = sweep(
-      input({
-        now: "2026-09-20T12:00:00.000Z",
-        pairs: [pair({ blockedOnParticipantId: "pt_mentor" })],
+function sweepOf(over: {
+  deficits: Deficit[];
+  llm: DeterministicProvider;
+  dispatch?: FakeDispatchSink;
+  record?: FakeRecordSink;
+  reader?: FakeNudgeReader;
+  onWarn?: (message: string, detail?: Record<string, unknown>) => void;
+}) {
+  const dispatch = over.dispatch ?? new FakeDispatchSink();
+  const record = over.record ?? new FakeRecordSink();
+  return {
+    dispatch,
+    record,
+    run: () =>
+      runNudgeSweep({
+        deficits: over.deficits,
+        reader: over.reader ?? new FakeNudgeReader({}),
+        llm: over.llm,
+        policy,
+        orgId: "org_1",
+        dispatch,
+        record,
+        runs: new NullAiRunSink(),
+        bandit: new ThompsonBandit(seededRng(7)),
+        ...(over.onWarn ? { onWarn: over.onWarn } : {}),
       }),
-    );
-    expect(known[0]!.blockedOnParticipantId).toBe("pt_mentor");
-    expect(sweep(input({ now: "2026-09-20T12:00:00.000Z" }))[0]!.blockedOnParticipantId).toBeNull();
+  };
+}
+
+describe("runNudgeSweep — the sending path", () => {
+  it("dispatches a nudge that passes every gate and records it as sent", async () => {
+    const deficit = cadenceDeficit({ blockedOnParticipantId: "pt_mentor" });
+    const { dispatch, record, run } = sweepOf({
+      deficits: [deficit],
+      llm: provider(draft()),
+    });
+
+    const result = await run();
+
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]).toMatchObject({
+      dedupeKey: deficit.dedupeKey,
+      pairingId: deficit.pairingId,
+      gate: "auto",
+      outcome: "send",
+      dispatched: true,
+      dispatchError: null,
+    });
+
+    expect(dispatch.sent).toHaveLength(1);
+    expect(dispatch.sent[0]).toMatchObject({
+      channel: "dm",
+      recipientParticipantId: "pt_mentor",
+    });
+
+    expect(record.written).toHaveLength(1);
+    expect(record.written[0]).toMatchObject({
+      orgId: "org_1",
+      pairingId: deficit.pairingId,
+      recipientParticipantId: "pt_mentor",
+      state: "sent",
+      dedupeKey: deficit.dedupeKey,
+      droppedReason: null,
+    });
+    expect(record.written[0]!.sentAt).not.toBeNull();
   });
 });
 
-describe("sweep — action items, goals and surveys", () => {
-  const overdueNow = "2026-09-15T12:00:00.000Z";
+describe("runNudgeSweep — the gate chain has the last word", () => {
+  it("never dispatches to a muted recipient, and records the drop", async () => {
+    const deficit = cadenceDeficit({ blockedOnParticipantId: "pt_mentor" });
+    const muted = pairView({ recipients: [recipient(), { ...MENTOR, muted: true }] });
+    const { dispatch, record, run } = sweepOf({
+      deficits: [deficit],
+      llm: provider(draft()),
+      reader: new FakeNudgeReader({ pair: muted }),
+    });
 
-  it("flags an action item the instant it is past due, and not at the due moment", () => {
-    const base = {
-      actionItemId: "ai_1",
-      pairingId: "p_001",
-      orgId: "org_1",
-      ownerParticipantId: "pt_mentee",
-      dueAt: overdueNow,
-    };
-    expect(
-      sweep(input({ now: overdueNow, actionItems: [base] })).filter(
-        (d) => d.name === "action_item.overdue",
-      ),
-    ).toHaveLength(0);
+    const result = await run();
 
-    const later = sweep(
-      input({ now: "2026-09-15T12:00:01.000Z", actionItems: [base] }),
-    ).filter((d) => d.name === "action_item.overdue");
-    expect(later).toHaveLength(1);
-    // The owner is a fact here, not a guess — this is the deficit that most
-    // often names the wrong person if you let something infer it.
-    expect(later[0]!.blockedOnParticipantId).toBe("pt_mentee");
-    expect(later[0]!.subjectRef).toBe("action_item:ai_1");
-  });
-
-  it("ignores a closed action item and one belonging to an inactive pair", () => {
-    const rows = [
-      {
-        actionItemId: "ai_done",
-        pairingId: "p_001",
-        orgId: "org_1",
-        ownerParticipantId: "pt_1",
-        dueAt: "2026-09-01T00:00:00.000Z",
-        status: "done" as const,
-      },
-      {
-        actionItemId: "ai_orphan",
-        pairingId: "p_999",
-        orgId: "org_1",
-        ownerParticipantId: "pt_1",
-        dueAt: "2026-09-01T00:00:00.000Z",
-      },
-    ];
-    expect(
-      sweep(input({ actionItems: rows })).filter((d) => d.name === "action_item.overdue"),
-    ).toHaveLength(0);
-  });
-
-  it("calls a goal stale 21 days after the last check-in, counting from creation if there was none", () => {
-    const goal = {
-      goalId: "g_1",
-      pairingId: "p_001",
-      orgId: "org_1",
-      ownerParticipantId: "pt_mentee",
-      createdAt: "2026-08-25T12:00:00.000Z",
-      lastCheckInAt: null,
-    };
-    expect(
-      sweep(input({ now: "2026-09-15T11:00:00.000Z", goals: [goal] })).filter(
-        (d) => d.name === "goal.stale",
-      ),
-    ).toHaveLength(0);
-
-    const stale = sweep(input({ now: "2026-09-15T12:00:00.000Z", goals: [goal] })).filter(
-      (d) => d.name === "goal.stale",
-    );
-    expect(stale).toHaveLength(1);
-    expect(stale[0]!.detail.daysSinceTouch).toBe(21);
-
-    // A check-in resets the clock, which is the whole point of check-ins.
-    const touched = sweep(
-      input({
-        now: "2026-09-15T12:00:00.000Z",
-        goals: [{ ...goal, lastCheckInAt: "2026-09-10T12:00:00.000Z" }],
-      }),
-    );
-    expect(touched.filter((d) => d.name === "goal.stale")).toHaveLength(0);
-  });
-
-  it("flags an unanswered survey after 72 hours, and never an answered one", () => {
-    const survey = {
-      surveyId: "sv_1",
-      pairingId: "p_001",
-      orgId: "org_1",
-      participantId: "pt_mentee",
-      sentAt: "2026-09-12T12:00:00.000Z",
-    };
-    expect(
-      sweep(input({ now: "2026-09-15T11:59:00.000Z", surveys: [survey] })).filter(
-        (d) => d.name === "survey.unanswered",
-      ),
-    ).toHaveLength(0);
-
-    const unanswered = sweep(input({ surveys: [survey] })).filter(
-      (d) => d.name === "survey.unanswered",
-    );
-    expect(unanswered).toHaveLength(1);
-    expect(unanswered[0]!.blockedOnParticipantId).toBe("pt_mentee");
-
-    const answered = sweep(
-      input({ surveys: [{ ...survey, answeredAt: "2026-09-13T08:00:00.000Z" }] }),
-    );
-    expect(answered.filter((d) => d.name === "survey.unanswered")).toHaveLength(0);
-  });
-
-  it("honours caller-supplied thresholds, because grace is a program's call", () => {
-    const survey = {
-      surveyId: "sv_1",
-      pairingId: "p_001",
-      orgId: "org_1",
-      participantId: "pt_mentee",
-      sentAt: "2026-09-12T12:00:00.000Z",
-    };
-    const patient = sweep(
-      input({ surveys: [survey], thresholds: { surveyUnansweredHours: 168 } }),
-    );
-    expect(patient.filter((d) => d.name === "survey.unanswered")).toHaveLength(0);
+    expect(result.entries[0]).toMatchObject({ outcome: "drop", dispatched: false });
+    expect(dispatch.sent).toEqual([]);
+    expect(record.written).toHaveLength(1);
+    expect(record.written[0]).toMatchObject({
+      state: "dropped",
+      recipientParticipantId: "pt_mentor",
+    });
+    expect(record.written[0]!.droppedReason).toMatch(/muted/);
+    expect(record.written[0]!.sentAt).toBeNull();
   });
 });
 
-describe("sweep — idempotence and ordering", () => {
-  it("does not re-emit a deficit whose key has already been seen", () => {
-    const late = { ...input({ now: "2026-09-20T12:00:00.000Z" }) };
-    const first = sweep(late);
-    expect(first).toHaveLength(1);
-    const second = sweep({ ...late, alreadyEmitted: [first[0]!.dedupeKey] });
-    expect(second).toHaveLength(0);
-  });
+describe("runNudgeSweep — isolation", () => {
+  it("does not lose a second, independent nudge when the first fails to dispatch", async () => {
+    const first = cadenceDeficit({
+      subjectRef: "pairing:p_001",
+      pairingId: "p_001",
+      dedupeKey: "pairing:p_001:cadence_deficit:2026-W39",
+      blockedOnParticipantId: "pt_mentor",
+    });
+    const second = cadenceDeficit({
+      subjectRef: "pairing:p_002",
+      pairingId: "p_002",
+      dedupeKey: "pairing:p_002:cadence_deficit:2026-W39",
+      blockedOnParticipantId: "pt_mentor",
+    });
 
-  it("keys an absence to its ISO week, so a daily sweep is not a daily nudge", () => {
-    const monday = sweep(input({ now: "2026-09-21T09:00:00.000Z" }))[0]!;
-    const friday = sweep(input({ now: "2026-09-25T09:00:00.000Z" }))[0]!;
-    const nextWeek = sweep(input({ now: "2026-09-28T09:00:00.000Z" }))[0]!;
-    expect(friday.dedupeKey).toBe(monday.dedupeKey);
-    expect(nextWeek.dedupeKey).not.toBe(monday.dedupeKey);
-  });
+    const dispatch = new FakeDispatchSink(["pt_mentor"]);
+    const record = new FakeRecordSink();
+    let calls = 0;
+    const { run } = sweepOf({
+      deficits: [first, second],
+      llm: provider(draft()),
+      dispatch,
+      record,
+      onWarn: () => {
+        calls++;
+      },
+    });
 
-  it("computes ISO weeks, including the year-boundary case that always breaks", () => {
-    expect(isoWeek("2026-09-15T00:00:00.000Z")).toBe("2026-W38");
-    // 2027-01-01 is a Friday, so it belongs to the last week of 2026.
-    expect(isoWeek("2027-01-01T00:00:00.000Z")).toBe("2026-W53");
-    expect(isoWeek("2026-01-01T00:00:00.000Z")).toBe("2026-W01");
-  });
+    const result = await run();
 
-  it("returns a stable order, so two sweeps of the same world are comparable", () => {
-    const mixed = sweep(
-      input({
-        now: "2026-09-25T12:00:00.000Z",
-        actionItems: [
-          {
-            actionItemId: "ai_2",
-            pairingId: "p_001",
-            orgId: "org_1",
-            ownerParticipantId: "pt_1",
-            dueAt: "2026-09-01T00:00:00.000Z",
-          },
-          {
-            actionItemId: "ai_1",
-            pairingId: "p_001",
-            orgId: "org_1",
-            ownerParticipantId: "pt_1",
-            dueAt: "2026-09-01T00:00:00.000Z",
-          },
-        ],
-        surveys: [
-          {
-            surveyId: "sv_1",
-            pairingId: "p_001",
-            orgId: "org_1",
-            participantId: "pt_1",
-            sentAt: "2026-09-01T00:00:00.000Z",
-          },
-        ],
-      }),
+    expect(result.entries).toHaveLength(2);
+    expect(result.entries.every((e) => e.outcome === "send")).toBe(true);
+    expect(result.entries.every((e) => !e.dispatched)).toBe(true);
+    expect(result.entries.every((e) => e.dispatchError?.includes("delivery down"))).toBe(true);
+    expect(calls).toBeGreaterThanOrEqual(2);
+
+    // Both decisions are still recorded — as `planned`, never falsely `sent` —
+    // so neither absence is silently dropped from the next sweep's dedupe.
+    expect(record.written).toHaveLength(2);
+    expect(record.written.every((w) => w.state === "planned")).toBe(true);
+    expect(record.written.map((w) => w.dedupeKey).sort()).toEqual(
+      [first.dedupeKey, second.dedupeKey].sort(),
     );
-    expect(mixed.map((d) => d.subjectRef)).toEqual([
-      "pairing:p_001",
-      "action_item:ai_1",
-      "action_item:ai_2",
-      "survey:sv_1",
-    ]);
   });
 
-  it("builds a dedupe key a nudge can be keyed on too", () => {
-    expect(
-      deficitDedupeKey({
-        subjectRef: "pairing:p_001",
-        name: "pair.cadence_deficit",
-        at: "2026-09-15T00:00:00.000Z",
-      }),
-    ).toBe("pairing:p_001:cadence_deficit:2026-W38");
-  });
+  it("isolates one deficit whose own processing throws from the rest of the sweep", async () => {
+    const good = cadenceDeficit({ blockedOnParticipantId: "pt_mentor" });
+    const broken = cadenceDeficit({
+      subjectRef: "pairing:p_broken",
+      pairingId: "p_broken",
+      dedupeKey: "pairing:p_broken:cadence_deficit:2026-W39",
+    });
 
-  it("converts to an event the sink can write without reshaping", () => {
-    const deficit = sweep(input({ now: "2026-09-20T12:00:00.000Z" }))[0]!;
-    const event = toEventInput(deficit);
-    expect(event.name).toBe("pair.cadence_deficit");
-    expect(event.subjectRef).toBe("pairing:p_001");
-    expect(event.payload.pairingId).toBe("p_001");
-    expect(event.payload.expectedEveryDays).toBe(14);
+    const record = new FakeRecordSink();
+    const reader: NudgeReader = new FakeNudgeReader({});
+    const brokenReader = {
+      pair: async (id: string) => {
+        if (id === "p_broken") throw new Error("reader outage");
+        return reader.pair(id);
+      },
+      history: reader.history.bind(reader),
+      templateStats: reader.templateStats.bind(reader),
+      subjectLabel: reader.subjectLabel.bind(reader),
+    };
+
+    const warnings: string[] = [];
+    const result = await runNudgeSweep({
+      deficits: [broken, good],
+      reader: brokenReader,
+      llm: provider(draft()),
+      policy,
+      orgId: "org_1",
+      dispatch: new FakeDispatchSink(),
+      record,
+      onWarn: (message) => warnings.push(message),
+    });
+
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]!.pairingId).toBe(good.pairingId);
+    expect(warnings.some((w) => w.includes("failed for one deficit"))).toBe(true);
+    expect(record.written.some((w) => w.pairingId === good.pairingId)).toBe(true);
+  });
+});
+
+describe("runNudgeSweep — nothing to do", () => {
+  it("does nothing given zero deficits", async () => {
+    const { dispatch, record, run } = sweepOf({ deficits: [], llm: provider(draft()) });
+    const result = await run();
+    expect(result.entries).toEqual([]);
+    expect(dispatch.sent).toEqual([]);
+    expect(record.written).toEqual([]);
   });
 });

@@ -16,6 +16,7 @@ export default defineConfig({
       "@mentorship/roster": p("./packages/roster/src/index.ts"),
       "@mentorship/testkit": p("./packages/testkit/src/index.ts"),
       "@mentorship/primitive-matching": p("./packages/primitives/matching/src/index.ts"),
+      "@mentorship/primitive-nudge/postgres": p("./packages/primitives/nudge/src/postgres.ts"),
       "@mentorship/primitive-nudge": p("./packages/primitives/nudge/src/index.ts"),
       "@mentorship/primitive-session-intel": p("./packages/primitives/session-intel/src/index.ts"),
       "@mentorship/primitive-progress/postgres": p("./packages/primitives/progress/src/postgres.ts"),

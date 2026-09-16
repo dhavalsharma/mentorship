@@ -49,6 +49,9 @@
       "@mentorship/primitive-matching": [
         "packages/primitives/matching/src/index.ts"
       ],
+      "@mentorship/primitive-nudge/postgres": [
+        "packages/primitives/nudge/src/postgres.ts"
+      ],
       "@mentorship/primitive-nudge": [
         "packages/primitives/nudge/src/index.ts"
       ],
