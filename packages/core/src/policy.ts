@@ -130,6 +130,32 @@ export const ProgramPolicySchema = z.object({
 
 export type ProgramPolicy = z.infer<typeof ProgramPolicySchema>;
 
+/**
+ * `ProgramPolicySchema` defaults every field so `defaultPolicy({})` works for
+ * every caller building a policy up from scratch. That same leniency is a
+ * trap on the read side: parsing a value that claims to already be a
+ * complete, previously-validated stored policy cannot distinguish "unset"
+ * from "corrupted" — a mangled `consent` block would silently come back as
+ * `optional`/`off` (or whatever the lenient default is) instead of failing.
+ *
+ * This schema is the stricter gate for that one path — reading `programs.policy`
+ * back out of storage. It reuses `ProgramPolicySchema` for everything else
+ * (so behaviour for every other caller is unchanged) and requires only the
+ * fields CLAUDE.md flags as dangerous to get wrong: consent must be stated
+ * explicitly, not defaulted, because a wrong default here changes what a
+ * tenant's participants consented to.
+ */
+export const StoredConsentPolicySchema = z.object({
+  aiProcessing: z.enum(["required", "optional"]),
+  recording: z.enum(["off", "opt_in"]),
+});
+
+export const StoredProgramPolicySchema = ProgramPolicySchema.extend({
+  consent: StoredConsentPolicySchema,
+});
+
+export type StoredProgramPolicy = z.infer<typeof StoredProgramPolicySchema>;
+
 export function defaultPolicy(
   overrides: Partial<z.input<typeof ProgramPolicySchema>> = {},
 ): ProgramPolicy {

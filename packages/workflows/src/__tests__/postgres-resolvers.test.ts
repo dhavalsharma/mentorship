@@ -198,13 +198,14 @@ describe.skipIf(!DATABASE_URL)("PostgresSagaResolvers", () => {
     expect(mentee!.consent.aiProcessing).toBe(true);
   });
 
-  // Documents a sharp edge rather than asserting a wish. Every field in
-  // ProgramPolicySchema has a default — which is what makes `defaultPolicy({})`
-  // work — so parsing a stored policy cannot tell "unset" from "corrupted", and
-  // a garbage column silently becomes the default program. Flagged as a
-  // standing task in the roadmap; fixing it means a stricter read-side schema
-  // in core, which is a kernel change and not this layer's call.
-  it("fills a malformed policy column with defaults instead of failing", async () => {
+  // `ProgramPolicySchema` defaults every field, which is what makes
+  // `defaultPolicy({})` work — but it also means parsing a stored policy with
+  // that same lenient schema cannot tell "unset" from "corrupted": a garbage
+  // column would silently become the default program, with consent quietly
+  // back to `optional`/`off`. The read path now parses through
+  // `StoredProgramPolicySchema`, which requires `consent` to be stated
+  // explicitly, so a policy missing it fails loudly here instead.
+  it("throws rather than fill a malformed policy column with defaults", async () => {
     const brokenProgram = randomUUID();
     const brokenCohort = randomUUID();
     await handle.db
@@ -231,9 +232,41 @@ describe.skipIf(!DATABASE_URL)("PostgresSagaResolvers", () => {
       })
       .returning();
 
-    const context = await resolvers.pairContext(pair!.id);
-    expect(context.policy.pairing.mode).toBe("matched");
-    expect(context.policy.cadence.everyDays).toBe(14);
+    await expect(resolvers.pairContext(pair!.id)).rejects.toThrow(/stored policy is malformed/);
+  });
+
+  it("throws when a stored policy omits consent instead of defaulting it to opt_in", async () => {
+    const brokenProgram = randomUUID();
+    const brokenCohort = randomUUID();
+    const { consent: _omitted, ...policyWithoutConsent } = policy;
+    await handle.db.insert(programs).values({
+      id: brokenProgram,
+      orgId,
+      name: "Missing consent",
+      policy: policyWithoutConsent,
+    });
+    await handle.db.insert(cohorts).values({
+      id: brokenCohort,
+      orgId,
+      programId: brokenProgram,
+      name: "Missing consent cohort",
+      startsAt: new Date("2026-07-01T00:00:00Z"),
+      endsAt: new Date("2026-12-31T00:00:00Z"),
+    });
+    const [pair] = await handle.db
+      .insert(pairings)
+      .values({
+        orgId,
+        cohortId: brokenCohort,
+        mentorParticipantId: mentorId,
+        menteeParticipantId: menteeId,
+        pairKey: "missing-consent|pair",
+        state: "active",
+        origin: "imported",
+      })
+      .returning();
+
+    await expect(resolvers.pairContext(pair!.id)).rejects.toThrow(/stored policy is malformed/);
   });
 
   it("throws for a pairing that does not exist", async () => {

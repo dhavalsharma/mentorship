@@ -1,6 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
+import { z } from "zod";
 import {
-  ProgramPolicySchema,
+  StoredProgramPolicySchema,
   resolveCadence,
   type AdapterCapabilities,
   type Agreement,
@@ -79,7 +80,15 @@ export class PostgresSagaResolvers implements SagaResolvers {
         .where(and(eq(cohorts.orgId, orgId), eq(cohorts.id, pairing.cohortId)))
         .limit(1);
       if (!row) throw new Error(`pairing ${pairingId} has no cohort or program`);
-      const policy = ProgramPolicySchema.parse(row.policy);
+      let policy;
+      try {
+        policy = StoredProgramPolicySchema.parse(row.policy);
+      } catch (err) {
+        const detail = err instanceof z.ZodError ? err.message : String(err);
+        throw new Error(
+          `pairing ${pairingId}: stored policy is malformed and cannot be trusted with defaults — ${detail}`,
+        );
+      }
 
       const ids = [pairing.mentorParticipantId, pairing.menteeParticipantId];
       const people = await tx
