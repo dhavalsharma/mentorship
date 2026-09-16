@@ -117,7 +117,11 @@ repair retry, and the eval harness.
       ship the flag without the routing.**
 - [ ] Document pinning and echo suppression (ADR-0005) before enabling real
       document writes
-- [ ] Golden fixtures; field-level precision/recall in CI
+- [x] Golden fixtures; field-level precision/recall in CI — `eval.ts` +
+      six hand-labelled cases in `golden-fixtures.ts`, scored against the
+      deterministic fallback path on every `pnpm test` run. Measured:
+      precision 1.00, recall 0.80. Scoped to `actionItems` only for now —
+      blockers, goal progress and sentiment are meant to reuse the same shape.
 
 Chosen as the first primitive deliberately: highest perceived value, lowest
 risk, and it is the only one that *generates* the labelled data the others need.
@@ -127,9 +131,13 @@ risk, and it is the only one that *generates* the labelled data the others need.
 `packages/primitives/matching` — built, tested, not yet called from any saga.
 
 - [x] Hard constraints (capacity, timezone overlap, same-manager, opt-outs)
-- [ ] Feature scorers: directional skill fit, level-gap band, availability
-      hours, narrative cosine via pgvector — everything but the pgvector
-      narrative-similarity feature is in
+- [x] Feature scorers: directional skill fit, level-gap band, availability
+      hours, narrative similarity — `narrative_similarity` is cosine over
+      embeddings a caller resolves up front with `embedNarratives` and
+      threads into `ScoringContext`, keeping the scoring loop synchronous.
+      Live pgvector storage/query (the literal ask) is not built — nothing in
+      this sandbox can verify it — and the scorer carries no default weight
+      until it proves itself against a real cohort (invariant 17).
 - [x] Capacity-aware global assignment — a solver, not greedy. Greedy is how
       mentee forty gets nobody while mentors sit under capacity.
 - [x] LLM adjudication on the shortlist only, returning rationale and risk
@@ -174,13 +182,17 @@ blocked while this waits.
 - [x] Replace deterministic reminders with the planner plus a bandit over
       templates — now that there is outcome history to learn from.
       `packages/primitives/nudge` (`createNudgePlanner`, `ThompsonBandit`).
-      Not yet the thing actually sending a reminder — no saga calls it.
+      `runNudgeSweep` runs it per deficit, dispatches on `gate === "auto"`,
+      and records every outcome to the existing `nudges` table. Still nothing
+      calls the sweep — no scheduler exists yet.
 - [ ] Two or three presets (university, corporate career, founder network) as
       pure policy data. The real test of ADR-0001.
 - [ ] Public API and webhooks
 - [ ] Docs site
-- [ ] `dependency-cruiser` enforcing the boundary rule in CI — the rule is only
-      real if CI fails when it is broken
+- [x] `dependency-cruiser` enforcing the boundary rule — `.dependency-cruiser.cjs`
+      + `pnpm deps:check`, verified both directions (clean against the real
+      codebase, catches a deliberate violation). Not yet wired into CI: no
+      CI workflow exists anywhere in this repo yet for it to join.
 - [ ] Full Apache-2.0 licence text
 - [ ] A custom-primitive walkthrough, and the eval harness front and centre so
       contributors can change prompts safely
@@ -198,10 +210,9 @@ These are not a phase; they are things that go stale if ignored.
 - Replace `tzOffsetMinutes` with IANA zones resolved per instant before any
   cohort spans a DST boundary.
 - Every new adapter owes a real `probe()`, not a guess.
-- **A malformed `programs.policy` silently becomes the default program.**
-  Every field in `ProgramPolicySchema` has a default, which is what makes
-  `defaultPolicy({})` work, so reading a stored policy cannot tell "unset"
-  from "corrupted" — a tenant whose consent settings were mangled would
-  quietly get `opt_in` back. Wants a stricter read-side schema in core, and
-  a decision about which fields a stored policy must state explicitly.
-  Documented by a test in `postgres-resolvers.test.ts`.
+- ~~A malformed `programs.policy` silently becomes the default program.~~
+  **Fixed.** `StoredProgramPolicySchema` in `packages/core/src/policy.ts`
+  requires `consent.aiProcessing`/`consent.recording` explicitly (no
+  `.default()`); `PostgresSagaResolvers.pairContext` now throws rather than
+  silently defaulting. `defaultPolicy({})` and every other caller of the
+  lenient `ProgramPolicySchema` are unchanged.
