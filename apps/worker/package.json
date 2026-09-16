@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@mentorship/ai": "workspace:*",
     "@mentorship/core": "workspace:*",
     "@mentorship/db": "workspace:*",
     "@mentorship/events": "workspace:*",
     "@mentorship/integrations": "workspace:*",
+    "@mentorship/primitive-session-intel": "workspace:*",
     "@mentorship/roster": "workspace:*",
     "@mentorship/testkit": "workspace:*",
     "@mentorship/workflows": "workspace:*"

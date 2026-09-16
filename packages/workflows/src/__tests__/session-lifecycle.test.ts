@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { DeterministicProvider, NullAiRunSink } from "@mentorship/ai";
 import { commitRosterImport, planRosterImport } from "@mentorship/roster";
 import {
   advanceToNextTimer,
@@ -346,6 +347,39 @@ describe("capability and consent branches", () => {
     );
     await ctx.h.dispatcher.settle();
     expect(await stateOf(ctx.h)).toMatchObject({ name: "confirming" });
+  });
+
+  it("runs the real session-intel primitive when a model is wired in, not the heuristic", async () => {
+    const runs = new NullAiRunSink();
+    const ctx = await setup({
+      transcription: "none",
+      llm: new DeterministicProvider({ failWith: new Error("no scripted response for this test") }),
+      runs,
+    });
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h);
+    await advanceToNextTimer(ctx.h);
+
+    await ctx.h.world.submitNotes(
+      ctx.pairingId,
+      "Arjun: I'll review the draft by Friday.",
+    );
+    await ctx.h.dispatcher.settle();
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "confirming" });
+
+    // The model call above always fails, so this is the primitive's own
+    // deterministic fallback — not the unrelated `heuristicSessionIntel`
+    // stub. The two are distinguishable by shape: the primitive renders a
+    // checkbox with a quoted evidence span, the old stub never did.
+    const [extracted] = ctx.h.log.all().filter((e) => e.name === "extraction.completed");
+    const markdown = String(extracted!.payload["markdown"]);
+    expect(markdown).toContain("- [ ] **Arjun**:");
+    expect(markdown).toContain("> I'll review the draft by Friday.");
+
+    // And the run was recorded — invariant 20 — even though it degraded.
+    expect(runs.runs).toHaveLength(1);
+    expect(runs.runs[0]!.primitive).toBe("session.intel");
+    expect(runs.runs[0]!.error).toBeDefined();
   });
 
   it("falls back to an internal page when no document slot is bound", async () => {

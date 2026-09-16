@@ -2,8 +2,10 @@ import {
   defaultPolicy,
   sequentialIds,
   type Interval,
+  type LlmProvider,
   type ProgramPolicy,
 } from "@mentorship/core";
+import type { AiRunSink } from "@mentorship/ai";
 import { EventLog } from "@mentorship/events";
 import {
   FakeCalendar,
@@ -14,6 +16,7 @@ import {
   IntegrationRegistry,
   Recorder,
 } from "@mentorship/integrations";
+import { createPrimitiveSessionIntel } from "@mentorship/primitive-session-intel";
 import {
   createEffectRunner,
   createSessionLifecycle,
@@ -22,6 +25,7 @@ import {
   MemorySagaStore,
   SagaEngine,
   SESSION_LIFECYCLE,
+  type SessionIntel,
   type TraceLine,
 } from "@mentorship/workflows";
 import { Clock, World } from "./world.js";
@@ -56,6 +60,15 @@ export interface BootstrapOptions {
   omitSlots?: ("conversation" | "dm" | "calendar" | "transcript" | "document")[];
   onTrace?: (line: TraceLine) => void;
   onWarn?: (message: string, detail?: Record<string, unknown>) => void;
+  /**
+   * The deterministic stub runs unless one of these is given. `llm` is the
+   * common case — a `DeterministicProvider` from `@mentorship/ai` drives the
+   * real primitive through the saga exactly as the worker would; `intel` is
+   * an escape hatch for a caller that wants full control.
+   */
+  llm?: LlmProvider;
+  runs?: AiRunSink;
+  intel?: SessionIntel;
 }
 
 export function bootstrap(opts: BootstrapOptions = {}) {
@@ -100,6 +113,17 @@ export function bootstrap(opts: BootstrapOptions = {}) {
     ids,
   );
 
+  const intel =
+    opts.intel ??
+    (opts.llm
+      ? createPrimitiveSessionIntel({
+          llm: opts.llm,
+          ids,
+          ...(opts.runs ? { runs: opts.runs } : {}),
+          ...(opts.onWarn ? { onWarn: opts.onWarn } : {}),
+        })
+      : heuristicSessionIntel(ids));
+
   const store = new MemorySagaStore();
   const engine = new SagaEngine({
     store,
@@ -113,7 +137,7 @@ export function bootstrap(opts: BootstrapOptions = {}) {
       registry,
       log,
       resolvers: world,
-      intel: heuristicSessionIntel(ids),
+      intel,
       ids,
       onWarn: opts.onWarn,
     }),

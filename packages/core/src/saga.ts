@@ -40,7 +40,18 @@ export type Effect =
     }
   | { type: "verify_calendar_event"; eventId: string }
   | { type: "fetch_transcript"; calendarEventId: string }
-  | { type: "run_extraction"; sessionId: string; sourceRef: string }
+  | {
+      type: "run_extraction";
+      sessionId: string;
+      sourceRef: string;
+      /**
+       * Notes arrive inline on the event that ends `awaiting_artifact` — there
+       * is no adapter to fetch them back from, unlike a transcript. Carried
+       * here rather than re-read from the log, so the effect stays a
+       * self-contained descriptor (invariant 4).
+       */
+      text?: string;
+    }
   | { type: "render_document"; title: string; markdown: string }
   | { type: "request_feedback"; participantId: string; question: string }
   | {

@@ -513,6 +513,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
               (input.event.payload["ref"] as string | undefined) ??
               (input.event.payload["noteId"] as string | undefined) ??
               input.event.id;
+            const notesBody = input.event.payload["body"] as string | undefined;
             return {
               next: {
                 name: "extracting",
@@ -530,6 +531,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
                   type: "run_extraction",
                   sessionId: state.sessionId,
                   sourceRef: ref,
+                  ...(notesBody !== undefined ? { text: notesBody } : {}),
                 },
               ],
             };

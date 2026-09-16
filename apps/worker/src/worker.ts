@@ -1,6 +1,8 @@
-import { bareUuidIds, type IdFactory } from "@mentorship/core";
+import { bareUuidIds, type IdFactory, type LlmProvider } from "@mentorship/core";
 import type { Db } from "@mentorship/db";
+import type { AiRunSink } from "@mentorship/ai";
 import type { IntegrationRegistry } from "@mentorship/integrations";
+import { createPrimitiveSessionIntel } from "@mentorship/primitive-session-intel";
 import {
   createEffectRunner,
   createSessionLifecycle,
@@ -35,8 +37,20 @@ export interface WorkerOptions {
   db: Db;
   orgId: string;
   registry: IntegrationRegistry;
-  /** Defaults to the deterministic stub — swapping it is phase 2. */
+  /**
+   * Explicit override, mainly for tests. Production wiring should prefer
+   * `llm` below — passing both is an error, since it is ambiguous which one
+   * the caller actually meant to run.
+   */
   intel?: SessionIntel;
+  /**
+   * The real session-intel primitive when given; the deterministic stub
+   * otherwise. Consent, gating and the evidence-span discipline all live in
+   * `createPrimitiveSessionIntel` — this is only the wiring point.
+   */
+  llm?: LlmProvider;
+  /** Where `ai_runs` rows land. Discarded (no cost dashboard) if omitted. */
+  runs?: AiRunSink;
   role?: string;
   ids?: IdFactory;
   now?: () => Date;
@@ -51,9 +65,22 @@ export interface Worker {
 }
 
 export function createWorker(options: WorkerOptions): Worker {
+  if (options.intel && options.llm) {
+    throw new Error("createWorker: pass either `intel` or `llm`, not both");
+  }
   const ids = options.ids ?? bareUuidIds;
   const now = options.now ?? (() => new Date());
   const scoped = options.role === undefined ? {} : { role: options.role };
+  const intel =
+    options.intel ??
+    (options.llm
+      ? createPrimitiveSessionIntel({
+          llm: options.llm,
+          ids,
+          ...(options.runs ? { runs: options.runs } : {}),
+          ...(options.onWarn ? { onWarn: options.onWarn } : {}),
+        })
+      : heuristicSessionIntel(ids));
 
   const resolvers = new PostgresSagaResolvers({
     db: options.db,
@@ -78,7 +105,7 @@ export function createWorker(options: WorkerOptions): Worker {
       registry: options.registry,
       log: sink,
       resolvers,
-      intel: options.intel ?? heuristicSessionIntel(ids),
+      intel,
       ids,
       ...(options.onWarn ? { onWarn: options.onWarn } : {}),
     }),

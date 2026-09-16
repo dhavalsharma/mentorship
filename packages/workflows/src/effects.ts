@@ -245,12 +245,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
       }
 
       case "run_extraction": {
-        const text =
-          transcripts.get(effect.sourceRef) ??
-          (ctx.instance.completedEffects[`notes:${effect.sourceRef}`] as
-            | string
-            | undefined) ??
-          "";
+        const text = effect.text ?? transcripts.get(effect.sourceRef) ?? "";
         const result = await opts.intel.extract({
           sessionId: effect.sessionId,
           sourceRef: effect.sourceRef,

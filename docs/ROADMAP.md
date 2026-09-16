@@ -105,9 +105,12 @@ The first real primitive. Build `packages/ai` alongside it: provider
 abstraction, versioned prompt registry, `ai_runs`, structured output with one
 repair retry, and the eval harness.
 
-- [ ] Replace `heuristicSessionIntel` with a schema-bound model call — the
-      primitive exists (`packages/primitives/session-intel`); the saga still
-      calls the heuristic
+- [x] Replace `heuristicSessionIntel` with a schema-bound model call —
+      `createWorker`/`bootstrap()` take an `llm: LlmProvider` and wire
+      `createPrimitiveSessionIntel` in its place at the `extracting` state;
+      omit it and the deterministic stub still runs, unchanged. Fixed a real
+      bug this exposed: `run_extraction` never carried the note body through,
+      so every notes-path extraction ran on empty text.
 - [x] Keep the evidence spans — they are what makes a claim checkable
 - [ ] Pending-then-confirm UI; confirmations become eval labels
 - [ ] Risk-flag routing, including the `safeguarding` out-of-band path. **Do not

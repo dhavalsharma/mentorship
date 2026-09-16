@@ -57,6 +57,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@mentorship/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@mentorship/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -69,6 +72,9 @@ importers:
       '@mentorship/integrations':
         specifier: workspace:*
         version: link:../../packages/integrations
+      '@mentorship/primitive-session-intel':
+        specifier: workspace:*
+        version: link:../../packages/primitives/session-intel
       '@mentorship/roster':
         specifier: workspace:*
         version: link:../../packages/roster
@@ -189,6 +195,9 @@ importers:
 
   packages/testkit:
     dependencies:
+      '@mentorship/ai':
+        specifier: workspace:*
+        version: link:../ai
       '@mentorship/core':
         specifier: workspace:*
         version: link:../core
@@ -198,6 +207,9 @@ importers:
       '@mentorship/integrations':
         specifier: workspace:*
         version: link:../integrations
+      '@mentorship/primitive-session-intel':
+        specifier: workspace:*
+        version: link:../primitives/session-intel
       '@mentorship/roster':
         specifier: workspace:*
         version: link:../roster

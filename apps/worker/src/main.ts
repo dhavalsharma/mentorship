@@ -1,3 +1,5 @@
+import { AnthropicProvider } from "@mentorship/ai";
+import { PostgresAiRunSink } from "@mentorship/ai/postgres";
 import { createClient } from "@mentorship/db";
 import {
   FakeCalendar,
@@ -49,11 +51,20 @@ registry.bind(new FakeCalendar(recorder, {}));
 registry.bind(new FakeTranscript(recorder, { autoTranscription: "native" }));
 registry.bind(new FakeDocument(recorder));
 
+// Session intelligence runs for real once a key is present; otherwise the
+// deterministic stub keeps the worker usable with no external dependency at
+// all. Opt-in, not auto-detected from some other setting, so pointing a
+// worker at a real model is always something an operator typed on purpose.
+const scopedRole = TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE };
+const llm = process.env["ANTHROPIC_API_KEY"] ? new AnthropicProvider() : undefined;
+const runs = llm ? new PostgresAiRunSink(db, scopedRole) : undefined;
+
 const worker = createWorker({
   db,
   orgId: ORG_ID,
   registry,
   ...(TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE }),
+  ...(llm ? { llm, ...(runs ? { runs } : {}) } : {}),
   onWarn: (message, detail) => console.warn(`[warn] ${message}`, detail ?? ""),
   onTrace: (line) =>
     console.log(
@@ -63,7 +74,12 @@ const worker = createWorker({
 });
 
 console.log(`worker started for org ${ORG_ID}, polling every ${INTERVAL_MS}ms`);
-console.log("adapters: fakes — Slack and Google have never run live\n");
+console.log("adapters: fakes — Slack and Google have never run live");
+console.log(
+  llm
+    ? `session intelligence: ${llm.model}, ai_runs recorded\n`
+    : "session intelligence: deterministic stub (set ANTHROPIC_API_KEY to use the real primitive)\n",
+);
 
 const controller = new AbortController();
 let draining = false;

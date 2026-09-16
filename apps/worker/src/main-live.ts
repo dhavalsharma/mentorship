@@ -1,3 +1,5 @@
+import { AnthropicProvider } from "@mentorship/ai";
+import { PostgresAiRunSink } from "@mentorship/ai/postgres";
 import { createClient } from "@mentorship/db";
 import { buildLiveRegistry } from "./live-registry.js";
 import { createWorker } from "./worker.js";
@@ -40,11 +42,16 @@ try {
   process.exit(1);
 }
 
+const scopedRole = TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE };
+const llm = process.env["ANTHROPIC_API_KEY"] ? new AnthropicProvider() : undefined;
+const runs = llm ? new PostgresAiRunSink(db, scopedRole) : undefined;
+
 const worker = createWorker({
   db,
   orgId: ORG_ID,
   registry,
   ...(TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE }),
+  ...(llm ? { llm, ...(runs ? { runs } : {}) } : {}),
   onWarn: (message, detail) => console.warn(`[warn] ${message}`, detail ?? ""),
   onTrace: (line) =>
     console.log(
@@ -56,7 +63,12 @@ const worker = createWorker({
 console.log(`LIVE worker started for org ${ORG_ID}, polling every ${INTERVAL_MS}ms`);
 console.log(
   "adapters: real Slack + Google, guarded by SandboxGuard — transcript and " +
-    "document are still fakes, because no real adapter for either exists yet\n",
+    "document are still fakes, because no real adapter for either exists yet",
+);
+console.log(
+  llm
+    ? `session intelligence: ${llm.model}, ai_runs recorded\n`
+    : "session intelligence: deterministic stub (set ANTHROPIC_API_KEY to use the real primitive)\n",
 );
 
 const controller = new AbortController();
