@@ -363,6 +363,32 @@ export const aiRuns = pgTable(
   (t) => [index("ai_runs_primitive_idx").on(t.orgId, t.primitive, t.createdAt)],
 );
 
+/**
+ * Rules-plus-trend findings from `packages/primitives/progress` (ADR-0007).
+ * A row per finding rather than a queue table, deliberately: the queue this
+ * feeds does not exist yet, and a findings log an admin view can filter is a
+ * smaller, more honest commitment than a workflow this schema cannot see.
+ */
+export const riskFindings = pgTable(
+  "risk_findings",
+  {
+    ...orgScoped,
+    pairingId: uuid("pairing_id").notNull(),
+    code: text("code").notNull(),
+    severity: text("severity").notNull(),
+    detectedAt: timestamp("detected_at", { withTimezone: true }).notNull(),
+    summary: text("summary").notNull(),
+    requiresHuman: boolean("requires_human").notNull().default(false),
+    evidence: jsonb("evidence").notNull().default([]),
+    /** Set once a human has looked at it. Null means still open. */
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("risk_findings_pairing_idx").on(t.orgId, t.pairingId, t.detectedAt),
+    index("risk_findings_open_idx").on(t.orgId, t.requiresHuman, t.acknowledgedAt),
+  ],
+);
+
 /** How a three-day wait for two humans survives a deploy. */
 export const sagaInstances = pgTable(
   "saga_instances",
@@ -485,6 +511,7 @@ export const schema = {
   nudges,
   events,
   aiRuns,
+  riskFindings,
   sagaInstances,
   integrationBindings,
   consents,

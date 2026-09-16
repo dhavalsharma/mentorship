@@ -168,6 +168,9 @@ importers:
       '@mentorship/core':
         specifier: workspace:*
         version: link:../../core
+      '@mentorship/db':
+        specifier: workspace:*
+        version: link:../../db
       zod:
         specifier: ^3.24.1
         version: 3.25.76

@@ -158,7 +158,11 @@ blocked while this waits.
 - [x] `signals` contributors, cadence adherence first
 - [x] Composite health score with density-derived confidence
 - [x] Rules-plus-trend at-risk detection — `RiskFinding`s carry evidence and a
-      `requiresHuman` flag; no admin queue exists to put them in yet
+      `requiresHuman` flag, and now a home: `runProgressSweep` +
+      `PostgresRiskFindingsSink` persist every finding to a new
+      `risk_findings` table (migration `0006`/`0007`, RLS included). It is a
+      durable log, not a queue — nothing schedules the sweep yet and there is
+      still no admin view to read the table from.
 - [ ] Structured goals; model-drafted, human-edited SMART framing
 - [ ] Read models for the dashboard; the same model serves the scheduled digest
 - [ ] Authorization layer implementing the visibility matrix, **with tests** —

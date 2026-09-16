@@ -15,6 +15,13 @@
       "when": 1789471368193,
       "tag": "0005_events_relay",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789539575877,
+      "tag": "0006_productive_kid_colt",
+      "breakpoints": true
     }
   ]
 }
