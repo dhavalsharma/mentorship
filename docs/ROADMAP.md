@@ -4,10 +4,11 @@ The order matters more than the contents. Each phase depends on data or
 structure the previous one creates, and two of the most important decisions
 here are about what to build *late*.
 
-**Where we are:** phase 0 partially done (kernel contracts, roster import,
-migrations applied and RLS verified), phase 1 mostly done (saga engine, session
-lifecycle, integration profile, Slack interaction endpoint, and now the
-Postgres store, relay and resolvers). Every piece of the Postgres path exists
+**Where we are:** phase 0 mostly done (kernel contracts, roster import, magic-link
+auth, enrolment/invite/identity-verification, an audit log with its first
+writer, migrations applied and RLS verified), phase 1 mostly done (saga
+engine, session lifecycle, integration profile, Slack interaction endpoint,
+and now the Postgres store, relay and resolvers). Every piece of the Postgres path exists
 and is tested; no process runs them together yet.
 
 ---
@@ -27,12 +28,26 @@ The load-bearing wall. Everything after this assumes it.
       `0004_admin_policy.sql`.
 - [x] Cross-tenant leak test in CI: two orgs, assert zero visibility
       (`packages/db/src/__tests__/rls.test.ts`, including the write path)
-- [ ] Auth adapter (SAML for universities, magic link for small teams)
-- [ ] Identity mapping with a verification flow at enrolment — participant ↔
-      chat member ↔ calendar account. Boring, and the thing that blocks a pilot
-      if it is missing.
-- [ ] Cohorts, enrolment, invite flow
-- [ ] Audit log
+- [x] Auth adapter — magic link only. `packages/auth`: enumeration-safe
+      request/verify against a `MagicLinkStore` port, race-safe consumption
+      (atomic `UPDATE ... WHERE consumed_at IS NULL`), `PostgresMagicLinkStore`
+      backing it (migration `0008`/`0009`, RLS included). SAML needs a real
+      external IdP this sandbox cannot verify against — not attempted.
+      Not wired into any HTTP route yet.
+- [x] Identity mapping with a verification flow at enrolment — participant ↔
+      chat member ↔ calendar account. `packages/enrollment`'s `acceptInvite`:
+      records a verified `identityLinks` row, flips the participant to
+      `enrolled`. Takes the verified identity as given rather than
+      authenticating anyone itself — that's `packages/auth`'s job, called
+      from wherever an HTTP route eventually links the two.
+- [x] Cohorts, enrolment, invite flow — `packages/enrollment`'s
+      `planInvite`/`commitInvite`: one admin, one email, one cohort, one role,
+      deduped against a repeat invite. No schema change; built entirely on
+      `cohorts`/`users`/`participants`/`identityLinks`, which already existed.
+      Not wired into any HTTP route yet.
+- [x] Audit log — the table existed with no writer until now. An optional
+      `AuditSink` records `participant.invited`/`identity.verified` from
+      `packages/enrollment`. Still no reader/admin view over it.
 
 ## Phase 1 — The spine and the session flow
 
@@ -172,7 +187,12 @@ blocked while this waits.
       durable log, not a queue — nothing schedules the sweep yet and there is
       still no admin view to read the table from.
 - [ ] Structured goals; model-drafted, human-edited SMART framing
-- [ ] Read models for the dashboard; the same model serves the scheduled digest
+- [ ] Read models for the dashboard; the same model serves the scheduled digest.
+      A first slice exists: `GET /orgs/:orgId/risk-findings` and
+      `GET /orgs/:orgId/nudges` in `apps/api` (`postgres-reads.ts`) — read-only
+      JSON, no frontend anywhere yet to consume it. No "pending matches" read
+      model, since an approve-gated round has nowhere queryable to read from
+      (Phase 3's own gap, not this one's).
 - [ ] Authorization layer implementing the visibility matrix, **with tests** —
       including that individual feedback is never attributed outside the pair
 - [ ] Fit the health weights against completed-cohort outcomes (ADR-0007)
