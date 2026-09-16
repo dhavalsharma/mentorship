@@ -94,8 +94,10 @@ The load-bearing wall. Everything after this assumes it.
       has the isolation plan, and `SandboxGuard` refuses any recipient not on
       an allowlist so a stray row cannot reach a colleague.
 - [ ] Monitoring: saga instances not advanced in N days; dead-letter review
-- [ ] Nudge rate limits, dedupe keys, quiet hours — build before the first real
-      notification, because retrofitting does not un-spam anyone
+- [x] Nudge rate limits, dedupe keys, quiet hours — build before the first real
+      notification, because retrofitting does not un-spam anyone.
+      `packages/primitives/nudge` — the full gate chain, deterministic and
+      model-proof. Not yet wired to send a real reminder.
 
 ## Phase 2 — Session intelligence
 
@@ -103,8 +105,10 @@ The first real primitive. Build `packages/ai` alongside it: provider
 abstraction, versioned prompt registry, `ai_runs`, structured output with one
 repair retry, and the eval harness.
 
-- [ ] Replace `heuristicSessionIntel` with a schema-bound model call
-- [ ] Keep the evidence spans — they are what makes a claim checkable
+- [ ] Replace `heuristicSessionIntel` with a schema-bound model call — the
+      primitive exists (`packages/primitives/session-intel`); the saga still
+      calls the heuristic
+- [x] Keep the evidence spans — they are what makes a claim checkable
 - [ ] Pending-then-confirm UI; confirmations become eval labels
 - [ ] Risk-flag routing, including the `safeguarding` out-of-band path. **Do not
       ship the flag without the routing.**
@@ -117,15 +121,21 @@ risk, and it is the only one that *generates* the labelled data the others need.
 
 ## Phase 3 — Matching
 
-- [ ] Hard constraints (capacity, timezone overlap, same-manager, opt-outs)
+`packages/primitives/matching` — built, tested, not yet called from any saga.
+
+- [x] Hard constraints (capacity, timezone overlap, same-manager, opt-outs)
 - [ ] Feature scorers: directional skill fit, level-gap band, availability
-      hours, narrative cosine via pgvector
-- [ ] Capacity-aware global assignment — a solver, not greedy. Greedy is how
+      hours, narrative cosine via pgvector — everything but the pgvector
+      narrative-similarity feature is in
+- [x] Capacity-aware global assignment — a solver, not greedy. Greedy is how
       mentee forty gets nobody while mentors sit under capacity.
-- [ ] LLM adjudication on the shortlist only, returning rationale and risk
+- [x] LLM adjudication on the shortlist only, returning rationale and risk
       flags within bounds
-- [ ] Persist every candidate with its features and explanation, for appeals
-- [ ] Constraint-satisfaction and coverage assertions in CI
+- [ ] Persist every candidate with its features and explanation, for appeals —
+      the shape exists (`CandidateRecord`, every pair, winners and losers) and
+      round-trips through `ai_runs`; no dedicated read model or appeal UI yet
+- [ ] Constraint-satisfaction and coverage assertions in CI — covered by
+      `pipeline.test.ts` today; not yet a named CI gate
 
 Deliberately after phase 2: match quality depends on profile depth that does
 not exist on day one, and a mediocre first automated match spends credibility
@@ -134,9 +144,12 @@ blocked while this waits.
 
 ## Phase 4 — Progress, risk, reporting
 
-- [ ] `signals` contributors, cadence adherence first
-- [ ] Composite health score with density-derived confidence
-- [ ] Rules-plus-trend at-risk detection into an admin queue
+`packages/primitives/progress` — built, tested, not yet called from any saga.
+
+- [x] `signals` contributors, cadence adherence first
+- [x] Composite health score with density-derived confidence
+- [x] Rules-plus-trend at-risk detection — `RiskFinding`s carry evidence and a
+      `requiresHuman` flag; no admin queue exists to put them in yet
 - [ ] Structured goals; model-drafted, human-edited SMART framing
 - [ ] Read models for the dashboard; the same model serves the scheduled digest
 - [ ] Authorization layer implementing the visibility matrix, **with tests** —
@@ -145,8 +158,10 @@ blocked while this waits.
 
 ## Phase 5 — Nudge planner and the open-source launch
 
-- [ ] Replace deterministic reminders with the planner plus a bandit over
-      templates — now that there is outcome history to learn from
+- [x] Replace deterministic reminders with the planner plus a bandit over
+      templates — now that there is outcome history to learn from.
+      `packages/primitives/nudge` (`createNudgePlanner`, `ThompsonBandit`).
+      Not yet the thing actually sending a reminder — no saga calls it.
 - [ ] Two or three presets (university, corporate career, founder network) as
       pure policy data. The real test of ADR-0001.
 - [ ] Public API and webhooks
