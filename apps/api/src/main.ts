@@ -45,6 +45,18 @@ const onUnhandled = (reason: string, detail: Record<string, unknown>): void => {
   console.warn(`[slack] ${reason}`, detail);
 };
 
+const ONE_PAIR = [
+  "mentor_email,mentor_name,mentee_email,mentee_name,cadence,mentor_slack,mentee_slack,mentor_tz,mentee_tz",
+  "arjun.rao@wekancode.com,Arjun Rao,priya.menon@wekancode.com,Priya Menon,fortnightly,U-ARJUN,U-PRIYA,+05:30,+05:30",
+].join("\n");
+
+/**
+ * The in-memory world has no notion of org id at all, so this is just a
+ * fixed placeholder to scope the fake `MagicLinkStore` and satisfy
+ * `AuthDeps.orgId` — it never touches RLS or a real tenant.
+ */
+const MEMORY_ORG_ID = "00000000-0000-0000-0000-000000000000";
+
 const deps: ApiServerDeps = DATABASE_URL
   ? postgresDeps(DATABASE_URL)
   : await memoryDeps();
@@ -109,18 +121,6 @@ function postgresDeps(url: string): ApiServerDeps {
     },
   };
 }
-
-const ONE_PAIR = [
-  "mentor_email,mentor_name,mentee_email,mentee_name,cadence,mentor_slack,mentee_slack,mentor_tz,mentee_tz",
-  "arjun.rao@wekancode.com,Arjun Rao,priya.menon@wekancode.com,Priya Menon,fortnightly,U-ARJUN,U-PRIYA,+05:30,+05:30",
-].join("\n");
-
-/**
- * The in-memory world has no notion of org id at all, so this is just a
- * fixed placeholder to scope the fake `MagicLinkStore` and satisfy
- * `AuthDeps.orgId` — it never touches RLS or a real tenant.
- */
-const MEMORY_ORG_ID = "00000000-0000-0000-0000-000000000000";
 
 /**
  * The in-memory testkit `World` predates auth entirely, so there is no
