@@ -37,6 +37,133 @@ closing a fortnight later. It touches no database, no network and no model.
 | Wondering why it is built this way | [docs/decisions/](./docs/decisions/) — one ADR per decision that could have gone the other way |
 | Looking for what is next | [docs/ROADMAP.md](./docs/ROADMAP.md) |
 | Getting it onto your machine and into GitHub | [PUSH-TO-GITHUB.md](./PUSH-TO-GITHUB.md) |
+| Setting up Postgres, Anthropic, Slack, Google or the dashboard | [Environment variables](#environment-variables), below |
+
+---
+
+## Environment variables
+
+Nothing above `pnpm demo` and `pnpm test` needs any of this — those touch no
+database, no network and no model. Everything below is for running the real
+pieces: a real database, a real model, a real Slack workspace, a real Google
+calendar, and the dashboard.
+
+There are two `.env` files, each gitignored with a tracked `.env.example` next
+to it:
+
+| File | Copy from | Used by |
+| --- | --- | --- |
+| `.env` (repo root) | `.env.example` | `apps/api`, `apps/worker`, `pnpm db:*` |
+| `apps/web/.env` | `apps/web/.env.example` | `apps/web` (the dashboard) |
+
+Copy each example, fill in only the variables the thing you're running
+actually needs (the quick reference below says which), and export it into the
+shell or prefix each command — `.env` files are not auto-loaded by these
+scripts.
+
+### Quick reference
+
+| Variable | Where | Needed for |
+| --- | --- | --- |
+| `DATABASE_URL` | root | Anything touching Postgres: `pnpm db:migrate`, `pnpm serve:worker`, `pnpm serve:api` on Postgres, the 48 database-backed tests |
+| `ORG_ID` | root, `apps/web` | Any Postgres-backed command — every table is tenant-scoped, so a run has to say which tenant. `apps/web`'s copy must match `apps/api`/`apps/worker`'s |
+| `TENANT_ROLE` | root | Optional. Names the unprivileged Postgres role a connection runs as, so RLS is actually enforced rather than bypassed by a superuser connection |
+| `ANTHROPIC_API_KEY` | root | Optional. Runs the real model behind session intelligence, matching's adjudication and nudge planning. Every primitive works without it — it degrades to a deterministic fallback |
+| `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | root | `pnpm serve:worker:live`, the Slack side of a live-tenant test |
+| `GOOGLE_ACCESS_TOKEN`, `GOOGLE_CALENDAR_ID` | root | `pnpm serve:worker:live`, the Google side of a live-tenant test |
+| `SANDBOX_ALLOWLIST` | root | Required whenever `SLACK_BOT_TOKEN`/`GOOGLE_ACCESS_TOKEN` are set — every real send is refused unless its recipient is on this comma-separated list |
+| `MENTOR_EMAIL`, `MENTOR_SLACK_ID`, `MENTOR_NAME`, `MENTEE_EMAIL`, `MENTEE_SLACK_ID`, `MENTEE_NAME` | root | `pnpm seed:live-pair` only — seeds one pair to click through live |
+| `PORT` | root | `apps/api`'s listen port (default `8787`) |
+| `WORKER_INTERVAL_MS` | root | `apps/worker`'s poll interval (default `1000`) |
+| `API_ORIGIN` | `apps/web` | Where the dashboard proxies `/api/*` to (default `http://localhost:8787`, i.e. `pnpm serve:api`) |
+
+### PostgreSQL
+
+1. `docker compose up -d db` — starts the Postgres in this repo's
+   `docker-compose.yml` on `localhost:5432` with the credentials already baked
+   into `.env.example`'s default `DATABASE_URL`. Nothing to sign up for.
+2. `pnpm db:migrate` — applies every migration in `packages/db/migrations/` in
+   order, including the row-level-security policies.
+3. Set `DATABASE_URL` in `.env` (the default in `.env.example` already matches
+   step 1's container — change it only if you're pointing at a different
+   Postgres, e.g. a hosted one for a real deployment).
+4. Run `SELECT gen_random_uuid();` once against it (`psql "$DATABASE_URL"`) to
+   get an `ORG_ID`, or just make one up — nothing seeds an `organizations` row
+   for you yet, so any UUID works for local testing.
+
+### Anthropic (the real AI primitives)
+
+Every primitive (`packages/primitives/*`) runs a full, tested deterministic
+fallback with no key at all — this is only for running the actual model.
+
+1. [console.anthropic.com](https://console.anthropic.com) → sign up or sign
+   in.
+2. **Settings → API Keys → Create Key.** Copy it — it's shown once.
+3. Set `ANTHROPIC_API_KEY` in `.env`.
+4. `apps/worker/src/main.ts` and `main-live.ts` both check for this key at
+   boot: present, they construct a real `AnthropicProvider` and log
+   `session intelligence: <model>, ai_runs recorded`; absent, they log
+   `session intelligence: deterministic stub` and run exactly as before. There
+   is no separate flag — the key's presence is the whole switch.
+
+### Slack
+
+Full step-by-step (sandbox workspace, scopes, manifest, tunnel) lives in
+[docs/live-tenant-testing.md](./docs/live-tenant-testing.md#creating-the-slack-app)
+— **read it before setting these**, since it also covers the isolation
+strategy (a separate sandbox workspace, never your real one) these tokens
+assume. In short:
+
+1. Make a free sandbox Slack workspace — not a channel in a real one.
+2. [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** →
+   **From an app manifest** → paste
+   [`docs/slack-app-manifest.json`](./docs/slack-app-manifest.json).
+3. **Install App to Workspace**, then copy the **Bot User OAuth Token**
+   (`OAuth & Permissions`, starts `xoxb-`) into `SLACK_BOT_TOKEN`, and the
+   **Signing Secret** (`Basic Information → App Credentials`) into
+   `SLACK_SIGNING_SECRET`.
+4. Set `SANDBOX_ALLOWLIST` to the exact members/emails this run is allowed to
+   message — every send is refused otherwise (`packages/integrations/src/sandbox.ts`).
+
+### Google Calendar
+
+Also detailed in
+[docs/live-tenant-testing.md](./docs/live-tenant-testing.md#creating-the-google-oauth-client).
+In short:
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → new project
+   → enable the **Google Calendar API**.
+2. **OAuth consent screen** → External → **Testing** → add the account you'll
+   authorize as under **Test users**.
+3. **Credentials → Create Credentials → OAuth client ID → Desktop app.**
+4. Get a token without writing a callback server: the
+   [OAuth 2.0 Playground](https://developers.google.com/oauthplayground) →
+   gear icon → **Use your own OAuth credentials** → your client ID/secret →
+   scope `https://www.googleapis.com/auth/calendar` → **Authorize APIs**,
+   signed in as the test account → **Exchange authorization code for tokens**.
+   Copy the access token into `GOOGLE_ACCESS_TOKEN` — it's short-lived,
+   re-exchange when it expires.
+5. Create a **new, dedicated calendar** on that account (not Primary) —
+   its ID (under **Settings and sharing → Integrate calendar**) is
+   `GOOGLE_CALENDAR_ID`.
+
+### The dashboard (`apps/web`)
+
+No third-party account needed — this only points the dashboard at your own
+already-running `apps/api`.
+
+1. `cp apps/web/.env.example apps/web/.env`.
+2. Leave `API_ORIGIN` as `http://localhost:8787` if `pnpm serve:api` is
+   running on its default port; otherwise match wherever it's actually
+   listening (`PORT` above).
+3. Set `ORG_ID` to the exact same value `apps/api`/`apps/worker` are running
+   with — a mismatch here doesn't error, it just shows a 403 on every table
+   (sessions are tenant-scoped; see `apps/api/src/server.ts`'s
+   `authenticateAdmin`).
+4. `pnpm dev:web`, then sign in at `/login` — since there's no email sending
+   configured yet, the sign-in link is printed to the *`apps/api`* server's
+   console as `[auth] magic link for <email>: <token>`; open
+   `/verify?token=<token>` with that token to complete sign-in.
 
 ---
 
