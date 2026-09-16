@@ -72,6 +72,21 @@ module.exports = {
       to: { path: "^packages/db" },
     },
     {
+      name: "auth-no-direct-db",
+      severity: "error",
+      comment:
+        "Same pattern as workflows, the primitives, and ai: packages/auth " +
+        "depends on db only via its own ./postgres subpath export " +
+        "(packages/auth/src/postgres.ts), so the main @mentorship/auth " +
+        "entry point stays driver-free for callers (like packages/enrollment " +
+        "or a future in-memory test double) that never touch Postgres.",
+      from: {
+        path: "^packages/auth/src",
+        pathNot: "^packages/auth/src/postgres\\.ts$",
+      },
+      to: { path: "^packages/db" },
+    },
+    {
       name: "integrations-no-reverse-deps",
       severity: "error",
       comment:
@@ -89,10 +104,11 @@ module.exports = {
         "Invariant 2: packages/db is reached only from apps/api, " +
         "apps/worker (the 'jobs' runner) and packages/workflows (via its " +
         "postgres.ts seam, covered by the workflows-no-direct-db rule). " +
-        "No other package — core, events, integrations, roster, ai's main " +
-        "entry, or any primitive's main entry — may import it directly.",
+        "No other package — core, events, integrations, roster, enrollment, " +
+        "ai's main entry, auth's main entry, or any primitive's main entry " +
+        "— may import it directly.",
       from: {
-        path: "^packages/(core|events|integrations|roster)",
+        path: "^packages/(core|events|integrations|roster|enrollment)",
       },
       to: { path: "^packages/db" },
     },

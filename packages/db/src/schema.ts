@@ -490,6 +490,39 @@ export const feedback = pgTable(
   ],
 );
 
+/**
+ * Magic-link login tokens. `tokenHash` is a sha256 of the raw token that was
+ * emailed to the user — the raw token itself is never persisted, so a leaked
+ * database dump cannot hand out working login tokens. `consumedAt` null means
+ * the link is still usable; a link is single-use, so verifying it sets this.
+ */
+export const magicLinks = pgTable(
+  "magic_links",
+  {
+    ...orgScoped,
+    userId: uuid("user_id").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("magic_links_token_idx").on(t.orgId, t.tokenHash),
+    index("magic_links_user_idx").on(t.orgId, t.userId, t.createdAt),
+  ],
+);
+
+/** A session issued once a magic link is successfully verified. */
+export const authSessions = pgTable(
+  "auth_sessions",
+  {
+    ...orgScoped,
+    userId: uuid("user_id").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [index("auth_sessions_user_idx").on(t.orgId, t.userId, t.createdAt)],
+);
+
 export const schema = {
   organizations,
   programs,
@@ -518,4 +551,6 @@ export const schema = {
   auditLog,
   rosterImports,
   feedback,
+  magicLinks,
+  authSessions,
 };

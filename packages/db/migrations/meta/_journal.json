@@ -22,6 +22,13 @@
       "when": 1789539575877,
       "tag": "0006_productive_kid_colt",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789540812679,
+      "tag": "0008_auth",
+      "breakpoints": true
     }
   ]
 }
