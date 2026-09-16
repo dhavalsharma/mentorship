@@ -6,3 +6,4 @@ export * from "./fallback.js";
 export * from "./primitive.js";
 export * from "./markdown.js";
 export * from "./adapter.js";
+export * from "./eval.js";
