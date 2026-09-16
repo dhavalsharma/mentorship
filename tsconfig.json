@@ -43,6 +43,9 @@
       "@mentorship/roster": [
         "packages/roster/src/index.ts"
       ],
+      "@mentorship/enrollment": [
+        "packages/enrollment/src/index.ts"
+      ],
       "@mentorship/testkit": [
         "packages/testkit/src/index.ts"
       ],
@@ -69,6 +72,12 @@
       ],
       "@mentorship/ai/postgres": [
         "packages/ai/src/postgres.ts"
+      ],
+      "@mentorship/auth/postgres": [
+        "packages/auth/src/postgres.ts"
+      ],
+      "@mentorship/auth": [
+        "packages/auth/src/index.ts"
       ]
     }
   },

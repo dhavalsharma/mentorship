@@ -14,6 +14,7 @@ export default defineConfig({
       "@mentorship/workflows": p("./packages/workflows/src/index.ts"),
       "@mentorship/integrations": p("./packages/integrations/src/index.ts"),
       "@mentorship/roster": p("./packages/roster/src/index.ts"),
+      "@mentorship/enrollment": p("./packages/enrollment/src/index.ts"),
       "@mentorship/testkit": p("./packages/testkit/src/index.ts"),
       "@mentorship/primitive-matching": p("./packages/primitives/matching/src/index.ts"),
       "@mentorship/primitive-nudge/postgres": p("./packages/primitives/nudge/src/postgres.ts"),
@@ -23,6 +24,8 @@ export default defineConfig({
       "@mentorship/primitive-progress": p("./packages/primitives/progress/src/index.ts"),
       "@mentorship/ai/postgres": p("./packages/ai/src/postgres.ts"),
       "@mentorship/ai": p("./packages/ai/src/index.ts"),
+      "@mentorship/auth/postgres": p("./packages/auth/src/postgres.ts"),
+      "@mentorship/auth": p("./packages/auth/src/index.ts"),
     },
   },
   test: {
