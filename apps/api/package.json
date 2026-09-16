@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@mentorship/auth": "workspace:*",
     "@mentorship/core": "workspace:*",
     "@mentorship/db": "workspace:*",
     "@mentorship/integrations": "workspace:*",

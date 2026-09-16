@@ -9,6 +9,12 @@ import {
   type AgreementResponder,
   type ChatIdentityResolver,
 } from "@mentorship/integrations";
+import {
+  requestMagicLink,
+  verifyMagicLink,
+  verifySession,
+  type MagicLinkStore,
+} from "@mentorship/auth";
 
 /**
  * Deliberately not a framework. The one thing that matters for this route is
@@ -41,6 +47,30 @@ export interface AdminReadsDeps {
   nudges: AdminListQuery;
 }
 
+/**
+ * This server is single-tenant-per-process (see `main.ts`'s `ORG_ID`), so
+ * `orgId` here is the one org this whole process is bound to — the same
+ * pattern `postgres-ports.ts`'s `PostgresPortOptions` already uses for
+ * `identity`/`responder`. `verifySession` is called with *this* `orgId`, not
+ * whatever `:orgId` a request's URL names, so a session issued for a
+ * different org simply cannot resolve here — see `authenticateAdmin` below
+ * for how that becomes the 401-vs-403 split invariant 3 requires.
+ */
+export interface AuthDeps {
+  store: MagicLinkStore;
+  orgId: string;
+  /**
+   * Fires only when `requestMagicLink` actually minted a token (a known
+   * email) — never for an unknown one, so this callback's own invocation is
+   * as enumeration-sensitive as `rawToken` itself and must never be wired to
+   * anything the requester can observe. There is no email-sending
+   * infrastructure in this repo (out of scope to build here); this is the
+   * same "print it for a human to use" seam `apps/worker/src/seed-live-pair.ts`
+   * already uses for a different manual-handoff step.
+   */
+  onMagicLinkIssued?: (email: string, rawToken: string) => void;
+}
+
 export interface ApiServerDeps {
   slackSigningSecret: string;
   identity: ChatIdentityResolver;
@@ -54,7 +84,16 @@ export interface ApiServerDeps {
    * below rather than throwing.
    */
   admin?: AdminReadsDeps;
+  /**
+   * Magic-link auth. Optional for the same reason `admin` is — a caller that
+   * only exercises the Slack route need not supply it — but its *absence*
+   * on the admin routes below is treated as "nobody can authenticate", i.e.
+   * a 401, never as "auth is skipped."
+   */
+  auth?: AuthDeps;
 }
+
+const SESSION_COOKIE = "mentorship_session";
 
 /** A backend that has nothing to say for one of these routes — see `main.ts`. */
 export function notImplementedReads(): AdminListQuery {
@@ -114,10 +153,20 @@ async function route(
     return;
   }
 
+  if (req.method === "POST" && req.url === "/auth/request-link") {
+    await handleRequestLink(req, res, deps);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/auth/verify") {
+    await handleVerify(req, res, deps);
+    return;
+  }
+
   if (req.method === "GET" && req.url) {
     const match = matchAdminRoute(req.url);
     if (match) {
-      await handleAdminList(res, deps, match.orgId, match.limit, match.kind);
+      await handleAdminList(req, res, deps, match.orgId, match.limit, match.kind);
       return;
     }
   }
@@ -147,6 +196,7 @@ function matchAdminRoute(
 }
 
 async function handleAdminList(
+  req: IncomingMessage,
   res: ServerResponse,
   deps: ApiServerDeps,
   orgId: string,
@@ -157,6 +207,13 @@ async function handleAdminList(
     writeJson(res, 400, { error: "orgId must be a UUID" });
     return;
   }
+
+  // Authenticate first, then authorize the specific :orgId — see
+  // `authenticateAdmin` for why a session's own org (not the URL) is the
+  // source of truth, and CLAUDE.md invariant 3 for why that boundary is
+  // non-negotiable even when the orgId in the URL is a real, guessable UUID.
+  const authed = await authenticateAdmin(req, res, deps, orgId);
+  if (!authed) return; // response already written (401 or 403)
 
   if (!deps.admin) {
     writeJson(res, 501, {
@@ -178,6 +235,183 @@ async function handleAdminList(
     }
     throw error;
   }
+}
+
+/**
+ * No valid session -> 401. A valid session whose own org does not match the
+ * `:orgId` in the URL -> 403 rather than proceeding — a session issued for
+ * org A must never read org B's data, even when the URL is guessed
+ * correctly (invariant 3). Because this server is single-tenant-per-process,
+ * `deps.auth.orgId` already *is* the session's org: `verifySession` is
+ * called scoped to it, never to the URL's `orgId`, so the org comparison
+ * below is a plain equality check rather than a second trip to the store.
+ */
+async function authenticateAdmin(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiServerDeps,
+  urlOrgId: string,
+): Promise<{ userId: string } | null> {
+  if (!deps.auth) {
+    writeJson(res, 401, { error: "unauthorized" });
+    return null;
+  }
+
+  const sessionId = readSessionCookie(req);
+  if (!sessionId) {
+    writeJson(res, 401, { error: "unauthorized" });
+    return null;
+  }
+
+  const result = await verifySession({
+    store: deps.auth.store,
+    orgId: deps.auth.orgId,
+    sessionId,
+    now: deps.now ?? (() => new Date()),
+  });
+  if (!result.ok) {
+    writeJson(res, 401, { error: "unauthorized" });
+    return null;
+  }
+
+  if (deps.auth.orgId !== urlOrgId) {
+    writeJson(res, 403, { error: "forbidden" });
+    return null;
+  }
+
+  return { userId: result.userId };
+}
+
+async function handleRequestLink(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiServerDeps,
+): Promise<void> {
+  if (!deps.auth) {
+    writeJson(res, 501, { error: "auth is not configured on this server" });
+    return;
+  }
+
+  let rawBody: string;
+  try {
+    rawBody = await readBody(req, MAX_BODY_BYTES);
+  } catch {
+    res.writeHead(413, { "content-type": "text/plain" });
+    res.end("payload too large");
+    return;
+  }
+
+  let email: unknown;
+  try {
+    email = (JSON.parse(rawBody) as { email?: unknown }).email;
+  } catch {
+    writeJson(res, 400, { error: "invalid JSON body" });
+    return;
+  }
+  if (typeof email !== "string" || email.length === 0) {
+    writeJson(res, 400, { error: "email is required" });
+    return;
+  }
+
+  // `result.rawToken` is enumeration-sensitive — present only for a known
+  // email. It is used here (to fire the observability seam) and then
+  // discarded; it must never influence the response written below, which is
+  // the same shape and status regardless of `result`.
+  const result = await requestMagicLink({
+    store: deps.auth.store,
+    orgId: deps.auth.orgId,
+    email,
+    now: deps.now ?? (() => new Date()),
+  });
+  if (result.rawToken !== null) {
+    deps.auth.onMagicLinkIssued?.(email, result.rawToken);
+  }
+
+  writeJson(res, 200, { requested: true });
+}
+
+async function handleVerify(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiServerDeps,
+): Promise<void> {
+  if (!deps.auth) {
+    writeJson(res, 501, { error: "auth is not configured on this server" });
+    return;
+  }
+
+  let rawBody: string;
+  try {
+    rawBody = await readBody(req, MAX_BODY_BYTES);
+  } catch {
+    res.writeHead(413, { "content-type": "text/plain" });
+    res.end("payload too large");
+    return;
+  }
+
+  let token: unknown;
+  try {
+    token = (JSON.parse(rawBody) as { token?: unknown }).token;
+  } catch {
+    writeJson(res, 400, { error: "invalid JSON body" });
+    return;
+  }
+  if (typeof token !== "string" || token.length === 0) {
+    writeJson(res, 400, { error: "token is required" });
+    return;
+  }
+
+  const result = await verifyMagicLink({
+    store: deps.auth.store,
+    orgId: deps.auth.orgId,
+    rawToken: token,
+    now: deps.now ?? (() => new Date()),
+  });
+  if (!result.ok) {
+    // Unlike the request-link step, a specific reason is safe here: holding
+    // *a* token already proves the caller received the email, so telling
+    // them it expired versus was already used leaks nothing new.
+    writeJson(res, 401, { ok: false, reason: result.reason });
+    return;
+  }
+
+  res.writeHead(200, {
+    "content-type": "application/json",
+    "set-cookie": buildSessionCookie(result.sessionId, req),
+  });
+  res.end(JSON.stringify({ ok: true }));
+}
+
+/**
+ * `Secure` is skipped only for a request that arrived over plain
+ * `http://localhost` (or `127.0.0.1`) — a real deployment always gets it.
+ * This is a deliberate local-testing workaround, not a general rule: `curl`
+ * and a browser talking to `pnpm serve:api` on localhost use plain HTTP, and
+ * a `Secure` cookie is silently dropped by the client over plain HTTP, which
+ * would make local testing of `/auth/verify` look broken. Anything that
+ * reaches this server through a real hostname (or a TLS-terminating proxy in
+ * front of it) gets `Secure` unconditionally.
+ */
+function buildSessionCookie(sessionId: string, req: IncomingMessage): string {
+  const host = req.headers.host ?? "";
+  const isLocalhost = host.startsWith("localhost") || host.startsWith("127.0.0.1");
+  const attrs = [`${SESSION_COOKIE}=${sessionId}`, "HttpOnly", "SameSite=Lax", "Path=/"];
+  if (!isLocalhost) attrs.push("Secure");
+  return attrs.join("; ");
+}
+
+function readSessionCookie(req: IncomingMessage): string | null {
+  const header = req.headers.cookie;
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    const name = part.slice(0, eq).trim();
+    if (name === SESSION_COOKIE) {
+      return decodeURIComponent(part.slice(eq + 1).trim());
+    }
+  }
+  return null;
 }
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {

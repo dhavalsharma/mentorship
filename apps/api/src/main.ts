@@ -1,4 +1,6 @@
 import { createClient } from "@mentorship/db";
+import { PostgresMagicLinkStore } from "@mentorship/auth/postgres";
+import type { MagicLinkStore } from "@mentorship/auth";
 import { commitRosterImport, planRosterImport } from "@mentorship/roster";
 import { bootstrap } from "@mentorship/testkit";
 import {
@@ -80,6 +82,11 @@ function postgresDeps(url: string): ApiServerDeps {
       "saga will advance until one is.\n",
   );
 
+  const magicLinkStore = new PostgresMagicLinkStore(
+    db,
+    TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE },
+  );
+
   return {
     slackSigningSecret: SIGNING_SECRET!,
     identity: new PostgresChatIdentityResolver(options),
@@ -90,6 +97,16 @@ function postgresDeps(url: string): ApiServerDeps {
         listOpenRiskFindings(db, orgId, limit, TENANT_ROLE),
       nudges: (orgId, limit) => listRecentNudges(db, orgId, limit, TENANT_ROLE),
     },
+    auth: {
+      store: magicLinkStore,
+      orgId: ORG_ID,
+      // No email-sending infrastructure in this repo — print it for a human
+      // to paste manually, the same pattern
+      // `apps/worker/src/seed-live-pair.ts` uses elsewhere.
+      onMagicLinkIssued: (email, rawToken) => {
+        console.log(`[auth] magic link for ${email}: ${rawToken}`);
+      },
+    },
   };
 }
 
@@ -97,6 +114,61 @@ const ONE_PAIR = [
   "mentor_email,mentor_name,mentee_email,mentee_name,cadence,mentor_slack,mentee_slack,mentor_tz,mentee_tz",
   "arjun.rao@wekancode.com,Arjun Rao,priya.menon@wekancode.com,Priya Menon,fortnightly,U-ARJUN,U-PRIYA,+05:30,+05:30",
 ].join("\n");
+
+/**
+ * The in-memory world has no notion of org id at all, so this is just a
+ * fixed placeholder to scope the fake `MagicLinkStore` and satisfy
+ * `AuthDeps.orgId` — it never touches RLS or a real tenant.
+ */
+const MEMORY_ORG_ID = "00000000-0000-0000-0000-000000000000";
+
+/**
+ * The in-memory testkit `World` predates auth entirely, so there is no
+ * counterpart to borrow the way `admin` borrows nothing from it either.
+ * This is a minimal Map-based `MagicLinkStore` — no persistence, no RLS,
+ * good enough to exercise `/auth/request-link` and `/auth/verify` against
+ * `pnpm serve:api` without a database.
+ */
+function inMemoryMagicLinkStore(users: { userId: string; email: string }[]): MagicLinkStore {
+  const links = new Map<
+    string,
+    { userId: string; expiresAt: string; consumedAt: string | null }
+  >();
+  const sessions = new Map<
+    string,
+    { userId: string; expiresAt: string; revokedAt: string | null }
+  >();
+  let nextId = 1;
+
+  return {
+    async findUserByEmail(_orgId, email) {
+      const user = users.find((u) => u.email === email);
+      return user ? { userId: user.userId } : null;
+    },
+    async createLink({ userId, tokenHash, expiresAt }) {
+      links.set(tokenHash, { userId, expiresAt, consumedAt: null });
+    },
+    async findUnconsumedLinkByTokenHash(_orgId, tokenHash) {
+      const link = links.get(tokenHash);
+      return link ? { ...link } : null;
+    },
+    async consumeLink(_orgId, tokenHash) {
+      const link = links.get(tokenHash);
+      if (!link || link.consumedAt !== null) return false;
+      link.consumedAt = new Date().toISOString();
+      return true;
+    },
+    async createSession({ userId, expiresAt }) {
+      const sessionId = `sess-${nextId++}`;
+      sessions.set(sessionId, { userId, expiresAt, revokedAt: null });
+      return { sessionId };
+    },
+    async findActiveSession(_orgId, sessionId) {
+      const session = sessions.get(sessionId);
+      return session ? { ...session } : null;
+    },
+  };
+}
 
 async function memoryDeps(): Promise<ApiServerDeps> {
   const harness = bootstrap();
@@ -146,6 +218,16 @@ async function memoryDeps(): Promise<ApiServerDeps> {
     admin: {
       riskFindings: notImplementedReads(),
       nudges: notImplementedReads(),
+    },
+    auth: {
+      store: inMemoryMagicLinkStore([
+        { userId: "user-arjun", email: "arjun.rao@wekancode.com" },
+        { userId: "user-priya", email: "priya.menon@wekancode.com" },
+      ]),
+      orgId: MEMORY_ORG_ID,
+      onMagicLinkIssued: (email, rawToken) => {
+        console.log(`[auth] magic link for ${email}: ${rawToken}`);
+      },
     },
   };
 }
