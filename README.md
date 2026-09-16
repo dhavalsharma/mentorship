@@ -13,9 +13,10 @@ The status of each piece is marked below.
 
 ```bash
 pnpm install
-pnpm test      # 432 tests, ~2s, no database and no model
+pnpm test      # 456 tests, ~3s, no database and no model
 pnpm demo      # full walk-through printed as a readable trace
-pnpm serve:api # the Slack interaction endpoint, live, seeded against testkit
+pnpm serve:api # the Slack + auth endpoints, live, seeded against testkit
+pnpm dev:web   # the admin dashboard at :3000
 pnpm typecheck
 
 # 48 more tests that need a database, skipped above rather than failing

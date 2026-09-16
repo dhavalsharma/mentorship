@@ -5,11 +5,14 @@ structure the previous one creates, and two of the most important decisions
 here are about what to build *late*.
 
 **Where we are:** phase 0 mostly done (kernel contracts, roster import, magic-link
-auth, enrolment/invite/identity-verification, an audit log with its first
-writer, migrations applied and RLS verified), phase 1 mostly done (saga
-engine, session lifecycle, integration profile, Slack interaction endpoint,
-and now the Postgres store, relay and resolvers). Every piece of the Postgres path exists
-and is tested; no process runs them together yet.
+auth wired end to end into `apps/api`, enrolment/invite/identity-verification,
+an audit log with its first writer, migrations applied and RLS verified),
+phase 1 mostly done (saga engine, session lifecycle, integration profile,
+Slack interaction endpoint, and now the Postgres store, relay and resolvers).
+Every piece of the Postgres path exists and is tested; no process runs them
+together yet. Phase 4's dashboard has a real first slice too: `apps/web`, a
+Next.js admin app authenticated against the same magic-link flow, rendering
+the risk-findings and nudges tables live from `apps/api`.
 
 ---
 
@@ -28,12 +31,16 @@ The load-bearing wall. Everything after this assumes it.
       `0004_admin_policy.sql`.
 - [x] Cross-tenant leak test in CI: two orgs, assert zero visibility
       (`packages/db/src/__tests__/rls.test.ts`, including the write path)
-- [x] Auth adapter — magic link only. `packages/auth`: enumeration-safe
-      request/verify against a `MagicLinkStore` port, race-safe consumption
-      (atomic `UPDATE ... WHERE consumed_at IS NULL`), `PostgresMagicLinkStore`
-      backing it (migration `0008`/`0009`, RLS included). SAML needs a real
-      external IdP this sandbox cannot verify against — not attempted.
-      Not wired into any HTTP route yet.
+- [x] Auth adapter — magic link only, deliberately, for now. `packages/auth`:
+      enumeration-safe request/verify against a `MagicLinkStore` port,
+      race-safe consumption (atomic `UPDATE ... WHERE consumed_at IS NULL`),
+      `PostgresMagicLinkStore` backing it (migration `0008`/`0009`, RLS
+      included). Wired into real routes — `POST /auth/request-link` /
+      `POST /auth/verify` on `apps/api` — which now also guard the admin read
+      routes with a session + tenancy check. **SAML is intentionally deferred,
+      not built**: it needs a real external IdP to integrate and test against,
+      which does not exist in this environment; revisit when a pilot actually
+      needs it rather than building it speculatively.
 - [x] Identity mapping with a verification flow at enrolment — participant ↔
       chat member ↔ calendar account. `packages/enrollment`'s `acceptInvite`:
       records a verified `identityLinks` row, flips the participant to
@@ -188,9 +195,10 @@ blocked while this waits.
       still no admin view to read the table from.
 - [ ] Structured goals; model-drafted, human-edited SMART framing
 - [ ] Read models for the dashboard; the same model serves the scheduled digest.
-      A first slice exists: `GET /orgs/:orgId/risk-findings` and
-      `GET /orgs/:orgId/nudges` in `apps/api` (`postgres-reads.ts`) — read-only
-      JSON, no frontend anywhere yet to consume it. No "pending matches" read
+      A first slice exists end to end: `GET /orgs/:orgId/risk-findings` and
+      `GET /orgs/:orgId/nudges` in `apps/api` (`postgres-reads.ts`, now
+      session-authenticated), rendered by `apps/web`'s
+      `/dashboard/{risk-findings,nudges}` pages. No "pending matches" read
       model, since an approve-gated round has nowhere queryable to read from
       (Phase 3's own gap, not this one's).
 - [ ] Authorization layer implementing the visibility matrix, **with tests** —
