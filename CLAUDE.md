@@ -22,7 +22,7 @@ program, on different tooling, without touching `packages/core`.
 
 ```bash
 pnpm install
-pnpm test        # 386 tests, ~2s, no database and no model
+pnpm test        # 391 tests, ~2s, no database and no model
 pnpm demo        # the full session cycle printed as a trace
 pnpm serve:api   # the Slack interaction endpoint, live, seeded against testkit
 pnpm typecheck
@@ -251,7 +251,7 @@ Keep this table honest as you go; it is the first thing a contributor reads.
 | `SlackConversationAdapter`, `SlackDmAdapter`, `GoogleCalendarAdapter` | API shapes real; wired into `pnpm serve:worker:live` through `SandboxGuard`, which throws before any disallowed recipient reaches the transport (`live-registry.test.ts`, no network). **Still never run against an actual workspace** — that is a credentials step, not a code one, per `docs/live-tenant-testing.md`. |
 | `Primitive` contract, `LlmProvider` port, `packages/ai` | Working, tested. `runPrimitive` never throws because the model failed — refusal, timeout or a schema violation surviving one repair all end at the primitive's `fallback`, with the run recorded either way. |
 | Session intelligence | `packages/primitives/session-intel`. Working, tested — evidence spans, `safeguarding`-gates-to-`escalate`, deterministic fallback. Wired into `createWorker`/`bootstrap()`: pass `llm` (an `AnthropicProvider` in production, `ANTHROPIC_API_KEY`-gated; a `DeterministicProvider` in tests) and it replaces `heuristicSessionIntel` at the `extracting` state — omit it and the deterministic stub still runs, so nothing existing had to change. No pending-then-confirm UI or `safeguarding` out-of-band routing yet. |
-| Matching | `packages/primitives/matching`. Working, tested — hard constraints, feature scorers, a capacity-aware min-cost-flow solver (beats greedy on coverage), and a bounded model adjudication pass on the shortlist only (invariant 17). Not yet called from any saga. |
+| Matching | `packages/primitives/matching`. Working, tested — hard constraints, feature scorers, a capacity-aware min-cost-flow solver (beats greedy on coverage), and a bounded model adjudication pass on the shortlist only (invariant 17). `runMatchingRound`/`commitMatchingRound` (`round.ts`) turn assignments into pairings through the same sink shape `RosterSink` already uses (`World` satisfies it unchanged) — a matched pair produces the identical `pair.activated` an imported one does (ADR-0003), auto-committing only when policy has turned `requireAdminApproval` off. Not yet a saga and not yet callable from anywhere real: there is no cohort/enrolment data model yet to build a `MatchingPool` from (phase 0 gap), so this is exercised with hand-built fixtures, not a live cohort. |
 | Nudge | `packages/primitives/nudge`. Working, tested — a deterministic temporal sweep turns absence into deficit events; every send passes a gate chain (mute/snooze, dedupe, privacy, already-booked, rate limit, quiet hours in the recipient's own zone) the model cannot override; a Thompson bandit picks templates. Not yet called from any saga. |
 | Progress & risk | `packages/primitives/progress`. Working, tested — health is a policy-weighted composite over present signals only (ADR-0007); risk is four named, evidence-carrying rules, not a classifier. Not yet called from any saga. |
 | Web app, API, auth, authorization, dashboards | Not started |

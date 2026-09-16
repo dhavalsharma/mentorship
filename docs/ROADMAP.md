@@ -139,6 +139,12 @@ risk, and it is the only one that *generates* the labelled data the others need.
       round-trips through `ai_runs`; no dedicated read model or appeal UI yet
 - [ ] Constraint-satisfaction and coverage assertions in CI — covered by
       `pipeline.test.ts` today; not yet a named CI gate
+- [x] Commit a round into real pairings — `runMatchingRound`/
+      `commitMatchingRound` (`round.ts`) turn assignments into `pair.activated`
+      through the same sink shape `RosterSink` already uses; `World` satisfies
+      it unchanged. Still nothing to call it: no cohort/enrolment model exists
+      yet to build a `MatchingPool` from, so this runs against fixtures, not a
+      live cohort — that gap is phase 0's, not this primitive's.
 
 Deliberately after phase 2: match quality depends on profile depth that does
 not exist on day one, and a mediocre first automated match spends credibility
