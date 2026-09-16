@@ -17,6 +17,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx packages/db/src/migrate-cli.ts",
     "serve:worker": "tsx apps/worker/src/main.ts",
+    "dev:web": "pnpm --filter @mentorship/web dev",
     "serve:worker:live": "tsx apps/worker/src/main-live.ts",
     "seed:live-pair": "tsx apps/worker/src/seed-live-pair.ts",
     "deps:check": "depcruise --config .dependency-cruiser.cjs packages apps"
