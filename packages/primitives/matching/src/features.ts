@@ -1,5 +1,6 @@
 import { overlapHoursPerFortnight } from "./availability.js";
 import { remainingCapacity } from "./policy.js";
+import type { LlmProvider } from "@mentorship/core";
 import type { MatchingPolicy } from "./policy.js";
 import type { MenteeProfile, MentorProfile } from "./types.js";
 
@@ -18,6 +19,15 @@ import type { MenteeProfile, MentorProfile } from "./types.js";
 export interface ScoringContext {
   policy: MatchingPolicy;
   horizonDays: number;
+  /**
+   * Precomputed narrative embeddings, keyed by `participantId`. Optional: a
+   * program with no embedding pipeline configured yet simply runs without
+   * this feature contributing anything. Computing embeddings is a network
+   * call and `scoreCandidate` is synchronous by design (it runs in a nested
+   * loop over every mentor x mentee pair) — a caller resolves this map once,
+   * up front, with `embedNarratives`, and threads it in here.
+   */
+  narrativeEmbeddings?: ReadonlyMap<string, number[]>;
 }
 
 export interface FeatureScore {
@@ -172,12 +182,104 @@ export const programFairness: FeatureScorer = {
   },
 };
 
+/**
+ * Cosine similarity, rescaled from [-1,1] to [0,1] so it sits on the same
+ * scale every other feature score is documented to use — a raw cosine of 0
+ * (orthogonal, i.e. "no signal either way") would otherwise read as the same
+ * number as this codebase's "actively bad" floor, which it is not.
+ *
+ * Mismatched lengths and zero vectors are degenerate inputs, not error cases:
+ * an embedding pipeline that returns a truncated or all-zero vector should
+ * not take matching down with it, so both return the neutral midpoint (0.5)
+ * rather than throwing — the same defensive posture as `skillFitDirectional`
+ * scoring a thin profile as neutral rather than penalising it.
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) return 0.5;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    const ai = a[i] ?? 0;
+    const bi = b[i] ?? 0;
+    dot += ai * bi;
+    normA += ai * ai;
+    normB += bi * bi;
+  }
+  if (normA === 0 || normB === 0) return 0.5;
+  const raw = dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  // Guard float drift pushing raw slightly outside [-1, 1] before rescaling.
+  const clamped = raw < -1 ? -1 : raw > 1 ? 1 : raw;
+  return (clamped + 1) / 2;
+}
+
+/**
+ * Narrative similarity via cosine over precomputed embeddings (roadmap Phase
+ * 3: "narrative cosine via pgvector"). The pgvector storage/query side is
+ * deliberately not built here — nothing in this sandbox can verify it — so
+ * this scorer only consumes whatever embeddings a caller has already resolved
+ * into `ScoringContext.narrativeEmbeddings` via `embedNarratives`. That keeps
+ * the scorer itself synchronous and the embedding call outside the hot loop.
+ *
+ * Not in `DEFAULT_MATCHING_WEIGHTS`: per the policy comment on `weights`, a
+ * scorer with no entry still runs and is still measured — it just contributes
+ * nothing to the score. An embedding is exactly the kind of feature that
+ * should prove itself against real cohorts before it gets to move a match,
+ * per invariant 17.
+ */
+export const narrativeSimilarity: FeatureScorer = {
+  name: "narrative_similarity",
+  score({ mentee, mentor, ctx }) {
+    const embeddings = ctx.narrativeEmbeddings;
+    const menteeVector = embeddings?.get(mentee.participantId);
+    const mentorVector = embeddings?.get(mentor.participantId);
+    if (!menteeVector || !mentorVector) {
+      return { value: 0, explain: "narrative embeddings unavailable for this pair" };
+    }
+    const similarity = cosineSimilarity(menteeVector, mentorVector);
+    return {
+      value: clamp01(similarity),
+      explain: `narrative cosine similarity ${round4(similarity)}`,
+    };
+  },
+};
+
+/**
+ * Resolves embeddings for a batch of participant narratives, once, up front —
+ * outside the synchronous scoring path entirely. The caller passes the
+ * resulting map into `ScoringContext.narrativeEmbeddings` before running the
+ * pipeline.
+ *
+ * Skips blank narratives (nothing useful to embed) and providers with no
+ * `embed` method (not every `LlmProvider` implements it) by returning an
+ * empty map — same "degrade, never throw" posture as everywhere else a
+ * capability might not exist for a given tenant.
+ */
+export async function embedNarratives(
+  llm: LlmProvider,
+  people: { participantId: string; narrative: string }[],
+): Promise<Map<string, number[]>> {
+  if (!llm.embed) return new Map();
+
+  const withNarrative = people.filter((p) => p.narrative.trim().length > 0);
+  if (withNarrative.length === 0) return new Map();
+
+  const { vectors } = await llm.embed(withNarrative.map((p) => p.narrative));
+  const result = new Map<string, number[]>();
+  withNarrative.forEach((person, index) => {
+    const vector = vectors[index];
+    if (vector) result.set(person.participantId, vector);
+  });
+  return result;
+}
+
 export const DEFAULT_FEATURE_SCORERS: readonly FeatureScorer[] = [
   skillFitDirectional,
   levelGapBand,
   availabilityOverlap,
   statedPreference,
   programFairness,
+  narrativeSimilarity,
 ];
 
 /**
