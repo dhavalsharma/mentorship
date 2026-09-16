@@ -18,10 +18,12 @@
     "db:migrate": "tsx packages/db/src/migrate-cli.ts",
     "serve:worker": "tsx apps/worker/src/main.ts",
     "serve:worker:live": "tsx apps/worker/src/main-live.ts",
-    "seed:live-pair": "tsx apps/worker/src/seed-live-pair.ts"
+    "seed:live-pair": "tsx apps/worker/src/seed-live-pair.ts",
+    "deps:check": "depcruise --config .dependency-cruiser.cjs packages apps"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "dependency-cruiser": "18.3.1",
     "drizzle-kit": "^0.30.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
