@@ -162,6 +162,14 @@ export interface DocumentAdapter extends Adapter {
     docRef: string | null;
     title: string;
     markdown: string;
+    /**
+     * Who must be able to edit this doc. Plain emails, because every doc
+     * backend with a sharing model has a different name for the rest of it —
+     * a Drive permission, a Notion guest, a Confluence restriction — and none
+     * of those belong in core (invariant 1). The adapter decides what
+     * "can edit" means for its own vendor.
+     */
+    collaborators: { email: string }[];
     idempotencyKey: string;
   }): Promise<{ docRef: string; url: string; revisionId: string }>;
 }

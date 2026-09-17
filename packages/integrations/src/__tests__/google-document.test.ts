@@ -69,13 +69,19 @@ function applyRequests(text: string, requests: unknown[]): string {
   return out;
 }
 
-function stubTransport(initial: { docText?: string } = {}): {
+function stubTransport(
+  initial: {
+    docText?: string;
+    permissions?: { emailAddress: string; role: string }[];
+  } = {},
+): {
   call: GoogleDocsTransport;
   calls: Call[];
   text: () => string;
 } {
   const calls: Call[] = [];
   let text = initial.docText ?? "";
+  const permissions = [...(initial.permissions ?? [])];
 
   const call: GoogleDocsTransport = async (api, path, init) => {
     calls.push({
@@ -86,6 +92,12 @@ function stubTransport(initial: { docText?: string } = {}): {
       ...(init.query === undefined ? {} : { query: init.query }),
     });
 
+    if (api === "drive" && path.endsWith("/permissions")) {
+      if (init.method === "GET") return { permissions };
+      const body = init.body as { emailAddress: string; role: string };
+      permissions.push({ emailAddress: body.emailAddress, role: body.role });
+      return { id: `perm_${permissions.length}` };
+    }
     if (api === "drive" && path === "/files" && init.method === "GET") {
       return { files: [] };
     }
@@ -108,6 +120,7 @@ function stubTransport(initial: { docText?: string } = {}): {
 }
 
 const CONFIG = { folderId: "folder_1" };
+const PAIR = [{ email: "arjun@x.com" }, { email: "priya@x.com" }];
 
 describe("GoogleDriveDocumentAdapter", () => {
   it("probes the configured folder and reports anchored edits", async () => {
@@ -129,6 +142,7 @@ describe("GoogleDriveDocumentAdapter", () => {
       docRef: null,
       title: "Arjun & Priya — session notes",
       markdown: "first",
+      collaborators: PAIR,
       idempotencyKey: "k1",
     });
 
@@ -150,6 +164,7 @@ describe("GoogleDriveDocumentAdapter", () => {
       docRef: null,
       title: "Blank pair",
       markdown: "first",
+      collaborators: PAIR,
       idempotencyKey: "k1",
     });
 
@@ -180,6 +195,7 @@ describe("GoogleDriveDocumentAdapter", () => {
       docRef: null,
       title: "Arjun & Priya",
       markdown: "x",
+      collaborators: PAIR,
       idempotencyKey: "k1",
     });
 
@@ -196,6 +212,7 @@ describe("GoogleDriveDocumentAdapter", () => {
       docRef: "doc_1",
       title: "t",
       markdown: "## Session 1",
+      collaborators: PAIR,
       idempotencyKey: "k1",
     });
 
@@ -222,6 +239,7 @@ describe("GoogleDriveDocumentAdapter", () => {
       docRef: "doc_1",
       title: "t",
       markdown: "## Session 2\n- action item",
+      collaborators: PAIR,
       idempotencyKey: "k2",
     });
 
@@ -245,6 +263,7 @@ describe("GoogleDriveDocumentAdapter", () => {
         docRef: "doc_1",
         title: "t",
         markdown,
+        collaborators: PAIR,
         idempotencyKey: markdown,
       });
     }
@@ -252,6 +271,123 @@ describe("GoogleDriveDocumentAdapter", () => {
     expect(text()).toBe(
       [MANAGED_START, "three", MANAGED_END, "kept", ""].join("\n"),
     );
+  });
+});
+
+/**
+ * Nothing else grants the pair access to their own doc: the folder's sharing
+ * is whatever the admin happened to set, and `files.copy` does not carry the
+ * guideline doc's permissions onto the copy.
+ */
+describe("sharing the running doc with the pair", () => {
+  const grants = (calls: Call[]) =>
+    calls
+      .filter((c) => c.path.endsWith("/permissions") && c.method === "POST")
+      .map((c) => c.body as { emailAddress: string; role: string; type: string });
+
+  it("grants writer access to every collaborator on a fresh doc", async () => {
+    const { call, calls } = stubTransport();
+
+    await new GoogleDriveDocumentAdapter(call, CONFIG).renderManagedRegion({
+      docRef: null,
+      title: "Fresh",
+      markdown: "first",
+      collaborators: PAIR,
+      idempotencyKey: "k1",
+    });
+
+    expect(grants(calls)).toEqual([
+      { role: "writer", type: "user", emailAddress: "arjun@x.com" },
+      { role: "writer", type: "user", emailAddress: "priya@x.com" },
+    ]);
+    // The one notification a participant should get about this doc.
+    const first = calls.find(
+      (c) => c.path.endsWith("/permissions") && c.method === "POST",
+    );
+    expect(first?.query).toMatchObject({ sendNotificationEmail: "true" });
+  });
+
+  it("does not re-grant someone who already has access", async () => {
+    const { call, calls } = stubTransport({
+      docText: [MANAGED_START, "old", MANAGED_END, ""].join("\n"),
+      permissions: [
+        { emailAddress: "arjun@x.com", role: "writer" },
+        { emailAddress: "admin@x.com", role: "owner" },
+      ],
+    });
+
+    await new GoogleDriveDocumentAdapter(call, CONFIG).renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "next",
+      collaborators: PAIR,
+      idempotencyKey: "k2",
+    });
+
+    expect(
+      calls.some((c) => c.path.endsWith("/permissions") && c.method === "GET"),
+    ).toBe(true);
+    expect(grants(calls)).toEqual([
+      { role: "writer", type: "user", emailAddress: "priya@x.com" },
+    ]);
+  });
+
+  it("sends nothing at all on a later render once both are writers", async () => {
+    const { call, calls } = stubTransport({
+      docText: [MANAGED_START, "old", MANAGED_END, ""].join("\n"),
+    });
+    const adapter = new GoogleDriveDocumentAdapter(call, CONFIG);
+
+    for (const markdown of ["one", "two", "three"]) {
+      await adapter.renderManagedRegion({
+        docRef: "doc_1",
+        title: "t",
+        markdown,
+        collaborators: PAIR,
+        idempotencyKey: markdown,
+      });
+    }
+
+    // Two grants total across three renders — the stub remembers them, so a
+    // repeat render re-sending Drive's access email would show up here.
+    expect(grants(calls)).toHaveLength(2);
+  });
+
+  it("skips an unusable email and still renders for the rest of the pair", async () => {
+    const { call, calls, text } = stubTransport();
+    const warnings: { message: string; detail?: Record<string, unknown> }[] = [];
+
+    await new GoogleDriveDocumentAdapter(call, CONFIG, (message, detail) =>
+      warnings.push({ message, ...(detail ? { detail } : {}) }),
+    ).renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "## Session 1",
+      collaborators: [{ email: "  " }, { email: "not-an-email" }, ...PAIR],
+      idempotencyKey: "k1",
+    });
+
+    expect(grants(calls).map((g) => g.emailAddress)).toEqual([
+      "arjun@x.com",
+      "priya@x.com",
+    ]);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]?.message).toBe("document not shared: unusable email");
+    expect(text()).toContain("## Session 1");
+  });
+
+  it("does not list permissions when there is nobody to grant", async () => {
+    const { call, calls } = stubTransport();
+
+    await new GoogleDriveDocumentAdapter(call, CONFIG).renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "x",
+      collaborators: [],
+      idempotencyKey: "k1",
+    });
+
+    expect(calls.some((c) => c.path.endsWith("/permissions"))).toBe(false);
   });
 });
 

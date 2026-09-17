@@ -554,6 +554,26 @@ describe("the shared document's name", () => {
   });
 });
 
+describe("the shared document's access", () => {
+  /**
+   * The link the saga posts is worth nothing if the pair cannot open what it
+   * points at, and no other step grants them access — the folder's own sharing
+   * is whatever an admin happened to set.
+   */
+  it("renders with both participants as collaborators", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1 });
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h); // reminder
+    await advanceToNextTimer(ctx.h); // session ends, transcript found, doc rendered
+
+    const rendered = ctx.h.recorder.of("document.rendered");
+    expect(rendered.length).toBeGreaterThan(0);
+    for (const call of rendered) {
+      expect(call.detail["collaborators"]).toEqual(["arjun@x.com", "priya@x.com"]);
+    }
+  });
+});
+
 describe("the org's playbook link", () => {
   const PLAYBOOK = "https://docs.google.com/document/d/GUIDE_1/edit";
 

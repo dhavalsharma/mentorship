@@ -13,7 +13,7 @@ The status of each piece is marked below.
 
 ```bash
 pnpm install
-pnpm test      # 522 tests, ~3s, no database and no model
+pnpm test      # 532 tests, ~3s, no database and no model
 pnpm demo      # full walk-through printed as a readable trace
 pnpm serve:api # the Slack + auth endpoints, live, seeded against testkit
 pnpm dev:web   # the admin dashboard at :3000
@@ -177,12 +177,17 @@ writes around it survives (ADR-0005).
 3. Create a folder on that account for the test pairs. Either paste its URL
    (`https://drive.google.com/drive/folders/…`) into `GOOGLE_DRIVE_FOLDER_ID`
    or use its bare id — both are accepted.
-4. Optionally create a guideline doc (the template every pair's document is
+4. You do **not** need to pre-share that folder with the participants: each
+   render grants both of the pair's emails writer access on the doc itself
+   (Drive carries no permissions onto a `files.copy`, so the copy would
+   otherwise be unreachable), skipping anyone who already has it so the
+   access-granted email arrives once rather than after every session.
+5. Optionally create a guideline doc (the template every pair's document is
    copied from) and set `GOOGLE_DRIVE_GUIDELINE_DOC_ID` to its URL or id. A
    configured guideline doc also gets linked from the session proposal, the
    pre-session reminder and the feedback request; unset, those messages are
    unchanged.
-5. Or skip the env vars entirely and set the same three fields from the
+6. Or skip the env vars entirely and set the same three fields from the
    dashboard's **Shared document** page (`/dashboard/settings/document`),
    which stores them per org and takes precedence over the environment.
 

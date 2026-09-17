@@ -162,6 +162,10 @@ verified by design (ADR-0006), so nothing needs to enumerate the directory.
    environment. Leave both unset and the `document` slot stays on the fake. A
    guideline doc is also what the proposal, reminder and feedback-request
    messages link back to — see "Google Drive (running doc)" in the README.
+   The folder needs no manual sharing: each render explicitly grants both
+   participants' emails writer access on the pair's doc, once, and skips
+   anyone who already has it. Both addresses must therefore be real Google
+   accounts — the same ones on `SANDBOX_ALLOWLIST`.
 
 ## Reaching your laptop from Slack
 

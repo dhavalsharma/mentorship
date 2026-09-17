@@ -35,6 +35,13 @@ export type GoogleDriveDocumentConfig = z.infer<
   typeof GoogleDriveDocumentConfigSchema
 >;
 
+/**
+ * Deliberately permissive — this is not validation, it is the difference
+ * between an address Drive can act on and one that would make the whole
+ * permissions call fail. Anything stricter starts rejecting real addresses.
+ */
+const EMAIL = /^[^\s@]+@[^\s@]+$/;
+
 export type GoogleDocsApi = "drive" | "docs";
 
 export type GoogleDocsTransport = (
@@ -82,6 +89,10 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
   constructor(
     private readonly call: GoogleDocsTransport,
     private readonly config: GoogleDriveDocumentConfig,
+    private readonly onWarn?: (
+      message: string,
+      detail?: Record<string, unknown>,
+    ) => void,
   ) {}
 
   async probe(): Promise<AdapterCapabilities> {
@@ -99,14 +110,79 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
     docRef: string | null;
     title: string;
     markdown: string;
+    collaborators: { email: string }[];
     idempotencyKey: string;
   }): Promise<{ docRef: string; url: string; revisionId: string }> {
     const documentId = input.docRef ?? (await this.createDoc(input.title));
+    // Before the write, not after: a render that fails half way should still
+    // have left the pair able to open the doc. Neither the folder's own
+    // sharing nor `files.copy` grants them anything — Drive does not carry a
+    // source document's permissions onto the copy — so without this step the
+    // link the saga posts can go nowhere.
+    await this.grantEditAccess(documentId, input.collaborators);
     const revisionId = await this.writeManagedRegion(documentId, input.markdown);
     return { docRef: documentId, url: documentUrl(documentId), revisionId };
   }
 
   // -------------------------------------------------------------------------
+
+  /**
+   * This effect fires once per extraction, not once per pair, so the existing
+   * permissions are read first and only the genuinely missing grants are sent.
+   * That is not just tidiness about duplicate permission objects: a repeat
+   * `permissions.create` re-sends Drive's "you now have access" email, and a
+   * pair that gets one of those after every session stops reading them.
+   */
+  private async grantEditAccess(
+    documentId: string,
+    collaborators: { email: string }[],
+  ): Promise<void> {
+    const wanted: string[] = [];
+    for (const { email } of collaborators) {
+      const trimmed = email.trim();
+      if (EMAIL.test(trimmed)) {
+        wanted.push(trimmed);
+        continue;
+      }
+      // One unusable address must not cost the pair their session notes: the
+      // doc still renders, and the gap is reported rather than swallowed.
+      this.onWarn?.("document not shared: unusable email", { documentId, email });
+    }
+    if (wanted.length === 0) return;
+
+    const listed = await this.call("drive", `/files/${documentId}/permissions`, {
+      method: "GET",
+      query: {
+        fields: "permissions(id,emailAddress,role)",
+        supportsAllDrives: "true",
+      },
+    });
+    const permissions =
+      (listed["permissions"] as
+        | { emailAddress?: string; role?: string }[]
+        | undefined) ?? [];
+    const already = new Set(
+      permissions
+        .filter((p) => p.role === "writer" || p.role === "owner")
+        .map((p) => (p.emailAddress ?? "").toLowerCase()),
+    );
+
+    for (const email of wanted) {
+      if (already.has(email.toLowerCase())) continue;
+      await this.call("drive", `/files/${documentId}/permissions`, {
+        method: "POST",
+        query: {
+          // The one time this person is told the doc exists. Suppressing it
+          // would leave the Slack link as the only notice they ever get.
+          sendNotificationEmail: "true",
+          supportsAllDrives: "true",
+          fields: "id",
+        },
+        body: { role: "writer", type: "user", emailAddress: email },
+      });
+      already.add(email.toLowerCase());
+    }
+  }
 
   private async createDoc(title: string): Promise<string> {
     // Neither Drive nor Docs accepts an idempotency key, so a retry between
