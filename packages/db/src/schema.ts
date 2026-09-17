@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   index,
@@ -338,6 +339,15 @@ export const events = pgTable(
     index("events_subject_idx").on(t.orgId, t.subjectRef, t.occurredAt),
     index("events_relay_idx").on(t.relayedAt),
     index("events_pending_idx").on(t.relayedAt, t.deadLetteredAt, t.occurredAt),
+    /**
+     * Slack redelivery dedupe, enforced by the database rather than by a
+     * SELECT-then-INSERT that READ COMMITTED lets two transactions both pass
+     * (migration 0011). Partial on `name`: only `notes.submitted` carries a
+     * `noteId`, and every other event must stay free to repeat.
+     */
+    uniqueIndex("events_note_submitted_unique")
+      .on(t.orgId, t.subjectRef, sql`(${t.payload} ->> 'noteId')`)
+      .where(sql`${t.name} = 'notes.submitted'`),
   ],
 );
 
@@ -421,6 +431,8 @@ export const integrationBindings = pgTable(
     adapterId: text("adapter_id").notNull(),
     credentialsRef: text("credentials_ref"),
     capabilities: jsonb("capabilities"),
+    /** Vendor-specific settings the adapter parses itself — see migration 0010. */
+    config: jsonb("config").notNull().default({}),
     probedAt: timestamp("probed_at", { withTimezone: true }),
     lastError: text("last_error"),
   },

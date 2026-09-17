@@ -349,6 +349,39 @@ describe("capability and consent branches", () => {
     expect(await stateOf(ctx.h)).toMatchObject({ name: "confirming" });
   });
 
+  it("asks for the verdict on buttons rather than inviting a typed reply", async () => {
+    const ctx = await setup({ transcription: "none" });
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h);
+    await advanceToNextTimer(ctx.h);
+    await ctx.h.world.submitNotes(ctx.pairingId, "Arjun: I'll review it.");
+    await ctx.h.dispatcher.settle();
+
+    const state = (await stateOf(ctx.h)) as unknown as {
+      name: string;
+      extractionId: string;
+      docUrl: string;
+    };
+    expect(state.name).toBe("confirming");
+
+    // The prompt carries the extraction it is asking about, which is what the
+    // button values are built from — without it a click could not be tied back
+    // to anything, and the only remaining way to read a verdict would be prose.
+    const [prompt] = ctx.h.recorder.of("thread.confirmation");
+    expect(prompt!.detail["extractionId"]).toBe(state.extractionId);
+    expect(prompt!.detail["docUrl"]).toBe(state.docUrl);
+  });
+
+  it("binds the pair's channel so an inbound message can be traced back to them", async () => {
+    const ctx = await setup();
+    const [created] = ctx.h.recorder.of("thread.created");
+    const channelId = `C-${ctx.pairingId}`;
+    expect(created).toBeDefined();
+    expect(ctx.h.world.resolvePairingByChannel(channelId)).toMatchObject({
+      pairingId: ctx.pairingId,
+    });
+  });
+
   it("runs the real session-intel primitive when a model is wired in, not the heuristic", async () => {
     const runs = new NullAiRunSink();
     const ctx = await setup({
@@ -485,5 +518,37 @@ describe("out-of-band changes and terminal conditions", () => {
     expect(confirmed[0]!.payload["unverified"]).toBe(true);
     const renders = ctx.h.recorder.of("document.rendered");
     expect(renders.length).toBeGreaterThan(1);
+  });
+});
+
+describe("the shared document's name", () => {
+  async function firstRenderedTitle(ctx: Ctx): Promise<string> {
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h); // reminder
+    await advanceToNextTimer(ctx.h); // session ends, transcript found, doc rendered
+    return String(ctx.h.recorder.of("document.rendered")[0]!.detail["title"]);
+  }
+
+  it("renders the previously hardcoded title by default", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1 });
+    expect(await firstRenderedTitle(ctx)).toBe("Mentoring — Arjun & Priya — session notes");
+  });
+
+  it("substitutes participant names from a program's own template", async () => {
+    const ctx = await setup({
+      transcriptAvailableAfter: 1,
+      policy: {
+        document: { namingTemplate: "{{menteeName}} x {{mentorName}} · log" },
+      },
+    });
+    expect(await firstRenderedTitle(ctx)).toBe("Priya x Arjun · log");
+  });
+
+  it("leaves an unknown placeholder visible rather than blanking it", async () => {
+    const ctx = await setup({
+      transcriptAvailableAfter: 1,
+      policy: { document: { namingTemplate: "{{pairTitle}} {{typo}}" } },
+    });
+    expect(await firstRenderedTitle(ctx)).toBe("Mentoring — Arjun & Priya {{typo}}");
   });
 });

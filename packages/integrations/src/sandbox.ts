@@ -95,6 +95,7 @@ export function guardConversation(
     // Posting into a thread that `ensureThread` already vetted needs no second
     // check — the thread is the allowlisted set of people.
     postProposal: (input) => inner.postProposal(input),
+    postConfirmation: (input) => inner.postConfirmation(input),
     postMessage: (input) => inner.postMessage(input),
   };
 }

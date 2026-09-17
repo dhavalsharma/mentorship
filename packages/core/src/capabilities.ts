@@ -81,6 +81,21 @@ export interface ConversationAdapter extends Adapter {
     body: string;
     idempotencyKey: string;
   }): Promise<{ messageRef: string }>;
+  /**
+   * A separate method from `postMessage` for the same reason `postProposal` is
+   * one: this message asks a human for a *decision*, and a decision is only
+   * ever read back off a structured control. An adapter without
+   * `interactiveApproval` still has to post something, but the verdict then has
+   * to arrive some other structured way — never by reading "looks good" out of
+   * a reply (invariant 9).
+   */
+  postConfirmation(input: {
+    thread: ThreadRef;
+    extractionId: string;
+    docUrl: string;
+    body: string;
+    idempotencyKey: string;
+  }): Promise<{ messageRef: string }>;
   postMessage(input: {
     thread: ThreadRef;
     body: string;

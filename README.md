@@ -13,13 +13,13 @@ The status of each piece is marked below.
 
 ```bash
 pnpm install
-pnpm test      # 456 tests, ~3s, no database and no model
+pnpm test      # 489 tests, ~3s, no database and no model
 pnpm demo      # full walk-through printed as a readable trace
 pnpm serve:api # the Slack + auth endpoints, live, seeded against testkit
 pnpm dev:web   # the admin dashboard at :3000
 pnpm typecheck
 
-# 48 more tests that need a database, skipped above rather than failing
+# 59 more tests that need a database, skipped above rather than failing
 docker compose up -d db && pnpm db:migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
 ```
@@ -65,12 +65,14 @@ scripts.
 
 | Variable | Where | Needed for |
 | --- | --- | --- |
-| `DATABASE_URL` | root | Anything touching Postgres: `pnpm db:migrate`, `pnpm serve:worker`, `pnpm serve:api` on Postgres, the 48 database-backed tests |
+| `DATABASE_URL` | root | Anything touching Postgres: `pnpm db:migrate`, `pnpm serve:worker`, `pnpm serve:api` on Postgres, the 59 database-backed tests |
 | `ORG_ID` | root, `apps/web` | Any Postgres-backed command — every table is tenant-scoped, so a run has to say which tenant. `apps/web`'s copy must match `apps/api`/`apps/worker`'s |
 | `TENANT_ROLE` | root | Optional. Names the unprivileged Postgres role a connection runs as, so RLS is actually enforced rather than bypassed by a superuser connection |
 | `ANTHROPIC_API_KEY` | root | Optional. Runs the real model behind session intelligence, matching's adjudication and nudge planning. Every primitive works without it — it degrades to a deterministic fallback |
 | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | root | `pnpm serve:worker:live`, the Slack side of a live-tenant test |
 | `GOOGLE_ACCESS_TOKEN`, `GOOGLE_CALENDAR_ID` | root | `pnpm serve:worker:live`, the Google side of a live-tenant test |
+| `GOOGLE_DRIVE_FOLDER_ID` | root | Optional. Turns on the real Google Drive adapter for each pair's running doc. A full folder URL or a bare id. Unset, the `document` slot stays on the fake. An `integration_bindings` row for the org (written by the dashboard's **Shared document** page) wins over this |
+| `GOOGLE_DRIVE_GUIDELINE_DOC_ID` | root | Optional. The template doc copied for each new pair. A full Docs URL or a bare id. Unset, each pair's doc starts blank |
 | `SANDBOX_ALLOWLIST` | root | Required whenever `SLACK_BOT_TOKEN`/`GOOGLE_ACCESS_TOKEN` are set — every real send is refused unless its recipient is on this comma-separated list |
 | `MENTOR_EMAIL`, `MENTOR_SLACK_ID`, `MENTOR_NAME`, `MENTEE_EMAIL`, `MENTEE_SLACK_ID`, `MENTEE_NAME` | root | `pnpm seed:live-pair` only — seeds one pair to click through live |
 | `PORT` | root | `apps/api`'s listen port (default `8787`) |
@@ -124,6 +126,15 @@ assume. In short:
    `SLACK_SIGNING_SECRET`.
 4. Set `SANDBOX_ALLOWLIST` to the exact members/emails this run is allowed to
    message — every send is refused otherwise (`packages/integrations/src/sandbox.ts`).
+5. `pnpm serve:api` exposes two Slack routes, both verified against the raw
+   body with the same `SLACK_SIGNING_SECRET`: `POST /slack/interactions` for
+   button clicks (agreement options, and now Confirm/Edit on an extraction)
+   and `POST /slack/events` for the Events API, which is how typed notes get
+   in. The manifest points both at a placeholder tunnel host; the events URL
+   also needs `im:history` / `mpim:history` and the `message.im` /
+   `message.mpim` subscriptions, which the manifest now declares. No new
+   environment variable — the second route reuses the secret the first one
+   already needed.
 
 ### Google Calendar
 
@@ -146,6 +157,35 @@ In short:
 5. Create a **new, dedicated calendar** on that account (not Primary) —
    its ID (under **Settings and sharing → Integrate calendar**) is
    `GOOGLE_CALENDAR_ID`.
+
+### Google Drive (running doc)
+
+Each pair gets one document, created in a folder you nominate and rewritten
+after every session — only inside its managed region, so anything the pair
+writes around it survives (ADR-0005).
+
+1. Same Cloud project as above → also enable the **Google Drive API** and the
+   **Google Docs API**.
+2. Drive and Docs need **broader scopes than Calendar alone**. Re-run the
+   OAuth Playground exchange with all three, not just the calendar one:
+   `https://www.googleapis.com/auth/calendar`,
+   `https://www.googleapis.com/auth/documents`,
+   `https://www.googleapis.com/auth/drive.file`. A calendar-only token will
+   fail on the first document write. `drive.file` is deliberate: it grants
+   access only to files this app creates or is explicitly given, not to the
+   account's whole Drive.
+3. Create a folder on that account for the test pairs. Either paste its URL
+   (`https://drive.google.com/drive/folders/…`) into `GOOGLE_DRIVE_FOLDER_ID`
+   or use its bare id — both are accepted.
+4. Optionally create a guideline doc (the template every pair's document is
+   copied from) and set `GOOGLE_DRIVE_GUIDELINE_DOC_ID` to its URL or id.
+5. Or skip the env vars entirely and set the same three fields from the
+   dashboard's **Shared document** page (`/dashboard/settings/document`),
+   which stores them per org and takes precedence over the environment.
+
+**This adapter has never been run against a live Drive or Docs account.** The
+API shapes are real and the managed-region logic is tested against a stubbed
+transport, but the first live run is still ahead.
 
 ### The dashboard (`apps/web`)
 

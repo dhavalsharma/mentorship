@@ -38,3 +38,10 @@ export interface Nudge {
 }
 
 export type VerifyFailureReason = "not_found" | "expired" | "already_used";
+
+/** The body `/orgs/:orgId/settings/document` returns and accepts. */
+export interface DocumentSettings {
+  folderId: string | null;
+  guidelineDocId: string | null;
+  namingTemplate: string;
+}

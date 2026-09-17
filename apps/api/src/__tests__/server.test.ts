@@ -64,7 +64,10 @@ describe("the interaction route over a real socket", () => {
     close = undefined;
   });
 
-  async function listen(harness: Harness): Promise<string> {
+  async function listen(
+    harness: Harness,
+    opts: { withEvents?: boolean } = {},
+  ): Promise<string> {
     const server = createServer({
       slackSigningSecret: SIGNING_SECRET,
       identity: {
@@ -80,6 +83,26 @@ describe("the interaction route over a real socket", () => {
             input.optionId,
           ),
       },
+      ...(opts.withEvents
+        ? {
+            slackEvents: {
+              locator: {
+                resolveByChannel: async (channelId) =>
+                  harness.world.resolvePairingByChannel(channelId),
+              },
+              notes: {
+                submit: async (input) => {
+                  await harness.world.submitNotes(
+                    input.pairingId,
+                    input.body,
+                    input.noteId,
+                  );
+                  await harness.dispatcher.settle();
+                },
+              },
+            },
+          }
+        : {}),
       // The harness runs on a fake clock, so signature verification has to
       // check requests against that same clock rather than the wall clock.
       now: () => harness.clock.now(),
@@ -129,6 +152,48 @@ describe("the interaction route over a real socket", () => {
 
     const [instance] = await harness.engine.instances();
     expect((instance!.state as { name: string }).name).toBe("armed");
+  });
+
+  it("answers the Events API url_verification handshake with the challenge", async () => {
+    const { harness } = await seed();
+    const base = await listen(harness, { withEvents: true });
+    const body = JSON.stringify({
+      type: "url_verification",
+      challenge: "3eZbrw1aB",
+    });
+    const timestamp = String(Math.floor(harness.clock.now().getTime() / 1000));
+    const res = await fetch(`${base}/slack/events`, {
+      method: "POST",
+      headers: {
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": sign(body, timestamp),
+        "content-type": "application/json",
+      },
+      body,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ challenge: "3eZbrw1aB" });
+  });
+
+  it("401s an unsigned events request before reading the challenge", async () => {
+    const { harness } = await seed();
+    const base = await listen(harness, { withEvents: true });
+    const res = await fetch(`${base}/slack/events`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "url_verification", challenge: "x" }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("404s /slack/events when no events backend is wired", async () => {
+    const { harness } = await seed();
+    const base = await listen(harness);
+    const res = await fetch(`${base}/slack/events`, {
+      method: "POST",
+      body: "{}",
+    });
+    expect(res.status).toBe(404);
   });
 
   it("401s a request signed with the wrong secret, over the wire", async () => {

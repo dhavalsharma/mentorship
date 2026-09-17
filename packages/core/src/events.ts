@@ -15,6 +15,13 @@ export const EVENT_NAMES = [
   "pair.activated",
   "pair.paused",
   "pair.ended",
+  /**
+   * The pair's conversation thread was resolved. Carried as an event rather
+   * than a return value (invariant 5) so the channel id lands durably on the
+   * pairing — which is the only way an inbound message from that channel can
+   * be attributed back to a pair.
+   */
+  "pair.thread_bound",
   // activity (fact)
   "session.proposed",
   "session.scheduled",

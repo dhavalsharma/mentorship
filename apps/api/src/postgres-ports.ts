@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   recordResponse,
   subjectRef,
@@ -10,6 +10,7 @@ import {
   agreements,
   events,
   identityLinks,
+  pairings,
   participants,
   withTenant,
   type Db,
@@ -17,6 +18,9 @@ import {
 import type {
   AgreementResponder,
   ChatIdentityResolver,
+  ExtractionResponder,
+  NotesSink,
+  PairingLocator,
 } from "@mentorship/integrations";
 
 /**
@@ -162,6 +166,192 @@ export class PostgresAgreementResponder implements AgreementResponder {
             participantId: input.participantId,
             kind: input.kind,
             optionId: input.optionId ?? null,
+          },
+        });
+      },
+      role === undefined ? {} : { role },
+    );
+  }
+}
+
+/**
+ * Channel id -> pair, off the `thread_ref` the `pair.thread_bound` projection
+ * writes. This is the whole reason that event exists: a Slack message event
+ * carries a channel and a user and nothing else, and guessing the pair from
+ * the user alone is wrong the moment a mentor has two mentees.
+ */
+export class PostgresPairingLocator implements PairingLocator {
+  constructor(private readonly options: PostgresPortOptions) {}
+
+  async resolveByChannel(
+    channelId: string,
+  ): Promise<{ pairingId: string; participantIds: string[] } | null> {
+    const { db, orgId, role } = this.options;
+    return withTenant(
+      db,
+      orgId,
+      async (tx) => {
+        const [row] = await tx
+          .select({
+            id: pairings.id,
+            mentorParticipantId: pairings.mentorParticipantId,
+            menteeParticipantId: pairings.menteeParticipantId,
+          })
+          .from(pairings)
+          .where(
+            and(
+              eq(pairings.orgId, orgId),
+              sql`${pairings.threadRef}->>'channelId' = ${channelId}`,
+            ),
+          )
+          .limit(1);
+        if (!row) return null;
+        return {
+          pairingId: row.id,
+          participantIds: [row.mentorParticipantId, row.menteeParticipantId],
+        };
+      },
+      role === undefined ? {} : { role },
+    );
+  }
+}
+
+/**
+ * Raw text in, one `notes.submitted` row out. Nothing is inferred from the
+ * body and nothing is derived from it — see the note at the top of
+ * `integrations/slack/events.ts`.
+ */
+export class PostgresNotesSink implements NotesSink {
+  constructor(private readonly options: PostgresPortOptions) {}
+
+  async submit(input: {
+    pairingId: string;
+    participantId: string;
+    noteId: string;
+    body: string;
+  }): Promise<void> {
+    const { db, orgId, role } = this.options;
+    const at = this.options.now?.() ?? new Date();
+    const subject = subjectRef("pairing", input.pairingId);
+
+    await withTenant(
+      db,
+      orgId,
+      async (tx) => {
+        // Slack retries an event it did not hear a 200 for within three
+        // seconds, and the retry carries the same `ts`. Without a dedupe a
+        // slow response turns one note into two, and the second one is
+        // extracted as if the participant said it all again.
+        //
+        // The dedupe is the database's, not this function's: a
+        // SELECT-then-INSERT here runs under READ COMMITTED, so the retry and
+        // the original can both find nothing and both insert. The partial
+        // unique index `events_note_submitted_unique` (migration 0011) makes
+        // the second one a no-op instead — the same shape as every other
+        // redelivery guard in this schema (`nudges_dedupe_unique` and
+        // friends).
+        //
+        // No conflict target: the index is partial and keyed on a payload
+        // expression, which Drizzle's `target` cannot name, and `events` has
+        // no other unique constraint an insert of this shape can hit (`id` is
+        // server-generated). Same bare form the projector already uses.
+        await tx
+          .insert(events)
+          .values({
+            orgId,
+            name: "notes.submitted",
+            subjectRef: subject,
+            occurredAt: at,
+            payload: {
+              noteId: input.noteId,
+              participantId: input.participantId,
+              body: input.body,
+            },
+          })
+          .onConflictDoNothing();
+      },
+      role === undefined ? {} : { role },
+    );
+  }
+}
+
+/**
+ * The Confirm/Edit counterpart to `PostgresAgreementResponder`.
+ *
+ * The pairing is resolved from the append-only log rather than taken from the
+ * button's payload: Slack signs the request, but the value inside it is
+ * whatever we put there, and a verdict recorded against a pair on the strength
+ * of a client-echoed id is one schema change away from being recorded against
+ * the wrong one. The `extractions` table would be the natural home for this
+ * lookup, but nothing writes it yet — `extraction.completed` is the fact that
+ * exists, so that is what is read.
+ */
+export class PostgresExtractionResponder implements ExtractionResponder {
+  constructor(private readonly options: PostgresPortOptions) {}
+
+  async respond(input: {
+    extractionId: string;
+    participantId: string;
+    kind: "confirm" | "edit";
+  }): Promise<void> {
+    const { db, orgId, role } = this.options;
+    const at = this.options.now?.() ?? new Date();
+
+    await withTenant(
+      db,
+      orgId,
+      async (tx) => {
+        const [completed] = await tx
+          .select({ subjectRef: events.subjectRef })
+          .from(events)
+          .where(
+            and(
+              eq(events.orgId, orgId),
+              eq(events.name, "extraction.completed"),
+              sql`${events.payload}->>'extractionId' = ${input.extractionId}`,
+            ),
+          )
+          .orderBy(desc(events.occurredAt))
+          .limit(1);
+        if (!completed) {
+          throw new Error(`unknown extraction ${input.extractionId}`);
+        }
+        const pairingId = completed.subjectRef.split(":")[1] ?? "";
+
+        // A verdict is only a verdict from someone whose session this was.
+        const [pairing] = await tx
+          .select({
+            mentorParticipantId: pairings.mentorParticipantId,
+            menteeParticipantId: pairings.menteeParticipantId,
+          })
+          .from(pairings)
+          .where(and(eq(pairings.orgId, orgId), eq(pairings.id, pairingId)))
+          .limit(1);
+        if (
+          !pairing ||
+          ![
+            pairing.mentorParticipantId,
+            pairing.menteeParticipantId,
+          ].includes(input.participantId)
+        ) {
+          throw new Error(
+            `${input.participantId} is not a party to extraction ${input.extractionId}`,
+          );
+        }
+
+        await tx.insert(events).values({
+          orgId,
+          name:
+            input.kind === "edit"
+              ? "extraction.edited"
+              : "extraction.confirmed",
+          // Addressed to the pairing, because that is what the saga's
+          // `confirming` state waits on.
+          subjectRef: completed.subjectRef,
+          occurredAt: at,
+          payload: {
+            extractionId: input.extractionId,
+            participantId: input.participantId,
           },
         });
       },

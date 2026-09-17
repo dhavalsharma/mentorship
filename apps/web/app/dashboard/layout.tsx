@@ -45,6 +45,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
           <Link href="/dashboard/nudges" className="text-sm hover:underline">
             Nudges
           </Link>
+          <Link
+            href="/dashboard/settings/document"
+            className="text-sm hover:underline"
+          >
+            Shared document
+          </Link>
         </nav>
       </header>
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">{children}</main>

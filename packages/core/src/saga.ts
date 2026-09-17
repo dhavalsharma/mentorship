@@ -28,6 +28,17 @@ export type Effect =
       body: string;
     }
   | { type: "post_message"; body: string }
+  /**
+   * Prompts for the human verdict on an extraction. Distinct from
+   * `post_message` because the verdict must come back off a button, not out of
+   * prose — see `ConversationAdapter.postConfirmation`.
+   */
+  | {
+      type: "request_confirmation";
+      extractionId: string;
+      docUrl: string;
+      body: string;
+    }
   | { type: "dm"; participantId: string; body: string }
   | {
       type: "create_calendar_event";

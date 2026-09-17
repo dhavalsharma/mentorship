@@ -5,6 +5,7 @@ import {
   hoursBetween,
   nextDueAt,
   proposeSlots,
+  renderNamingTemplate,
   resolveAgreement,
   roundsExhausted,
   subjectRef,
@@ -96,6 +97,24 @@ function pairingIdFrom(ref: string): string {
 
 function participantIds(pair: PairContext): string[] {
   return pair.participants.map((p) => p.participantId);
+}
+
+/**
+ * The running doc's name. Roles are looked up by the names `policy.roles`
+ * uses rather than by position, because a program may define neither
+ * "mentor" nor "mentee" — a template that names a role this program does not
+ * have keeps its placeholder, which is `renderNamingTemplate`'s documented
+ * behaviour and better than an empty title.
+ */
+function documentTitle(pair: PairContext): string {
+  const byRole = (role: string): string | undefined =>
+    pair.participants.find((p) => p.role === role)?.displayName;
+  const vars: Record<string, string> = { pairTitle: pair.title };
+  const mentor = byRole("mentor");
+  const mentee = byRole("mentee");
+  if (mentor !== undefined) vars["mentorName"] = mentor;
+  if (mentee !== undefined) vars["menteeName"] = mentee;
+  return renderNamingTemplate(pair.policy.document.namingTemplate, vars);
 }
 
 /**
@@ -622,7 +641,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
               effects: [
                 {
                   type: "render_document",
-                  title: `${pair.title} — session notes`,
+                  title: documentTitle(pair),
                   markdown,
                 },
               ],
@@ -632,11 +651,12 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
           // stage === 'render'
           const docUrl =
             (input.event.payload["url"] as string | undefined) ?? "(doc)";
+          const extractionId = state.extractionId ?? input.event.id;
           return {
             next: {
               name: "confirming",
               sessionId: state.sessionId,
-              extractionId: state.extractionId ?? input.event.id,
+              extractionId,
               docUrl,
               verdicts: {},
             },
@@ -650,8 +670,14 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
             ),
             effects: [
               {
-                type: "post_message",
-                body: `I've written up the session here: ${docUrl}\n\nLooks right? Confirm, or tell me what to change and I'll update the doc.`,
+                // Buttons, not prose. A typed "looks good" is not a verdict
+                // this saga will ever read (invariant 9) — the verdict comes
+                // back as `extraction.confirmed` / `extraction.edited` from a
+                // structured click.
+                type: "request_confirmation",
+                extractionId,
+                docUrl,
+                body: `I've written up the session here: ${docUrl}\n\nLooks right? Confirm below, or open the doc to edit it.`,
               },
             ],
           };
@@ -699,7 +725,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
               },
               {
                 type: "render_document",
-                title: `${pair.title} — session notes`,
+                title: documentTitle(pair),
                 markdown:
                   "> Not reviewed by either participant — treat as unverified.\n",
               },
