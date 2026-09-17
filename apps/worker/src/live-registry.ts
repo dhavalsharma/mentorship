@@ -96,6 +96,10 @@ export function buildLiveRegistry(
       ? new GoogleDriveDocumentAdapter(
           httpGoogleDocsTransport(env.GOOGLE_ACCESS_TOKEN!),
           docConfig,
+          // A participant silently missing from their own doc is exactly the
+          // kind of gap a live run is meant to surface, so the adapter's skip
+          // path is given somewhere to say so.
+          (message, detail) => console.warn(`[warn] ${message}`, detail ?? ""),
         )
       : new FakeDocument(recorder),
   );

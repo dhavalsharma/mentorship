@@ -320,6 +320,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           docRef: docRefs.get(pair.pairingId) ?? pair.documentRef ?? null,
           title: effect.title,
           markdown: effect.markdown,
+          collaborators: pair.participants.map((p) => ({ email: p.email })),
           idempotencyKey: ctx.key,
         });
         docRefs.set(pair.pairingId, rendered.docRef);

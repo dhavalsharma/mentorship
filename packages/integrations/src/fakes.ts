@@ -321,6 +321,7 @@ export class FakeDocument implements DocumentAdapter {
   readonly id = "fake-doc";
   private revision = 0;
   private readonly docs = new Map<string, string>();
+  private readonly shares = new Map<string, Set<string>>();
 
   constructor(readonly recorder: Recorder) {}
 
@@ -332,17 +333,27 @@ export class FakeDocument implements DocumentAdapter {
     docRef: string | null;
     title: string;
     markdown: string;
+    collaborators: { email: string }[];
     idempotencyKey: string;
   }): Promise<{ docRef: string; url: string; revisionId: string }> {
     const docRef = input.docRef ?? `doc_${this.docs.size + 1}`;
     // Only the managed region is replaced; anything the pair wrote outside the
     // markers is left alone.
     this.docs.set(docRef, wrapManaged(input.markdown));
+    // A set, not a list: the real adapter grants access once and skips anyone
+    // who already has it, so a fake that accumulated duplicates on every
+    // re-render would let a regression there pass unnoticed here.
+    const shared = this.shares.get(docRef) ?? new Set<string>();
+    for (const { email } of input.collaborators) {
+      if (email.trim().length > 0) shared.add(email);
+    }
+    this.shares.set(docRef, shared);
     this.revision++;
     this.recorder.record("document.rendered", {
       docRef,
       title: input.title,
       bytes: input.markdown.length,
+      collaborators: [...shared],
     });
     return {
       docRef,
@@ -353,6 +364,11 @@ export class FakeDocument implements DocumentAdapter {
 
   read(docRef: string): string | undefined {
     return this.docs.get(docRef);
+  }
+
+  /** Emails granted edit access to `docRef`, in the order first granted. */
+  sharedWith(docRef: string): string[] {
+    return [...(this.shares.get(docRef) ?? [])];
   }
 }
 
