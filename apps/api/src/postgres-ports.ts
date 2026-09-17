@@ -239,34 +239,36 @@ export class PostgresNotesSink implements NotesSink {
       orgId,
       async (tx) => {
         // Slack retries an event it did not hear a 200 for within three
-        // seconds, and the retry carries the same `ts`. Without this check a
+        // seconds, and the retry carries the same `ts`. Without a dedupe a
         // slow response turns one note into two, and the second one is
         // extracted as if the participant said it all again.
-        const [seen] = await tx
-          .select({ id: events.id })
-          .from(events)
-          .where(
-            and(
-              eq(events.orgId, orgId),
-              eq(events.name, "notes.submitted"),
-              eq(events.subjectRef, subject),
-              sql`${events.payload}->>'noteId' = ${input.noteId}`,
-            ),
-          )
-          .limit(1);
-        if (seen) return;
-
-        await tx.insert(events).values({
-          orgId,
-          name: "notes.submitted",
-          subjectRef: subject,
-          occurredAt: at,
-          payload: {
-            noteId: input.noteId,
-            participantId: input.participantId,
-            body: input.body,
-          },
-        });
+        //
+        // The dedupe is the database's, not this function's: a
+        // SELECT-then-INSERT here runs under READ COMMITTED, so the retry and
+        // the original can both find nothing and both insert. The partial
+        // unique index `events_note_submitted_unique` (migration 0011) makes
+        // the second one a no-op instead — the same shape as every other
+        // redelivery guard in this schema (`nudges_dedupe_unique` and
+        // friends).
+        //
+        // No conflict target: the index is partial and keyed on a payload
+        // expression, which Drizzle's `target` cannot name, and `events` has
+        // no other unique constraint an insert of this shape can hit (`id` is
+        // server-generated). Same bare form the projector already uses.
+        await tx
+          .insert(events)
+          .values({
+            orgId,
+            name: "notes.submitted",
+            subjectRef: subject,
+            occurredAt: at,
+            payload: {
+              noteId: input.noteId,
+              participantId: input.participantId,
+              body: input.body,
+            },
+          })
+          .onConflictDoNothing();
       },
       role === undefined ? {} : { role },
     );
