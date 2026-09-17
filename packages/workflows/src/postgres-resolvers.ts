@@ -28,7 +28,11 @@ import {
   withTenant,
   type Db,
 } from "@mentorship/db";
-import { documentUrl, type IntegrationRegistry } from "@mentorship/integrations";
+import {
+  documentUrl,
+  GoogleDriveDocumentConfigSchema,
+  type IntegrationRegistry,
+} from "@mentorship/integrations";
 
 /**
  * `SagaResolvers` over the real tables — the Postgres counterpart to
@@ -148,12 +152,12 @@ export class PostgresSagaResolvers implements SagaResolvers {
           ),
         )
         .limit(1);
-      const guidelineDocId = (
-        documentBinding?.config as { guidelineDocId?: unknown } | null
-      )?.guidelineDocId;
+      const documentConfig = GoogleDriveDocumentConfigSchema.partial().safeParse(
+        documentBinding?.config ?? {},
+      );
       const playbookUrl =
-        typeof guidelineDocId === "string" && guidelineDocId.length > 0
-          ? documentUrl(guidelineDocId)
+        documentConfig.success && documentConfig.data.guidelineDocId
+          ? documentUrl(documentConfig.data.guidelineDocId)
           : null;
 
       const byId = new Map(people.map((p) => [p.participantId, p]));
