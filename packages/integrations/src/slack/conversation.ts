@@ -120,6 +120,56 @@ export class SlackConversationAdapter implements ConversationAdapter {
     return { messageRef: String(res["ts"]) };
   }
 
+  async postConfirmation(input: {
+    thread: ThreadRef;
+    extractionId: string;
+    docUrl: string;
+    body: string;
+    idempotencyKey: string;
+  }): Promise<{ messageRef: string }> {
+    const res = await this.call("chat.postMessage", {
+      channel: input.thread.channelId,
+      thread_ts: input.thread.threadId ?? undefined,
+      text: input.body,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: input.body } },
+        {
+          type: "actions",
+          // Same scheme as `postProposal`: the action id names the decision and
+          // its subject, and the value repeats it as a structured blob, so the
+          // interaction handler never has to read a verdict out of prose.
+          elements: [
+            {
+              type: "button",
+              style: "primary",
+              text: { type: "plain_text", text: "Confirm" },
+              action_id: `confirm_extraction:${input.extractionId}`,
+              value: JSON.stringify({
+                extractionId: input.extractionId,
+                kind: "confirm",
+              }),
+            },
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Edit" },
+              action_id: `edit_extraction:${input.extractionId}`,
+              value: JSON.stringify({
+                extractionId: input.extractionId,
+                kind: "edit",
+              }),
+              url: input.docUrl,
+            },
+          ],
+        },
+      ],
+      metadata: {
+        event_type: "extraction_pending",
+        event_payload: { extraction_id: input.extractionId },
+      },
+    });
+    return { messageRef: String(res["ts"]) };
+  }
+
   async postMessage(input: {
     thread: ThreadRef;
     body: string;

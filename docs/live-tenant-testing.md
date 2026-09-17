@@ -93,9 +93,13 @@ SANDBOX_ALLOWLIST=dhavals+mentor@wekancode.com,dhavals+mentee@wekancode.com,U-�
 ```
 
 Slack bot scopes, and no more: `chat:write` to post, `im:write` for the private
-feedback DMs, `mpim:write` for the per-pair group DM. Skip `users:read` — the
-identity mapping is explicit and verified by design (ADR-0006), so nothing
-needs to enumerate the directory.
+feedback DMs, `mpim:write` for the per-pair group DM, and — for the inbound
+half — `im:history` and `mpim:history`, which are what let the bot *read* the
+messages in the conversations it is already part of. Both history scopes are
+required by the `message.im` / `message.mpim` event subscriptions and by
+nothing else; without them the Events API delivers no message text and typed
+notes never arrive. Skip `users:read` — the identity mapping is explicit and
+verified by design (ADR-0006), so nothing needs to enumerate the directory.
 
 ### Creating the Slack app
 
@@ -104,10 +108,12 @@ needs to enumerate the directory.
    **From an app manifest** → select the sandbox workspace → paste
    [`docs/slack-app-manifest.json`](./slack-app-manifest.json). It sets the
    three scopes above and nothing else.
-3. The manifest's `request_url` is a placeholder. Interactivity can be left
-   pointed at it for now — Slack only re-verifies the URL when you save a
-   change to it, so fix it once the tunnel (below) is actually up, from
-   **Features → Interactivity & Shortcuts**.
+3. Both `request_url`s in the manifest are placeholders. Interactivity can be
+   left pointed at its one for now — Slack only re-verifies that URL when you
+   save a change to it, so fix it once the tunnel (below) is actually up, from
+   **Features → Interactivity & Shortcuts**. Event Subscriptions is different:
+   Slack verifies its Request URL the moment you save it, so leave that one
+   until the tunnel is up (below).
 4. **Install App to Workspace**. Copy the **Bot User OAuth Token** (starts
    `xoxb-`) from **OAuth & Permissions**, and the **Signing Secret** from
    **Basic Information → App Credentials**.
@@ -157,7 +163,8 @@ needs to enumerate the directory.
 
 ## Reaching your laptop from Slack
 
-Interactivity needs a public HTTPS URL. A tunnel to `pnpm serve:api` is enough:
+Interactivity and the Events API both need a public HTTPS URL. One tunnel to
+`pnpm serve:api` serves both — same host, two paths:
 
 ```bash
 pnpm serve:api                      # localhost:8787
@@ -165,10 +172,21 @@ cloudflared tunnel --url http://localhost:8787
 ```
 
 Point the app's Interactivity Request URL at
-`https://<tunnel>/slack/interactions`. Signature verification is already
-implemented and already tested, and it is what makes exposing the endpoint
-acceptable: an unverified interaction endpoint lets anyone book meetings for
-anyone.
+`https://<tunnel>/slack/interactions`, and, under **Features → Event
+Subscriptions**, the Events Request URL at `https://<tunnel>/slack/events`.
+Saving the second one makes Slack POST a one-off
+`{"type":"url_verification","challenge":"…"}`; the endpoint answers it itself,
+so the green **Verified** appears with nothing to do by hand — but note it is
+answered *after* the signature check, so a wrong `SLACK_SIGNING_SECRET` shows
+up here as a failed verification rather than later as silence. Then, under
+**Subscribe to bot events**, add `message.im` and `message.mpim` and reinstall
+the app when Slack asks.
+
+Signature verification is already implemented and already tested on both
+routes, and it is what makes exposing them acceptable: an unverified
+interaction endpoint lets anyone book meetings for anyone, and an unverified
+events endpoint lets anyone write whatever they like into a pair's session
+record.
 
 ## Running it
 

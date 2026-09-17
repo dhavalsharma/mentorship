@@ -651,11 +651,12 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
           // stage === 'render'
           const docUrl =
             (input.event.payload["url"] as string | undefined) ?? "(doc)";
+          const extractionId = state.extractionId ?? input.event.id;
           return {
             next: {
               name: "confirming",
               sessionId: state.sessionId,
-              extractionId: state.extractionId ?? input.event.id,
+              extractionId,
               docUrl,
               verdicts: {},
             },
@@ -669,8 +670,14 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
             ),
             effects: [
               {
-                type: "post_message",
-                body: `I've written up the session here: ${docUrl}\n\nLooks right? Confirm, or tell me what to change and I'll update the doc.`,
+                // Buttons, not prose. A typed "looks good" is not a verdict
+                // this saga will ever read (invariant 9) — the verdict comes
+                // back as `extraction.confirmed` / `extraction.edited` from a
+                // structured click.
+                type: "request_confirmation",
+                extractionId,
+                docUrl,
+                body: `I've written up the session here: ${docUrl}\n\nLooks right? Confirm below, or open the doc to edit it.`,
               },
             ],
           };

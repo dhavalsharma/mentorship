@@ -6,6 +6,7 @@ import {
   verifySlackSignature,
   type AgreementResponder,
   type ChatIdentityResolver,
+  type ExtractionResponder,
   type SlackInteractionDeps,
 } from "@mentorship/integrations";
 
@@ -34,6 +35,26 @@ function acceptBody(overrides: Record<string, unknown> = {}): string {
     ],
   };
   return `payload=${encodeURIComponent(JSON.stringify(payload))}`;
+}
+
+function confirmBody(kind: "confirm" | "edit" = "confirm"): string {
+  const payload = {
+    user: { id: "U-ARJUN" },
+    actions: [
+      {
+        action_id: `${kind}_extraction:ext_001`,
+        value: JSON.stringify({ extractionId: "ext_001", kind }),
+      },
+    ],
+  };
+  return `payload=${encodeURIComponent(JSON.stringify(payload))}`;
+}
+
+function signedHeaders(body: string): Record<string, string> {
+  return {
+    "x-slack-request-timestamp": TS,
+    "x-slack-signature": sign(body),
+  };
 }
 
 describe("verifySlackSignature", () => {
@@ -101,6 +122,7 @@ describe("verifySlackSignature", () => {
 describe("parseSlackInteractionPayload", () => {
   it("parses an accept button click", () => {
     expect(parseSlackInteractionPayload(acceptBody())).toEqual({
+      target: "agreement",
       slackUserId: "U-ARJUN",
       actionId: "agree:agr_001:opt_2",
       agreementId: "agr_001",
@@ -122,12 +144,48 @@ describe("parseSlackInteractionPayload", () => {
       }),
     )}`;
     expect(parseSlackInteractionPayload(body)).toEqual({
+      target: "agreement",
       slackUserId: "U-PRIYA",
       actionId: "counter:agr_001",
       agreementId: "agr_001",
       kind: "counter",
       optionId: undefined,
     });
+  });
+
+  it("parses a confirm click", () => {
+    expect(parseSlackInteractionPayload(confirmBody())).toEqual({
+      target: "extraction",
+      slackUserId: "U-ARJUN",
+      actionId: "confirm_extraction:ext_001",
+      extractionId: "ext_001",
+      kind: "confirm",
+    });
+  });
+
+  it("parses an edit click", () => {
+    expect(parseSlackInteractionPayload(confirmBody("edit"))).toEqual({
+      target: "extraction",
+      slackUserId: "U-ARJUN",
+      actionId: "edit_extraction:ext_001",
+      extractionId: "ext_001",
+      kind: "edit",
+    });
+  });
+
+  it("returns null when an extraction click carries an unrecognised kind", () => {
+    const body = `payload=${encodeURIComponent(
+      JSON.stringify({
+        user: { id: "U-ARJUN" },
+        actions: [
+          {
+            action_id: "confirm_extraction:ext_001",
+            value: JSON.stringify({ extractionId: "ext_001", kind: "accept" }),
+          },
+        ],
+      }),
+    )}`;
+    expect(parseSlackInteractionPayload(body)).toBeNull();
   });
 
   it("returns null for a body with no payload field", () => {
@@ -301,6 +359,70 @@ describe("handleSlackInteraction", () => {
     expect(onUnhandled).toHaveBeenCalledWith(
       "counter_not_implemented",
       expect.objectContaining({ agreementId: "agr_001" }),
+    );
+  });
+
+  it("writes the verdict and acks 200 for a confirm click", async () => {
+    const extractions: ExtractionResponder = { respond: vi.fn(async () => {}) };
+    const body = confirmBody();
+    const d = deps({ extractions });
+    const res = await handleSlackInteraction(
+      { rawBody: body, headers: signedHeaders(body) },
+      d,
+    );
+    expect(res.status).toBe(200);
+    expect(extractions.respond).toHaveBeenCalledWith({
+      extractionId: "ext_001",
+      participantId: "prt_arjun",
+      kind: "confirm",
+    });
+    // The agreement path must not have been touched by an extraction click.
+    expect(d.responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("records an edit as its own verdict", async () => {
+    const extractions: ExtractionResponder = { respond: vi.fn(async () => {}) };
+    const body = confirmBody("edit");
+    const res = await handleSlackInteraction(
+      { rawBody: body, headers: signedHeaders(body) },
+      deps({ extractions }),
+    );
+    expect(res.status).toBe(200);
+    expect(extractions.respond).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "edit" }),
+    );
+  });
+
+  it("acks a confirm click and records it when no extraction responder is wired", async () => {
+    const onUnhandled = vi.fn();
+    const body = confirmBody();
+    const res = await handleSlackInteraction(
+      { rawBody: body, headers: signedHeaders(body) },
+      deps({ onUnhandled }),
+    );
+    expect(res.status).toBe(200);
+    expect(onUnhandled).toHaveBeenCalledWith(
+      "extraction_responder_not_configured",
+      expect.objectContaining({ extractionId: "ext_001" }),
+    );
+  });
+
+  it("500s when the extraction responder rejects a non-party", async () => {
+    const onUnhandled = vi.fn();
+    const extractions: ExtractionResponder = {
+      respond: vi.fn(async () => {
+        throw new Error("prt_arjun is not a party to extraction ext_001");
+      }),
+    };
+    const body = confirmBody();
+    const res = await handleSlackInteraction(
+      { rawBody: body, headers: signedHeaders(body) },
+      deps({ extractions, onUnhandled }),
+    );
+    expect(res.status).toBe(500);
+    expect(onUnhandled).toHaveBeenCalledWith(
+      "extraction_respond_failed",
+      expect.objectContaining({ extractionId: "ext_001" }),
     );
   });
 

@@ -349,6 +349,39 @@ describe("capability and consent branches", () => {
     expect(await stateOf(ctx.h)).toMatchObject({ name: "confirming" });
   });
 
+  it("asks for the verdict on buttons rather than inviting a typed reply", async () => {
+    const ctx = await setup({ transcription: "none" });
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h);
+    await advanceToNextTimer(ctx.h);
+    await ctx.h.world.submitNotes(ctx.pairingId, "Arjun: I'll review it.");
+    await ctx.h.dispatcher.settle();
+
+    const state = (await stateOf(ctx.h)) as unknown as {
+      name: string;
+      extractionId: string;
+      docUrl: string;
+    };
+    expect(state.name).toBe("confirming");
+
+    // The prompt carries the extraction it is asking about, which is what the
+    // button values are built from — without it a click could not be tied back
+    // to anything, and the only remaining way to read a verdict would be prose.
+    const [prompt] = ctx.h.recorder.of("thread.confirmation");
+    expect(prompt!.detail["extractionId"]).toBe(state.extractionId);
+    expect(prompt!.detail["docUrl"]).toBe(state.docUrl);
+  });
+
+  it("binds the pair's channel so an inbound message can be traced back to them", async () => {
+    const ctx = await setup();
+    const [created] = ctx.h.recorder.of("thread.created");
+    const channelId = `C-${ctx.pairingId}`;
+    expect(created).toBeDefined();
+    expect(ctx.h.world.resolvePairingByChannel(channelId)).toMatchObject({
+      pairingId: ctx.pairingId,
+    });
+  });
+
   it("runs the real session-intel primitive when a model is wired in, not the heuristic", async () => {
     const runs = new NullAiRunSink();
     const ctx = await setup({

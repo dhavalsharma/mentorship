@@ -6,6 +6,9 @@ import { bootstrap } from "@mentorship/testkit";
 import {
   PostgresAgreementResponder,
   PostgresChatIdentityResolver,
+  PostgresExtractionResponder,
+  PostgresNotesSink,
+  PostgresPairingLocator,
 } from "./postgres-ports.js";
 import { listOpenRiskFindings, listRecentNudges } from "./postgres-reads.js";
 import { PostgresDocumentSettingsStore } from "./postgres-settings.js";
@@ -104,6 +107,11 @@ function postgresDeps(url: string): ApiServerDeps {
     slackSigningSecret: SIGNING_SECRET!,
     identity: new PostgresChatIdentityResolver(options),
     responder: new PostgresAgreementResponder(options),
+    extractions: new PostgresExtractionResponder(options),
+    slackEvents: {
+      locator: new PostgresPairingLocator(options),
+      notes: new PostgresNotesSink(options),
+    },
     onUnhandled,
     admin: {
       riskFindings: (orgId, limit) =>
@@ -214,6 +222,27 @@ async function memoryDeps(): Promise<ApiServerDeps> {
           input.kind,
           input.optionId,
         ),
+    },
+    extractions: {
+      respond: (input) => harness.world.respondToExtraction(input),
+    },
+    slackEvents: {
+      locator: {
+        resolveByChannel: async (channelId) =>
+          harness.world.resolvePairingByChannel(channelId),
+      },
+      notes: {
+        submit: async (input) => {
+          await harness.world.submitNotes(
+            input.pairingId,
+            input.body,
+            input.noteId,
+          );
+          // Unlike Postgres, nothing drains an outbox here — the dispatcher is
+          // the relay, so the saga moves as soon as it settles.
+          await harness.dispatcher.settle();
+        },
+      },
     },
     onUnhandled,
     // The in-memory `World` predates `risk_findings`/`nudges` — those are
