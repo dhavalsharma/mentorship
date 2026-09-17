@@ -13,13 +13,13 @@ The status of each piece is marked below.
 
 ```bash
 pnpm install
-pnpm test      # 456 tests, ~3s, no database and no model
+pnpm test      # 489 tests, ~3s, no database and no model
 pnpm demo      # full walk-through printed as a readable trace
 pnpm serve:api # the Slack + auth endpoints, live, seeded against testkit
 pnpm dev:web   # the admin dashboard at :3000
 pnpm typecheck
 
-# 48 more tests that need a database, skipped above rather than failing
+# 59 more tests that need a database, skipped above rather than failing
 docker compose up -d db && pnpm db:migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
 ```
@@ -65,7 +65,7 @@ scripts.
 
 | Variable | Where | Needed for |
 | --- | --- | --- |
-| `DATABASE_URL` | root | Anything touching Postgres: `pnpm db:migrate`, `pnpm serve:worker`, `pnpm serve:api` on Postgres, the 48 database-backed tests |
+| `DATABASE_URL` | root | Anything touching Postgres: `pnpm db:migrate`, `pnpm serve:worker`, `pnpm serve:api` on Postgres, the 59 database-backed tests |
 | `ORG_ID` | root, `apps/web` | Any Postgres-backed command — every table is tenant-scoped, so a run has to say which tenant. `apps/web`'s copy must match `apps/api`/`apps/worker`'s |
 | `TENANT_ROLE` | root | Optional. Names the unprivileged Postgres role a connection runs as, so RLS is actually enforced rather than bypassed by a superuser connection |
 | `ANTHROPIC_API_KEY` | root | Optional. Runs the real model behind session intelligence, matching's adjudication and nudge planning. Every primitive works without it — it degrades to a deterministic fallback |
@@ -124,6 +124,15 @@ assume. In short:
    `SLACK_SIGNING_SECRET`.
 4. Set `SANDBOX_ALLOWLIST` to the exact members/emails this run is allowed to
    message — every send is refused otherwise (`packages/integrations/src/sandbox.ts`).
+5. `pnpm serve:api` exposes two Slack routes, both verified against the raw
+   body with the same `SLACK_SIGNING_SECRET`: `POST /slack/interactions` for
+   button clicks (agreement options, and now Confirm/Edit on an extraction)
+   and `POST /slack/events` for the Events API, which is how typed notes get
+   in. The manifest points both at a placeholder tunnel host; the events URL
+   also needs `im:history` / `mpim:history` and the `message.im` /
+   `message.mpim` subscriptions, which the manifest now declares. No new
+   environment variable — the second route reuses the secret the first one
+   already needed.
 
 ### Google Calendar
 

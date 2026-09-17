@@ -108,6 +108,26 @@ export class FakeConversation implements ConversationAdapter {
     return { messageRef: `msg_${this.seen.size}` };
   }
 
+  async postConfirmation(input: {
+    thread: ThreadRef;
+    extractionId: string;
+    docUrl: string;
+    body: string;
+    idempotencyKey: string;
+  }): Promise<{ messageRef: string }> {
+    if (this.seen.has(input.idempotencyKey)) {
+      return { messageRef: `dup:${input.idempotencyKey}` };
+    }
+    this.seen.add(input.idempotencyKey);
+    this.recorder.record("thread.confirmation", {
+      channel: input.thread.channelId,
+      extractionId: input.extractionId,
+      docUrl: input.docUrl,
+      body: input.body,
+    });
+    return { messageRef: `msg_${this.seen.size}` };
+  }
+
   async postMessage(input: {
     thread: ThreadRef;
     body: string;

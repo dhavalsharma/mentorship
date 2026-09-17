@@ -11,13 +11,23 @@
   },
   "oauth_config": {
     "scopes": {
-      "bot": ["chat:write", "im:write", "mpim:write"]
+      "bot": [
+        "chat:write",
+        "im:write",
+        "mpim:write",
+        "im:history",
+        "mpim:history"
+      ]
     }
   },
   "settings": {
     "interactivity": {
       "is_enabled": true,
       "request_url": "https://REPLACE-WITH-YOUR-TUNNEL/slack/interactions"
+    },
+    "event_subscriptions": {
+      "request_url": "https://REPLACE-WITH-YOUR-TUNNEL/slack/events",
+      "bot_events": ["message.im", "message.mpim"]
     },
     "org_deploy_enabled": false,
     "socket_mode_enabled": false,

@@ -73,6 +73,8 @@ interface StoredPairing {
   cadenceOverride: Record<string, unknown> | null;
   lastSessionAt: string | null;
   documentRef: string | null;
+  /** The `pairings.thread_ref` column, narrowed to the part anything reads. */
+  threadChannelId: string | null;
   notes: string | null;
 }
 
@@ -94,6 +96,8 @@ export class World implements SagaResolvers, RosterSink {
   readonly sessions = new Map<string, StoredSession>();
   readonly feedback: { sessionId: string; participantId: string; score: number }[] =
     [];
+  private readonly extractionPairings = new Map<string, string>();
+  private readonly submittedNoteIds = new Set<string>();
   private readonly ids: IdFactory;
 
   constructor(
@@ -238,6 +242,7 @@ export class World implements SagaResolvers, RosterSink {
       cadenceOverride: input.cadenceOverride,
       lastSessionAt: null,
       documentRef: null,
+      threadChannelId: null,
       notes: input.notes,
     });
     return { pairingId };
@@ -346,6 +351,25 @@ export class World implements SagaResolvers, RosterSink {
       const pairing = this.pairings.get(pairingId);
       const docRef = event.payload["docRef"];
       if (pairing && typeof docRef === "string") pairing.documentRef = docRef;
+      return;
+    }
+
+    if (event.name === "pair.thread_bound") {
+      const pairing = this.pairings.get(idFromRef(event.subjectRef));
+      const channelId = event.payload["channelId"];
+      if (pairing && typeof channelId === "string") {
+        pairing.threadChannelId = channelId;
+      }
+      return;
+    }
+
+    if (event.name === "extraction.completed") {
+      // In Postgres this is the `extractions` row; here it is the one thing
+      // anything needs off it — which pair a confirmation belongs to.
+      const extractionId = event.payload["extractionId"];
+      if (typeof extractionId === "string") {
+        this.extractionPairings.set(extractionId, idFromRef(event.subjectRef));
+      }
     }
   }
 
@@ -380,12 +404,25 @@ export class World implements SagaResolvers, RosterSink {
     });
   }
 
-  async submitNotes(pairingId: string, body: string): Promise<void> {
+  /**
+   * `noteId` is supplied when the note came from a real surface that has its
+   * own stable id for it (a Slack message `ts`), which is also what makes a
+   * redelivery of that message a no-op rather than a second note.
+   */
+  async submitNotes(
+    pairingId: string,
+    body: string,
+    noteId?: string,
+  ): Promise<void> {
+    const id = noteId ?? this.ids.next("not");
+    const key = `${pairingId}:${id}`;
+    if (this.submittedNoteIds.has(key)) return;
+    this.submittedNoteIds.add(key);
     await this.log.emit({
       orgId: this.orgId,
       name: "notes.submitted",
       subjectRef: subjectRef("pairing", pairingId),
-      payload: { noteId: this.ids.next("not"), body },
+      payload: { noteId: id, body },
     });
   }
 
@@ -400,6 +437,60 @@ export class World implements SagaResolvers, RosterSink {
       subjectRef: subjectRef("pairing", pairingId),
       payload: { participantId },
     });
+  }
+
+  /**
+   * What the Slack interaction endpoint does with a Confirm/Edit click: resolve
+   * the extraction to its pair, check the clicker is a party to it, write the
+   * verdict. The Postgres counterpart reads the same two facts out of the
+   * event log and the `pairings` row.
+   */
+  async respondToExtraction(input: {
+    extractionId: string;
+    participantId: string;
+    kind: "confirm" | "edit";
+  }): Promise<void> {
+    const pairingId = this.extractionPairings.get(input.extractionId);
+    if (!pairingId) {
+      throw new Error(`unknown extraction ${input.extractionId}`);
+    }
+    const pairing = this.pairings.get(pairingId);
+    if (
+      !pairing ||
+      ![pairing.mentorParticipantId, pairing.menteeParticipantId].includes(
+        input.participantId,
+      )
+    ) {
+      throw new Error(
+        `${input.participantId} is not a party to extraction ${input.extractionId}`,
+      );
+    }
+    await this.log.emit({
+      orgId: this.orgId,
+      name: input.kind === "edit" ? "extraction.edited" : "extraction.confirmed",
+      subjectRef: subjectRef("pairing", pairingId),
+      payload: {
+        extractionId: input.extractionId,
+        participantId: input.participantId,
+      },
+    });
+  }
+
+  /** Channel id -> the pair whose thread it is, from `pair.thread_bound`. */
+  resolvePairingByChannel(
+    channelId: string,
+  ): { pairingId: string; participantIds: string[] } | null {
+    const pairing = [...this.pairings.values()].find(
+      (p) => p.threadChannelId === channelId,
+    );
+    if (!pairing) return null;
+    return {
+      pairingId: pairing.pairingId,
+      participantIds: [
+        pairing.mentorParticipantId,
+        pairing.menteeParticipantId,
+      ],
+    };
   }
 
   async submitFeedback(

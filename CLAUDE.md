@@ -22,13 +22,13 @@ program, on different tooling, without touching `packages/core`.
 
 ```bash
 pnpm install
-pnpm test        # 456 tests, ~3s, no database and no model
+pnpm test        # 489 tests, ~3s, no database and no model
 pnpm demo        # the full session cycle printed as a trace
 pnpm serve:api   # the Slack + auth endpoints, live, seeded against testkit
 pnpm dev:web     # the admin dashboard at :3000, proxying to apps/api at :8787
 pnpm typecheck
 
-# the database-backed tests — 48 more, skipped above rather than failing
+# the database-backed tests — 59 more, skipped above rather than failing
 docker compose up -d db && pnpm db:migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
 
@@ -250,6 +250,7 @@ Keep this table honest as you go; it is the first thing a contributor reads.
 | `createWorker` + `pnpm serve:worker` | Working, tested end to end and run by hand: a `pair.activated` row becomes a proposed, agreed and booked session on Postgres, driven by two real signed Slack clicks. Bound to the fake adapters, because Slack and Google have still never run live. |
 | `PostgresSagaStore` | Working, tested — round-trip, optimistic concurrency under a real race, and parity with `MemorySagaStore`. Imported from `@mentorship/workflows/postgres` so the default entry stays driver-free. |
 | Slack interaction endpoint, mounted behind `apps/api` (`node:http`) | Working, tested over a real socket with a genuine HMAC signature and against the actual saga. Runs on Postgres when DATABASE_URL is set (verified identity links, response and outbox event in one transaction) or on the in-memory world without one. **No relay drains the outbox yet**, so on Postgres the click is recorded and the saga does not move. "Suggest another" acks but does not open a modal (ADR-0004's open gap). |
+| Slack Events listener (notes capture) + Confirm/Edit buttons | `POST /slack/events` on `apps/api`, and `ConversationAdapter.postConfirmation`. Working, tested — same raw-body signature discipline as the interaction route, the `url_verification` handshake answered only *after* that check, bot messages and message subtypes ignored, the Slack `ts` carried as `noteId` so a retry is a no-op (proven against Postgres), and a message from someone who is not a party to the pair refused rather than recorded as their notes. The verdict on an extraction now comes off **Confirm**/**Edit** buttons (`confirm_extraction:<id>` / `edit_extraction:<id>`) through the same "write the fact, 200, let the relay advance the saga" path as an agreement click — prose is never read as a verdict (invariant 9), and a typed "confirmed" in the thread is only ever a note. A message is attributed to a pair by channel id, which reaches `pairings.thread_ref` via the new `pair.thread_bound` event and its projection; without a bound thread the message is acked and dropped. **Never run against an actual workspace** — the scopes (`im:history`, `mpim:history`) and subscriptions (`message.im`, `message.mpim`) are declared in `docs/slack-app-manifest.json` and unexercised, and on Postgres the relay gap above applies here too: the note is recorded and the saga does not move until a relay drains it. |
 | `SlackConversationAdapter`, `SlackDmAdapter`, `GoogleCalendarAdapter` | API shapes real; wired into `pnpm serve:worker:live` through `SandboxGuard`, which throws before any disallowed recipient reaches the transport (`live-registry.test.ts`, no network). **Still never run against an actual workspace** — that is a credentials step, not a code one, per `docs/live-tenant-testing.md`. |
 | `Primitive` contract, `LlmProvider` port, `packages/ai` | Working, tested. `runPrimitive` never throws because the model failed — refusal, timeout or a schema violation surviving one repair all end at the primitive's `fallback`, with the run recorded either way. |
 | Session intelligence | `packages/primitives/session-intel`. Working, tested — evidence spans, `safeguarding`-gates-to-`escalate`, deterministic fallback. Wired into `createWorker`/`bootstrap()`: pass `llm` (an `AnthropicProvider` in production, `ANTHROPIC_API_KEY`-gated; a `DeterministicProvider` in tests) and it replaces `heuristicSessionIntel` at the `extracting` state — omit it and the deterministic stub still runs, so nothing existing had to change. No pending-then-confirm UI or `safeguarding` out-of-band routing yet. |

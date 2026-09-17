@@ -10,13 +10,28 @@ import { verifySlackSignature } from "./verify.js";
  * successful click ends up showing the user an error.
  */
 
-export interface ParsedSlackAction {
-  slackUserId: string;
-  actionId: string;
-  agreementId: string;
-  kind: "accept" | "counter";
-  optionId?: string;
-}
+/**
+ * Two kinds of structured decision arrive here, and they are kept apart by
+ * `target` rather than by inspecting which id happens to be present: a third
+ * button type should fail to compile until it is handled, not fall through a
+ * chain of `if (agreementId)`.
+ */
+export type ParsedSlackAction =
+  | {
+      target: "agreement";
+      slackUserId: string;
+      actionId: string;
+      agreementId: string;
+      kind: "accept" | "counter";
+      optionId?: string;
+    }
+  | {
+      target: "extraction";
+      slackUserId: string;
+      actionId: string;
+      extractionId: string;
+      kind: "confirm" | "edit";
+    };
 
 /**
  * `rawBody` is `application/x-www-form-urlencoded` with a single `payload`
@@ -55,15 +70,30 @@ export function parseSlackInteractionPayload(
   if (typeof value !== "object" || value === null) return null;
   const v = value as Record<string, unknown>;
 
-  const agreementId = v["agreementId"];
+  const actionId = String(action["action_id"]);
   const kind = v["kind"];
+
+  const extractionId = v["extractionId"];
+  if (typeof extractionId === "string") {
+    if (kind !== "confirm" && kind !== "edit") return null;
+    return {
+      target: "extraction",
+      slackUserId,
+      actionId,
+      extractionId,
+      kind,
+    };
+  }
+
+  const agreementId = v["agreementId"];
   if (typeof agreementId !== "string") return null;
   if (kind !== "accept" && kind !== "counter") return null;
 
   const optionId = v["optionId"];
   return {
+    target: "agreement",
     slackUserId,
-    actionId: String(action["action_id"]),
+    actionId,
     agreementId,
     kind,
     optionId: typeof optionId === "string" ? optionId : undefined,
@@ -84,6 +114,20 @@ export interface AgreementResponder {
   }): Promise<void>;
 }
 
+/**
+ * The sibling of `AgreementResponder` for the other decision a participant is
+ * asked to make. Kept separate rather than folded into one responder: the two
+ * write different facts about different subjects, and the agreement resolver's
+ * five outcomes have nothing to say about an extraction.
+ */
+export interface ExtractionResponder {
+  respond(input: {
+    extractionId: string;
+    participantId: string;
+    kind: "confirm" | "edit";
+  }): Promise<void>;
+}
+
 export interface SlackWebhookRequest {
   rawBody: string;
   headers: Record<string, string | undefined>;
@@ -92,12 +136,20 @@ export interface SlackWebhookRequest {
 export interface SlackWebhookResponse {
   status: number;
   body?: string;
+  /** Defaults to text/plain; the Events API handshake answers with JSON. */
+  contentType?: string;
 }
 
 export interface SlackInteractionDeps {
   signingSecret: string;
   identity: ChatIdentityResolver;
   responder: AgreementResponder;
+  /**
+   * Optional: a deployment that has not wired it yet acks the click and
+   * records that it did nothing, rather than 500ing at a participant who did
+   * exactly what the message asked.
+   */
+  extractions?: ExtractionResponder;
   /** Observability seam for the paths that ack but do nothing — not an error. */
   onUnhandled?: (reason: string, detail: Record<string, unknown>) => void;
   now?: () => Date;
@@ -134,6 +186,35 @@ export async function handleSlackInteraction(
     // An unmapped identity is an enrolment gap, not a transient fault — ack so
     // Slack does not retry, and surface it for someone to fix the mapping.
     deps.onUnhandled?.("unmapped_identity", { slackUserId: action.slackUserId });
+    return { status: 200 };
+  }
+
+  if (action.target === "extraction") {
+    if (!deps.extractions) {
+      deps.onUnhandled?.("extraction_responder_not_configured", {
+        extractionId: action.extractionId,
+        participantId,
+      });
+      return { status: 200 };
+    }
+    try {
+      // The same shape as the agreement path: write the verdict, ack, and let
+      // the relay carry `extraction.confirmed` / `extraction.edited` to the
+      // saga. "Edit" is a verdict too — it says a human looked — and the
+      // editing itself happens in the document the button links to.
+      await deps.extractions.respond({
+        extractionId: action.extractionId,
+        participantId,
+        kind: action.kind,
+      });
+    } catch (error) {
+      deps.onUnhandled?.("extraction_respond_failed", {
+        extractionId: action.extractionId,
+        participantId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { status: 500, body: "failed to record confirmation" };
+    }
     return { status: 200 };
   }
 

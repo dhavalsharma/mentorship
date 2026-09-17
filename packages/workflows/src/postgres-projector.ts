@@ -42,6 +42,8 @@ export class PostgresProjector {
             return this.sessionHeld(tx, event);
           case "document.rendered":
             return this.documentRendered(tx, event);
+          case "pair.thread_bound":
+            return this.threadBound(tx, event);
           default:
             return;
         }
@@ -108,6 +110,33 @@ export class PostgresProjector {
       .update(pairings)
       .set({ lastSessionAt: at })
       .where(and(eq(pairings.orgId, event.orgId), eq(pairings.id, pairingId)));
+  }
+
+  /**
+   * Last writer wins, which is right here: a rebound thread means the old
+   * channel is no longer where this pair talks, and a message arriving from it
+   * should stop being attributed to them.
+   */
+  private async threadBound(tx: Db, event: DomainEvent): Promise<void> {
+    const p = event.payload;
+    const channelId = str(p["channelId"]);
+    if (!channelId) return;
+    await tx
+      .update(pairings)
+      .set({
+        threadRef: {
+          adapterId: str(p["adapterId"]) ?? "",
+          channelId,
+          threadId: str(p["threadId"]),
+          url: str(p["url"]),
+        },
+      })
+      .where(
+        and(
+          eq(pairings.orgId, event.orgId),
+          eq(pairings.id, idFromRef(event.subjectRef)),
+        ),
+      );
   }
 
   private async documentRendered(tx: Db, event: DomainEvent): Promise<void> {

@@ -5,9 +5,13 @@ import {
   type ServerResponse,
 } from "node:http";
 import {
+  handleSlackEvent,
   handleSlackInteraction,
   type AgreementResponder,
   type ChatIdentityResolver,
+  type ExtractionResponder,
+  type NotesSink,
+  type PairingLocator,
 } from "@mentorship/integrations";
 import {
   requestMagicLink,
@@ -75,6 +79,14 @@ export interface ApiServerDeps {
   slackSigningSecret: string;
   identity: ChatIdentityResolver;
   responder: AgreementResponder;
+  /** Confirm/Edit clicks. Absent means those clicks ack and do nothing. */
+  extractions?: ExtractionResponder;
+  /**
+   * The Events API side — free-text notes arriving from a pair's own channel.
+   * Absent 404s `/slack/events` rather than accepting messages it has nowhere
+   * to put; a caller that only exercises interactions need not supply it.
+   */
+  slackEvents?: { locator: PairingLocator; notes: NotesSink };
   /** Observability seam — see `SlackInteractionDeps.onUnhandled`. */
   onUnhandled?: (reason: string, detail: Record<string, unknown>) => void;
   now?: () => Date;
@@ -144,12 +156,45 @@ async function route(
         signingSecret: deps.slackSigningSecret,
         identity: deps.identity,
         responder: deps.responder,
+        ...(deps.extractions ? { extractions: deps.extractions } : {}),
         onUnhandled: deps.onUnhandled,
         now: deps.now,
       },
     );
-    res.writeHead(result.status, { "content-type": "text/plain" });
-    res.end(result.body ?? "");
+    writeWebhookResult(res, result);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/slack/events") {
+    if (!deps.slackEvents) {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not found");
+      return;
+    }
+
+    // Same discipline as the route above, and for the same reason: these are
+    // the exact bytes Slack signed, read before anything looks at them.
+    let rawBody: string;
+    try {
+      rawBody = await readBody(req, MAX_BODY_BYTES);
+    } catch {
+      res.writeHead(413, { "content-type": "text/plain" });
+      res.end("payload too large");
+      return;
+    }
+
+    const result = await handleSlackEvent(
+      { rawBody, headers: singleValueHeaders(req.headers) },
+      {
+        signingSecret: deps.slackSigningSecret,
+        identity: deps.identity,
+        locator: deps.slackEvents.locator,
+        notes: deps.slackEvents.notes,
+        onUnhandled: deps.onUnhandled,
+        now: deps.now,
+      },
+    );
+    writeWebhookResult(res, result);
     return;
   }
 
@@ -412,6 +457,16 @@ function readSessionCookie(req: IncomingMessage): string | null {
     }
   }
   return null;
+}
+
+function writeWebhookResult(
+  res: ServerResponse,
+  result: { status: number; body?: string; contentType?: string },
+): void {
+  res.writeHead(result.status, {
+    "content-type": result.contentType ?? "text/plain",
+  });
+  res.end(result.body ?? "");
 }
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {

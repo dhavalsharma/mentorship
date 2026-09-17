@@ -67,18 +67,23 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
 
   async function thread(
     pair: PairContext,
-  ): Promise<{ adapter: ConversationAdapter; ref: ThreadRef } | null> {
+  ): Promise<{
+    adapter: ConversationAdapter;
+    ref: ThreadRef;
+    /** False when this runner had already resolved the thread for this pair. */
+    fresh: boolean;
+  } | null> {
     const adapter = opts.registry.get<ConversationAdapter>("conversation");
     if (!adapter) return null;
     const cached = threads.get(pair.pairingId);
-    if (cached) return { adapter, ref: cached };
+    if (cached) return { adapter, ref: cached, fresh: false };
     const ref = await adapter.ensureThread({
       pairingId: pair.pairingId,
       memberRefs: pair.participants.map((p) => p.memberRef),
       title: pair.title,
     });
     threads.set(pair.pairingId, ref);
-    return { adapter, ref };
+    return { adapter, ref, fresh: true };
   }
 
   /** Joint-thread messages degrade to a DM to each party; never the reverse. */
@@ -124,8 +129,24 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
     switch (effect.type) {
       case "ensure_thread": {
         const t = await thread(pair);
-        if (!t) warn("conversation slot empty; using in-app thread fallback");
-        return t?.ref ?? null;
+        if (!t) {
+          warn("conversation slot empty; using in-app thread fallback");
+          return null;
+        }
+        // The channel id is the only handle an inbound message carries back to
+        // this pair, so it is announced rather than kept in this runner's
+        // memory: the projection puts it on the pairing, and the Slack events
+        // endpoint reads it from there. Announced once per resolution rather
+        // than once per proposal round — a fresh process re-announces, which
+        // is how the binding survives a deploy that lost this cache.
+        if (!t.fresh) return t.ref;
+        await emit("pair.thread_bound", {
+          adapterId: t.ref.adapterId,
+          channelId: t.ref.channelId,
+          threadId: t.ref.threadId,
+          url: t.ref.url ?? null,
+        });
+        return t.ref;
       }
 
       case "post_proposal": {
@@ -155,6 +176,32 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
       case "post_message": {
         await broadcast(pair, effect.body, ctx.key);
         return null;
+      }
+
+      case "request_confirmation": {
+        const t = await thread(pair);
+        if (!t) {
+          // Degraded, and honestly so: without a thread there are no buttons,
+          // and the verdict will have to arrive some other structured way or
+          // not at all. The timeout in `confirming` still fires and still
+          // marks the result unverified (invariant 19).
+          await broadcast(pair, effect.body, ctx.key);
+          return null;
+        }
+        const caps = await opts.registry.capabilities("conversation");
+        if (!caps?.interactiveApproval) {
+          warn("conversation adapter has no interactive approval", {
+            adapter: t.adapter.id,
+            extractionId: effect.extractionId,
+          });
+        }
+        return t.adapter.postConfirmation({
+          thread: t.ref,
+          extractionId: effect.extractionId,
+          docUrl: effect.docUrl,
+          body: effect.body,
+          idempotencyKey: ctx.key,
+        });
       }
 
       case "dm": {
