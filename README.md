@@ -13,13 +13,13 @@ The status of each piece is marked below.
 
 ```bash
 pnpm install
-pnpm test      # 489 tests, ~3s, no database and no model
+pnpm test      # 522 tests, ~3s, no database and no model
 pnpm demo      # full walk-through printed as a readable trace
 pnpm serve:api # the Slack + auth endpoints, live, seeded against testkit
 pnpm dev:web   # the admin dashboard at :3000
 pnpm typecheck
 
-# 59 more tests that need a database, skipped above rather than failing
+# 62 more tests that need a database, skipped above rather than failing
 docker compose up -d db && pnpm db:migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
 ```
@@ -65,7 +65,7 @@ scripts.
 
 | Variable | Where | Needed for |
 | --- | --- | --- |
-| `DATABASE_URL` | root | Anything touching Postgres: `pnpm db:migrate`, `pnpm serve:worker`, `pnpm serve:api` on Postgres, the 59 database-backed tests |
+| `DATABASE_URL` | root | Anything touching Postgres: `pnpm db:migrate`, `pnpm serve:worker`, `pnpm serve:api` on Postgres, the 62 database-backed tests |
 | `ORG_ID` | root, `apps/web` | Any Postgres-backed command — every table is tenant-scoped, so a run has to say which tenant. `apps/web`'s copy must match `apps/api`/`apps/worker`'s |
 | `TENANT_ROLE` | root | Optional. Names the unprivileged Postgres role a connection runs as, so RLS is actually enforced rather than bypassed by a superuser connection |
 | `ANTHROPIC_API_KEY` | root | Optional. Runs the real model behind session intelligence, matching's adjudication and nudge planning. Every primitive works without it — it degrades to a deterministic fallback |
@@ -178,7 +178,10 @@ writes around it survives (ADR-0005).
    (`https://drive.google.com/drive/folders/…`) into `GOOGLE_DRIVE_FOLDER_ID`
    or use its bare id — both are accepted.
 4. Optionally create a guideline doc (the template every pair's document is
-   copied from) and set `GOOGLE_DRIVE_GUIDELINE_DOC_ID` to its URL or id.
+   copied from) and set `GOOGLE_DRIVE_GUIDELINE_DOC_ID` to its URL or id. A
+   configured guideline doc also gets linked from the session proposal, the
+   pre-session reminder and the feedback request; unset, those messages are
+   unchanged.
 5. Or skip the env vars entirely and set the same three fields from the
    dashboard's **Shared document** page (`/dashboard/settings/document`),
    which stores them per org and takes precedence over the environment.

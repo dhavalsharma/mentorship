@@ -96,6 +96,12 @@ export class World implements SagaResolvers, RosterSink {
   readonly sessions = new Map<string, StoredSession>();
   readonly feedback: { sessionId: string; participantId: string; score: number }[] =
     [];
+  /**
+   * The org's guideline doc link, org-wide rather than per-pairing, mirroring
+   * the single `integration_bindings` row Postgres reads it from. Writable so a
+   * test can opt into the configured path; unconfigured is the default.
+   */
+  playbookUrl: string | null = null;
   private readonly extractionPairings = new Map<string, string>();
   private readonly submittedNoteIds = new Set<string>();
   private readonly ids: IdFactory;
@@ -157,6 +163,7 @@ export class World implements SagaResolvers, RosterSink {
       participants,
       lastSessionAt: pairing.lastSessionAt,
       documentRef: pairing.documentRef,
+      playbookUrl: this.playbookUrl,
     };
   }
 
