@@ -6,3 +6,4 @@ export * from "./slack/dm.js";
 export * from "./slack/verify.js";
 export * from "./slack/interactions.js";
 export * from "./google/calendar.js";
+export * from "./google/document.js";

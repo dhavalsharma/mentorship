@@ -87,6 +87,8 @@ SLACK_BOT_TOKEN=xoxb-…
 SLACK_SIGNING_SECRET=…
 GOOGLE_ACCESS_TOKEN=…
 GOOGLE_CALENDAR_ID=…
+GOOGLE_DRIVE_FOLDER_ID=…          # optional — the real running-doc adapter
+GOOGLE_DRIVE_GUIDELINE_DOC_ID=…   # optional — template copied per pair
 SANDBOX_ALLOWLIST=dhavals+mentor@wekancode.com,dhavals+mentee@wekancode.com,U-…,U-…
 ```
 
@@ -117,6 +119,8 @@ needs to enumerate the directory.
 
 1. [console.cloud.google.com](https://console.cloud.google.com) → a fresh
    project → enable the **Google Calendar API** (APIs & Services → Library).
+   For the running shared doc, also enable the **Google Drive API** and the
+   **Google Docs API**.
 2. **OAuth consent screen**: External, publishing status **Testing**. Add
    `dhavals@wekan.company` (and `dhavals@wekancode.com` if it needs to
    authorize too) under **Test users**. Testing mode is deliberate here — it
@@ -131,10 +135,25 @@ needs to enumerate the directory.
    signing in as the test account → **Exchange authorization code for
    tokens**. The access token is short-lived; re-exchange when it expires
    rather than trying to keep a refresh flow alive for a one-off test.
+
+   To exercise the running doc too, authorize **three** scopes in that same
+   exchange, not just the calendar one:
+   `https://www.googleapis.com/auth/calendar`,
+   `https://www.googleapis.com/auth/documents`,
+   `https://www.googleapis.com/auth/drive.file`. Drive and Docs genuinely
+   need more than Calendar does, and a calendar-only token fails on the first
+   document write rather than at startup. `drive.file` rather than `drive`
+   keeps the grant to files this app creates, which is the same
+   least-privilege reasoning as using a dedicated secondary calendar.
 5. On that account, create a **new, dedicated calendar** (not Primary) —
    Google Calendar → **Add calendar → Create new calendar**. Its Calendar ID
    is under that calendar's **Settings and sharing → Integrate calendar**.
    This is `GOOGLE_CALENDAR_ID`.
+6. For the running doc: create a folder on that account for the test pairs and
+   set `GOOGLE_DRIVE_FOLDER_ID` to its URL or id, and optionally a guideline
+   doc for `GOOGLE_DRIVE_GUIDELINE_DOC_ID`. Both are also settable per org
+   from the dashboard's **Shared document** page, which outranks the
+   environment. Leave both unset and the `document` slot stays on the fake.
 
 ## Reaching your laptop from Slack
 

@@ -1,0 +1,275 @@
+import { describe, expect, it } from "vitest";
+import {
+  extractDriveFolderId,
+  extractGoogleDocId,
+  GoogleDriveDocumentAdapter,
+  MANAGED_END,
+  MANAGED_START,
+  type GoogleDocsTransport,
+} from "@mentorship/integrations";
+
+/**
+ * No network. The transport is a stub over an in-memory document, which is
+ * what makes the one property that actually matters testable: a re-render
+ * replaces the managed region and leaves everything around it byte-identical
+ * (ADR-0005).
+ */
+
+interface Call {
+  api: string;
+  path: string;
+  method: string;
+  body?: unknown;
+  query?: Record<string, string>;
+}
+
+/**
+ * Builds a Docs `documents.get` response out of a plain string, one text run
+ * per line. Document indices start at 1 and advance by the run's length,
+ * which is the coordinate system the adapter has to map back into. Every
+ * fixture here ends in a newline because a real Docs body always does — that
+ * final newline is the one index nothing may be written past, and a fixture
+ * without it would describe a document that cannot exist.
+ */
+function docFromText(text: string, revisionId = "rev1"): Record<string, unknown> {
+  const lines = text.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  let index = 1;
+  const content = lines.map((line) => {
+    const raw = `${line}\n`;
+    const startIndex = index;
+    index += raw.length;
+    return {
+      paragraph: {
+        elements: [{ startIndex, endIndex: index, textRun: { content: raw } }],
+      },
+    };
+  });
+  return { revisionId, body: { content } };
+}
+
+function applyRequests(text: string, requests: unknown[]): string {
+  // Docs indices are 1-based over the body; the flat string here is 0-based.
+  let out = text;
+  for (const request of requests) {
+    const r = request as Record<string, Record<string, never>>;
+    const del = r["deleteContentRange"] as
+      | { range: { startIndex: number; endIndex: number } }
+      | undefined;
+    if (del) {
+      out = out.slice(0, del.range.startIndex - 1) + out.slice(del.range.endIndex - 1);
+    }
+    const ins = r["insertText"] as
+      | { location: { index: number }; text: string }
+      | undefined;
+    if (ins) {
+      out = out.slice(0, ins.location.index - 1) + ins.text + out.slice(ins.location.index - 1);
+    }
+  }
+  return out;
+}
+
+function stubTransport(initial: { docText?: string } = {}): {
+  call: GoogleDocsTransport;
+  calls: Call[];
+  text: () => string;
+} {
+  const calls: Call[] = [];
+  let text = initial.docText ?? "";
+
+  const call: GoogleDocsTransport = async (api, path, init) => {
+    calls.push({
+      api,
+      path,
+      method: init.method,
+      ...(init.body === undefined ? {} : { body: init.body }),
+      ...(init.query === undefined ? {} : { query: init.query }),
+    });
+
+    if (api === "drive" && path === "/files" && init.method === "GET") {
+      return { files: [] };
+    }
+    if (path.endsWith("/copy")) return { id: "copied_doc" };
+    if (api === "docs" && path === "/documents" && init.method === "POST") {
+      return { documentId: "blank_doc" };
+    }
+    if (api === "drive" && init.method === "GET") return { parents: ["root"] };
+    if (api === "drive" && init.method === "PATCH") return { id: "blank_doc" };
+    if (api === "docs" && path.endsWith(":batchUpdate")) {
+      const { requests } = init.body as { requests: unknown[] };
+      text = applyRequests(text, requests);
+      return { writeControl: { requiredRevisionId: "rev2" } };
+    }
+    if (api === "docs" && init.method === "GET") return docFromText(text);
+    return {};
+  };
+
+  return { call, calls, text: () => text };
+}
+
+const CONFIG = { folderId: "folder_1" };
+
+describe("GoogleDriveDocumentAdapter", () => {
+  it("probes the configured folder and reports anchored edits", async () => {
+    const { call, calls } = stubTransport();
+    const caps = await new GoogleDriveDocumentAdapter(call, CONFIG).probe();
+
+    expect(caps.anchoredDocEdits).toBe(true);
+    expect(calls[0]).toMatchObject({ api: "drive", path: "/files/folder_1" });
+  });
+
+  it("copies the guideline doc into the folder on first render", async () => {
+    const { call, calls } = stubTransport();
+    const adapter = new GoogleDriveDocumentAdapter(call, {
+      ...CONFIG,
+      guidelineDocId: "guideline_1",
+    });
+
+    const result = await adapter.renderManagedRegion({
+      docRef: null,
+      title: "Arjun & Priya — session notes",
+      markdown: "first",
+      idempotencyKey: "k1",
+    });
+
+    const copy = calls.find((c) => c.path.endsWith("/copy"));
+    expect(copy?.body).toEqual({
+      name: "Arjun & Priya — session notes",
+      parents: ["folder_1"],
+    });
+    expect(result.docRef).toBe("copied_doc");
+    expect(result.url).toBe("https://docs.google.com/document/d/copied_doc/edit");
+    expect(result.revisionId).toBe("rev2");
+  });
+
+  it("creates a blank doc and moves it into the folder when no guideline is configured", async () => {
+    const { call, calls } = stubTransport();
+    const adapter = new GoogleDriveDocumentAdapter(call, CONFIG);
+
+    const result = await adapter.renderManagedRegion({
+      docRef: null,
+      title: "Blank pair",
+      markdown: "first",
+      idempotencyKey: "k1",
+    });
+
+    expect(calls.some((c) => c.path.endsWith("/copy"))).toBe(false);
+    expect(calls.find((c) => c.api === "docs" && c.path === "/documents")?.body).toEqual({
+      title: "Blank pair",
+    });
+    const move = calls.find((c) => c.method === "PATCH");
+    expect(move?.query).toMatchObject({
+      addParents: "folder_1",
+      removeParents: "root",
+    });
+    expect(result.docRef).toBe("blank_doc");
+  });
+
+  it("adopts an existing doc of the same name rather than creating a second", async () => {
+    const calls: Call[] = [];
+    const call: GoogleDocsTransport = async (api, path, init) => {
+      calls.push({ api, path, method: init.method });
+      if (api === "drive" && path === "/files" && init.method === "GET") {
+        return { files: [{ id: "already_there" }] };
+      }
+      if (api === "docs" && path.endsWith(":batchUpdate")) return {};
+      return docFromText("\n");
+    };
+
+    const result = await new GoogleDriveDocumentAdapter(call, CONFIG).renderManagedRegion({
+      docRef: null,
+      title: "Arjun & Priya",
+      markdown: "x",
+      idempotencyKey: "k1",
+    });
+
+    expect(result.docRef).toBe("already_there");
+    expect(calls.some((c) => c.path.endsWith("/copy"))).toBe(false);
+    expect(calls.some((c) => c.api === "docs" && c.path === "/documents")).toBe(false);
+  });
+
+  it("seeds the markers at the end of a doc that has none", async () => {
+    const guideline = "How to use this doc\nBring an agenda.\n";
+    const { call, text } = stubTransport({ docText: guideline });
+
+    await new GoogleDriveDocumentAdapter(call, CONFIG).renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "## Session 1",
+      idempotencyKey: "k1",
+    });
+
+    expect(text()).toContain(guideline);
+    expect(text()).toContain(MANAGED_START);
+    expect(text()).toContain("## Session 1");
+    expect(text()).toContain(MANAGED_END);
+  });
+
+  it("replaces only the managed region, leaving the pair's own text untouched", async () => {
+    const before = [
+      "Guideline heading",
+      "",
+      MANAGED_START,
+      "## Session 1",
+      MANAGED_END,
+      "",
+      "Priya's private scratch notes",
+      "",
+    ].join("\n");
+    const { call, text } = stubTransport({ docText: before });
+
+    await new GoogleDriveDocumentAdapter(call, CONFIG).renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "## Session 2\n- action item",
+      idempotencyKey: "k2",
+    });
+
+    const after = text();
+    expect(after.startsWith("Guideline heading")).toBe(true);
+    expect(after.endsWith("Priya's private scratch notes\n")).toBe(true);
+    expect(after).toContain("## Session 2");
+    expect(after).not.toContain("## Session 1");
+    // Exactly one managed region, still delimited by both markers.
+    expect(after.split(MANAGED_START)).toHaveLength(2);
+    expect(after.split(MANAGED_END)).toHaveLength(2);
+  });
+
+  it("is stable across repeated renders", async () => {
+    const before = [MANAGED_START, "old", MANAGED_END, "kept", ""].join("\n");
+    const { call, text } = stubTransport({ docText: before });
+    const adapter = new GoogleDriveDocumentAdapter(call, CONFIG);
+
+    for (const markdown of ["one", "two", "three"]) {
+      await adapter.renderManagedRegion({
+        docRef: "doc_1",
+        title: "t",
+        markdown,
+        idempotencyKey: markdown,
+      });
+    }
+
+    expect(text()).toBe(
+      [MANAGED_START, "three", MANAGED_END, "kept", ""].join("\n"),
+    );
+  });
+});
+
+describe("id extraction", () => {
+  it("accepts a folder URL or a bare id", () => {
+    expect(
+      extractDriveFolderId("https://drive.google.com/drive/folders/1AbC_-dEf"),
+    ).toBe("1AbC_-dEf");
+    expect(extractDriveFolderId("  1AbC_-dEf  ")).toBe("1AbC_-dEf");
+    expect(extractDriveFolderId("")).toBeNull();
+    expect(extractDriveFolderId("not a folder url")).toBeNull();
+  });
+
+  it("accepts a doc URL or a bare id", () => {
+    expect(
+      extractGoogleDocId("https://docs.google.com/document/d/1XyZ-9/edit?tab=t.0"),
+    ).toBe("1XyZ-9");
+    expect(extractGoogleDocId("1XyZ-9")).toBe("1XyZ-9");
+    expect(extractGoogleDocId("https://example.com/nope")).toBeNull();
+  });
+});

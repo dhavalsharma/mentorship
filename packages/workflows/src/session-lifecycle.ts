@@ -5,6 +5,7 @@ import {
   hoursBetween,
   nextDueAt,
   proposeSlots,
+  renderNamingTemplate,
   resolveAgreement,
   roundsExhausted,
   subjectRef,
@@ -96,6 +97,24 @@ function pairingIdFrom(ref: string): string {
 
 function participantIds(pair: PairContext): string[] {
   return pair.participants.map((p) => p.participantId);
+}
+
+/**
+ * The running doc's name. Roles are looked up by the names `policy.roles`
+ * uses rather than by position, because a program may define neither
+ * "mentor" nor "mentee" — a template that names a role this program does not
+ * have keeps its placeholder, which is `renderNamingTemplate`'s documented
+ * behaviour and better than an empty title.
+ */
+function documentTitle(pair: PairContext): string {
+  const byRole = (role: string): string | undefined =>
+    pair.participants.find((p) => p.role === role)?.displayName;
+  const vars: Record<string, string> = { pairTitle: pair.title };
+  const mentor = byRole("mentor");
+  const mentee = byRole("mentee");
+  if (mentor !== undefined) vars["mentorName"] = mentor;
+  if (mentee !== undefined) vars["menteeName"] = mentee;
+  return renderNamingTemplate(pair.policy.document.namingTemplate, vars);
 }
 
 /**
@@ -622,7 +641,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
               effects: [
                 {
                   type: "render_document",
-                  title: `${pair.title} — session notes`,
+                  title: documentTitle(pair),
                   markdown,
                 },
               ],
@@ -699,7 +718,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
               },
               {
                 type: "render_document",
-                title: `${pair.title} — session notes`,
+                title: documentTitle(pair),
                 markdown:
                   "> Not reviewed by either participant — treat as unverified.\n",
               },

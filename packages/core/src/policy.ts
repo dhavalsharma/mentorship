@@ -85,6 +85,39 @@ export const IntegrationProfileSchema = z.object({
 });
 export type IntegrationProfile = z.infer<typeof IntegrationProfileSchema>;
 
+/**
+ * The shared running doc, expressed without naming a vendor. The template is
+ * the only thing about the document that is *program* policy: where the file
+ * physically lives (a Drive folder id, a Notion database id, a SharePoint
+ * path) is adapter configuration and belongs on the integration binding, not
+ * here — core must stay ignorant of which backend fills the slot.
+ */
+export const DocumentPolicySchema = z.object({
+  /**
+   * Placeholders: {{pairTitle}}, {{mentorName}}, {{menteeName}}. The default
+   * renders to exactly the title the saga used to hardcode, so a program that
+   * never touches this sees no change.
+   */
+  namingTemplate: z.string().min(1).max(200).default("{{pairTitle}} — session notes"),
+});
+export type DocumentPolicy = z.infer<typeof DocumentPolicySchema>;
+
+/**
+ * Substitution is intentionally literal and total: an unknown placeholder is
+ * left as-is rather than replaced with an empty string, so a typo in a
+ * tenant's template shows up in the document title instead of silently
+ * producing "  — session notes" that nobody can trace back to its cause.
+ */
+export function renderNamingTemplate(
+  template: string,
+  vars: Record<string, string>,
+): string {
+  const rendered = template.replace(/\{\{(\w+)\}\}/g, (match, key: string) =>
+    key in vars ? vars[key]! : match,
+  );
+  return rendered.trim().length === 0 ? template : rendered;
+}
+
 export const ProgramPolicySchema = z.object({
   version: z.literal(1).default(1),
   roles: z.array(z.string()).default(["mentor", "mentee"]),
@@ -115,6 +148,7 @@ export const ProgramPolicySchema = z.object({
     })
     .default({}),
   consent: ConsentPolicySchema.default({}),
+  document: DocumentPolicySchema.default({}),
   integrations: IntegrationProfileSchema.default({}),
   healthWeights: z
     .record(z.number())

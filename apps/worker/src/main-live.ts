@@ -2,6 +2,7 @@ import { AnthropicProvider } from "@mentorship/ai";
 import { PostgresAiRunSink } from "@mentorship/ai/postgres";
 import { createClient } from "@mentorship/db";
 import { buildLiveRegistry } from "./live-registry.js";
+import { resolveDocumentConfig } from "./document-config.js";
 import { createWorker } from "./worker.js";
 
 /**
@@ -31,11 +32,16 @@ if (!DATABASE_URL || !ORG_ID) {
 
 const { db, sqlClient } = createClient(DATABASE_URL);
 
+const document = await resolveDocumentConfig(db, ORG_ID, process.env, TENANT_ROLE);
+
 let registry: ReturnType<typeof buildLiveRegistry>["registry"];
 let recorder: ReturnType<typeof buildLiveRegistry>["recorder"];
 try {
-  ({ registry, recorder } = buildLiveRegistry(process.env, (detail) =>
-    console.warn(`[sandbox] refused ${detail.adapter}: ${detail.refused.join(", ")}`),
+  ({ registry, recorder } = buildLiveRegistry(
+    process.env,
+    (detail) =>
+      console.warn(`[sandbox] refused ${detail.adapter}: ${detail.refused.join(", ")}`),
+    document.config,
   ));
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
@@ -62,8 +68,16 @@ const worker = createWorker({
 
 console.log(`LIVE worker started for org ${ORG_ID}, polling every ${INTERVAL_MS}ms`);
 console.log(
-  "adapters: real Slack + Google, guarded by SandboxGuard — transcript and " +
-    "document are still fakes, because no real adapter for either exists yet",
+  "adapters: real Slack + Google, guarded by SandboxGuard — transcript is " +
+    "still a fake, because no real adapter for it exists yet",
+);
+console.log(
+  document.config
+    ? `document: real Google Drive, folder ${document.config.folderId} (from ${document.source})` +
+        (document.config.guidelineDocId
+          ? `, seeded from doc ${document.config.guidelineDocId}`
+          : ", starting blank")
+    : "document: fake (no integration_bindings row and no GOOGLE_DRIVE_FOLDER_ID)",
 );
 console.log(
   llm

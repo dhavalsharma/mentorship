@@ -8,6 +8,7 @@ import {
   PostgresChatIdentityResolver,
 } from "./postgres-ports.js";
 import { listOpenRiskFindings, listRecentNudges } from "./postgres-reads.js";
+import { PostgresDocumentSettingsStore } from "./postgres-settings.js";
 import {
   createServer,
   notImplementedReads,
@@ -109,6 +110,10 @@ function postgresDeps(url: string): ApiServerDeps {
         listOpenRiskFindings(db, orgId, limit, TENANT_ROLE),
       nudges: (orgId, limit) => listRecentNudges(db, orgId, limit, TENANT_ROLE),
     },
+    documentSettings: new PostgresDocumentSettingsStore(
+      db,
+      TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE },
+    ),
     auth: {
       store: magicLinkStore,
       orgId: ORG_ID,

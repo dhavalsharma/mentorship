@@ -5,10 +5,13 @@ import {
   type ServerResponse,
 } from "node:http";
 import {
+  extractDriveFolderId,
+  extractGoogleDocId,
   handleSlackInteraction,
   type AgreementResponder,
   type ChatIdentityResolver,
 } from "@mentorship/integrations";
+import { DocumentPolicySchema } from "@mentorship/core";
 import {
   requestMagicLink,
   verifyMagicLink,
@@ -48,6 +51,25 @@ export interface AdminReadsDeps {
 }
 
 /**
+ * Settings for the `document` slot, split across two homes on purpose:
+ * `namingTemplate` is program policy (data, per ADR-0001) and lives in
+ * `programs.policy`, while the folder and guideline ids are vendor config and
+ * live on `integration_bindings.config`. The form is one screen, so the store
+ * writes both — but neither value is duplicated into the other's table, which
+ * is what would make one of them a stale copy.
+ */
+export interface DocumentSettings {
+  folderId: string | null;
+  guidelineDocId: string | null;
+  namingTemplate: string;
+}
+
+export interface DocumentSettingsStore {
+  read(orgId: string): Promise<DocumentSettings>;
+  write(orgId: string, settings: DocumentSettings): Promise<void>;
+}
+
+/**
  * This server is single-tenant-per-process (see `main.ts`'s `ORG_ID`), so
  * `orgId` here is the one org this whole process is bound to — the same
  * pattern `postgres-ports.ts`'s `PostgresPortOptions` already uses for
@@ -84,6 +106,11 @@ export interface ApiServerDeps {
    * below rather than throwing.
    */
   admin?: AdminReadsDeps;
+  /**
+   * Read/write settings for the `document` slot. Optional for the same reason
+   * `admin` is; absent, the routes below 501 rather than throwing.
+   */
+  documentSettings?: DocumentSettingsStore;
   /**
    * Magic-link auth. Optional for the same reason `admin` is — a caller that
    * only exercises the Slack route need not supply it — but its *absence*
@@ -163,6 +190,14 @@ async function route(
     return;
   }
 
+  if ((req.method === "GET" || req.method === "PUT") && req.url) {
+    const orgId = matchDocumentSettingsRoute(req.url);
+    if (orgId !== null) {
+      await handleDocumentSettings(req, res, deps, orgId, req.method === "PUT");
+      return;
+    }
+  }
+
   if (req.method === "GET" && req.url) {
     const match = matchAdminRoute(req.url);
     if (match) {
@@ -235,6 +270,122 @@ async function handleAdminList(
     }
     throw error;
   }
+}
+
+/** `/orgs/:orgId/settings/document`. */
+function matchDocumentSettingsRoute(url: string): string | null {
+  const parsed = new URL(url, "http://internal");
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length !== 4) return null;
+  const [orgs, orgId, settings, resource] = segments as [
+    string,
+    string,
+    string,
+    string,
+  ];
+  if (orgs !== "orgs" || settings !== "settings" || resource !== "document") {
+    return null;
+  }
+  return orgId;
+}
+
+async function handleDocumentSettings(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiServerDeps,
+  orgId: string,
+  isWrite: boolean,
+): Promise<void> {
+  if (!UUID_RE.test(orgId)) {
+    writeJson(res, 400, { error: "orgId must be a UUID" });
+    return;
+  }
+
+  const authed = await authenticateAdmin(req, res, deps, orgId);
+  if (!authed) return; // response already written (401 or 403)
+
+  const store = deps.documentSettings;
+  if (!store) {
+    writeJson(res, 501, {
+      error: "document settings are not configured on this server",
+    });
+    return;
+  }
+
+  if (!isWrite) {
+    writeJson(res, 200, await store.read(orgId));
+    return;
+  }
+
+  let rawBody: string;
+  try {
+    rawBody = await readBody(req, MAX_BODY_BYTES);
+  } catch {
+    res.writeHead(413, { "content-type": "text/plain" });
+    res.end("payload too large");
+    return;
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(rawBody) as Record<string, unknown>;
+  } catch {
+    writeJson(res, 400, { error: "invalid JSON body" });
+    return;
+  }
+
+  const parsed = parseDocumentSettings(body);
+  if ("error" in parsed) {
+    writeJson(res, 400, { error: parsed.error });
+    return;
+  }
+
+  await store.write(orgId, parsed.settings);
+  writeJson(res, 200, parsed.settings);
+}
+
+/**
+ * `folder` and `guideline` accept either a pasted browser URL or a bare id —
+ * an admin copying out of the address bar should not have to know which part
+ * of it matters, and a hand-extracted id is a truncation waiting to happen.
+ */
+function parseDocumentSettings(
+  body: Record<string, unknown>,
+): { settings: DocumentSettings } | { error: string } {
+  const folderRaw = typeof body["folder"] === "string" ? body["folder"] : "";
+  const folderId = extractDriveFolderId(folderRaw);
+  if (folderId === null) {
+    return { error: "folder must be a Drive folder URL or id" };
+  }
+
+  const guidelineRaw =
+    typeof body["guideline"] === "string" ? body["guideline"].trim() : "";
+  let guidelineDocId: string | null = null;
+  if (guidelineRaw.length > 0) {
+    guidelineDocId = extractGoogleDocId(guidelineRaw);
+    if (guidelineDocId === null) {
+      return { error: "guideline must be a Google Doc URL or id" };
+    }
+  }
+
+  const templateInput =
+    typeof body["namingTemplate"] === "string" && body["namingTemplate"].trim()
+      ? body["namingTemplate"].trim()
+      : undefined;
+  const template = DocumentPolicySchema.safeParse(
+    templateInput === undefined ? {} : { namingTemplate: templateInput },
+  );
+  if (!template.success) {
+    return { error: "namingTemplate must be 1–200 characters" };
+  }
+
+  return {
+    settings: {
+      folderId,
+      guidelineDocId,
+      namingTemplate: template.data.namingTemplate,
+    },
+  };
 }
 
 /**

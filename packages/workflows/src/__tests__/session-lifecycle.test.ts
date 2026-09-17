@@ -487,3 +487,35 @@ describe("out-of-band changes and terminal conditions", () => {
     expect(renders.length).toBeGreaterThan(1);
   });
 });
+
+describe("the shared document's name", () => {
+  async function firstRenderedTitle(ctx: Ctx): Promise<string> {
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h); // reminder
+    await advanceToNextTimer(ctx.h); // session ends, transcript found, doc rendered
+    return String(ctx.h.recorder.of("document.rendered")[0]!.detail["title"]);
+  }
+
+  it("renders the previously hardcoded title by default", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1 });
+    expect(await firstRenderedTitle(ctx)).toBe("Mentoring — Arjun & Priya — session notes");
+  });
+
+  it("substitutes participant names from a program's own template", async () => {
+    const ctx = await setup({
+      transcriptAvailableAfter: 1,
+      policy: {
+        document: { namingTemplate: "{{menteeName}} x {{mentorName}} · log" },
+      },
+    });
+    expect(await firstRenderedTitle(ctx)).toBe("Priya x Arjun · log");
+  });
+
+  it("leaves an unknown placeholder visible rather than blanking it", async () => {
+    const ctx = await setup({
+      transcriptAvailableAfter: 1,
+      policy: { document: { namingTemplate: "{{pairTitle}} {{typo}}" } },
+    });
+    expect(await firstRenderedTitle(ctx)).toBe("Mentoring — Arjun & Priya {{typo}}");
+  });
+});

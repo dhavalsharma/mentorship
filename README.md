@@ -71,6 +71,8 @@ scripts.
 | `ANTHROPIC_API_KEY` | root | Optional. Runs the real model behind session intelligence, matching's adjudication and nudge planning. Every primitive works without it — it degrades to a deterministic fallback |
 | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | root | `pnpm serve:worker:live`, the Slack side of a live-tenant test |
 | `GOOGLE_ACCESS_TOKEN`, `GOOGLE_CALENDAR_ID` | root | `pnpm serve:worker:live`, the Google side of a live-tenant test |
+| `GOOGLE_DRIVE_FOLDER_ID` | root | Optional. Turns on the real Google Drive adapter for each pair's running doc. A full folder URL or a bare id. Unset, the `document` slot stays on the fake. An `integration_bindings` row for the org (written by the dashboard's **Shared document** page) wins over this |
+| `GOOGLE_DRIVE_GUIDELINE_DOC_ID` | root | Optional. The template doc copied for each new pair. A full Docs URL or a bare id. Unset, each pair's doc starts blank |
 | `SANDBOX_ALLOWLIST` | root | Required whenever `SLACK_BOT_TOKEN`/`GOOGLE_ACCESS_TOKEN` are set — every real send is refused unless its recipient is on this comma-separated list |
 | `MENTOR_EMAIL`, `MENTOR_SLACK_ID`, `MENTOR_NAME`, `MENTEE_EMAIL`, `MENTEE_SLACK_ID`, `MENTEE_NAME` | root | `pnpm seed:live-pair` only — seeds one pair to click through live |
 | `PORT` | root | `apps/api`'s listen port (default `8787`) |
@@ -146,6 +148,35 @@ In short:
 5. Create a **new, dedicated calendar** on that account (not Primary) —
    its ID (under **Settings and sharing → Integrate calendar**) is
    `GOOGLE_CALENDAR_ID`.
+
+### Google Drive (running doc)
+
+Each pair gets one document, created in a folder you nominate and rewritten
+after every session — only inside its managed region, so anything the pair
+writes around it survives (ADR-0005).
+
+1. Same Cloud project as above → also enable the **Google Drive API** and the
+   **Google Docs API**.
+2. Drive and Docs need **broader scopes than Calendar alone**. Re-run the
+   OAuth Playground exchange with all three, not just the calendar one:
+   `https://www.googleapis.com/auth/calendar`,
+   `https://www.googleapis.com/auth/documents`,
+   `https://www.googleapis.com/auth/drive.file`. A calendar-only token will
+   fail on the first document write. `drive.file` is deliberate: it grants
+   access only to files this app creates or is explicitly given, not to the
+   account's whole Drive.
+3. Create a folder on that account for the test pairs. Either paste its URL
+   (`https://drive.google.com/drive/folders/…`) into `GOOGLE_DRIVE_FOLDER_ID`
+   or use its bare id — both are accepted.
+4. Optionally create a guideline doc (the template every pair's document is
+   copied from) and set `GOOGLE_DRIVE_GUIDELINE_DOC_ID` to its URL or id.
+5. Or skip the env vars entirely and set the same three fields from the
+   dashboard's **Shared document** page (`/dashboard/settings/document`),
+   which stores them per org and takes precedence over the environment.
+
+**This adapter has never been run against a live Drive or Docs account.** The
+API shapes are real and the managed-region logic is tested against a stubbed
+transport, but the first live run is still ahead.
 
 ### The dashboard (`apps/web`)
 

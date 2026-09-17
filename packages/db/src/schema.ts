@@ -421,6 +421,8 @@ export const integrationBindings = pgTable(
     adapterId: text("adapter_id").notNull(),
     credentialsRef: text("credentials_ref"),
     capabilities: jsonb("capabilities"),
+    /** Vendor-specific settings the adapter parses itself — see migration 0010. */
+    config: jsonb("config").notNull().default({}),
     probedAt: timestamp("probed_at", { withTimezone: true }),
     lastError: text("last_error"),
   },
