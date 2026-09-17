@@ -38,6 +38,7 @@ export function pairFixture(
     ],
     lastSessionAt: null,
     documentRef: null,
+    playbookUrl: null,
   };
 }
 

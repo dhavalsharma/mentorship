@@ -34,6 +34,13 @@ export interface PairContext {
   participants: PairParticipant[];
   lastSessionAt: string | null;
   documentRef: string | null;
+  /**
+   * The org's guideline/playbook doc, if one is configured — the same doc each
+   * pair's running doc is seeded from. Resolved to a link here rather than
+   * fetched anywhere: participant-facing messages link to it, they never quote
+   * it, so the saga needs a URL and not the contents.
+   */
+  playbookUrl: string | null;
 }
 
 export interface SagaResolvers {

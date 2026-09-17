@@ -189,6 +189,15 @@ function proposalBody(
   return `${lead}\n\nPick one, or suggest another:\n${lines.join("\n")}${caveat}`;
 }
 
+/**
+ * Appends the org's playbook link, or returns the message untouched. Returning
+ * the same string when nothing is configured is the point: an unconfigured org
+ * must not gain a trailing blank line it never had.
+ */
+function withPlaybook(body: string, pair: PairContext): string {
+  return pair.playbookUrl ? `${body}\n\nProgram playbook: ${pair.playbookUrl}` : body;
+}
+
 export function createSessionLifecycle(): Saga<SessionLifecycleState> {
   return {
     name: SESSION_LIFECYCLE,
@@ -452,7 +461,12 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
                 { type: "verify_calendar_event", eventId: state.calendarEventId },
                 {
                   type: "post_message",
-                  body: `Reminder: your session is coming up — ${new Date(state.startsAt).toUTCString()}.`,
+                  // The link rides the shared reminder only. Repeating it in
+                  // each individual DM below is noise, not a second chance.
+                  body: withPlaybook(
+                    `Reminder: your session is coming up — ${new Date(state.startsAt).toUTCString()}.`,
+                    pair,
+                  ),
                 },
                 ...pair.participants.map(
                   (p): Effect => ({
@@ -823,9 +837,11 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
       };
     }
 
-    const body =
+    const body = withPlaybook(
       (preamble ? `${preamble}\n\n` : "") +
-      proposalBody(pair, options, degraded, round);
+        proposalBody(pair, options, degraded, round),
+      pair,
+    );
 
     return {
       next: {
@@ -929,7 +945,10 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
           participantId: p.participantId,
           // One question, in a DM. Nobody rates a meeting honestly in front of
           // the other participant.
-          question: "Was that session useful? 1–5, and anything you'd change.",
+          question: withPlaybook(
+            "Was that session useful? 1–5, and anything you'd change.",
+            pair,
+          ),
         }),
       ),
     };

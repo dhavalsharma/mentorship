@@ -32,15 +32,16 @@ interface Ctx {
 }
 
 async function setup(
-  opts: BootstrapOptions & { roster?: string } = {},
+  opts: BootstrapOptions & { roster?: string; playbookUrl?: string } = {},
 ): Promise<Ctx> {
-  const { roster, ...bootstrapOpts } = opts;
+  const { roster, playbookUrl, ...bootstrapOpts } = opts;
   const warnings: string[] = [];
   const h = bootstrap({
     busy: BUSY,
     onWarn: (m) => warnings.push(m),
     ...bootstrapOpts,
   });
+  if (playbookUrl !== undefined) h.world.playbookUrl = playbookUrl;
   const plan = planRosterImport(roster ?? ONE_PAIR, {
     policy: h.policy,
     defaultTzOffsetMinutes: 330,
@@ -550,5 +551,96 @@ describe("the shared document's name", () => {
       policy: { document: { namingTemplate: "{{pairTitle}} {{typo}}" } },
     });
     expect(await firstRenderedTitle(ctx)).toBe("Mentoring — Arjun & Priya {{typo}}");
+  });
+});
+
+describe("the org's playbook link", () => {
+  const PLAYBOOK = "https://docs.google.com/document/d/GUIDE_1/edit";
+
+  /**
+   * Proposal, shared reminder and the private feedback question, driven all the
+   * way through one session so all three are real effect output rather than
+   * hand-built strings.
+   */
+  async function messagesFor(playbookUrl?: string): Promise<{
+    proposal: string;
+    reminder: string;
+    headsUpDms: string[];
+    feedback: string[];
+  }> {
+    const ctx = await setup({
+      transcriptAvailableAfter: 1,
+      ...(playbookUrl === undefined ? {} : { playbookUrl }),
+    });
+    const proposal = String(ctx.h.recorder.of("thread.proposal")[0]!.detail["body"]);
+
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h); // reminder
+    const reminder = String(
+      ctx.h.recorder
+        .of("thread.message")
+        .map((c) => String(c.detail["body"]))
+        .find((b) => b.startsWith("Reminder:")),
+    );
+    const headsUpDms = ctx.h.recorder
+      .of("dm.sent")
+      .map((c) => String(c.detail["body"]))
+      .filter((b) => b.startsWith("Heads up:"));
+
+    await advanceToNextTimer(ctx.h); // session ends, transcript found
+    const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+    for (const p of agreement.participantIds) {
+      await ctx.h.world.confirmExtraction(ctx.pairingId, p);
+    }
+    await ctx.h.dispatcher.settle();
+    const feedback = ctx.h.recorder
+      .of("dm.sent")
+      .map((c) => String(c.detail["body"]))
+      .filter((b) => b.startsWith("Was that session useful?"));
+
+    return { proposal, reminder, headsUpDms, feedback };
+  }
+
+  it("appends the link to the proposal, the reminder and the feedback request", async () => {
+    const plain = await messagesFor();
+    const linked = await messagesFor(PLAYBOOK);
+    const suffix = `\n\nProgram playbook: ${PLAYBOOK}`;
+
+    expect(linked.proposal).toBe(`${plain.proposal}${suffix}`);
+    expect(linked.reminder).toBe(`${plain.reminder}${suffix}`);
+    expect(linked.feedback).toHaveLength(2);
+    for (const [i, body] of linked.feedback.entries()) {
+      expect(body).toBe(`${plain.feedback[i]}${suffix}`);
+    }
+  });
+
+  it("leaves the individual heads-up DMs terse", async () => {
+    const linked = await messagesFor(PLAYBOOK);
+    expect(linked.headsUpDms).toHaveLength(2);
+    for (const body of linked.headsUpDms) expect(body).not.toContain(PLAYBOOK);
+  });
+
+  // The regression guard: an org with no guideline doc must get byte-identical
+  // text to what it got before the link existed — no trailing blank line, no
+  // "playbook: null". These literals are the pre-change wording.
+  it("changes nothing at all when no playbook is configured", async () => {
+    const plain = await messagesFor();
+
+    expect(plain.proposal).toBe(
+      [
+        "Time for your fortnightly session, Arjun and Priya.",
+        "",
+        "Pick one, or suggest another:",
+        "  1. Mon 14 Sept 10:30 (UTC+05:30)",
+        "  2. Tue 15 Sept 09:00 (UTC+05:30)",
+        "  3. Wed 16 Sept 09:00 (UTC+05:30)",
+      ].join("\n"),
+    );
+    expect(plain.reminder).toBe(
+      "Reminder: your session is coming up — Mon, 14 Sep 2026 05:00:00 GMT.",
+    );
+    for (const body of plain.feedback) {
+      expect(body).toBe("Was that session useful? 1–5, and anything you'd change.");
+    }
   });
 });

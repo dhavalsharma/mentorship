@@ -159,7 +159,9 @@ verified by design (ADR-0006), so nothing needs to enumerate the directory.
    set `GOOGLE_DRIVE_FOLDER_ID` to its URL or id, and optionally a guideline
    doc for `GOOGLE_DRIVE_GUIDELINE_DOC_ID`. Both are also settable per org
    from the dashboard's **Shared document** page, which outranks the
-   environment. Leave both unset and the `document` slot stays on the fake.
+   environment. Leave both unset and the `document` slot stays on the fake. A
+   guideline doc is also what the proposal, reminder and feedback-request
+   messages link back to — see "Google Drive (running doc)" in the README.
 
 ## Reaching your laptop from Slack
 

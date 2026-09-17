@@ -28,7 +28,11 @@ import {
   withTenant,
   type Db,
 } from "@mentorship/db";
-import type { IntegrationRegistry } from "@mentorship/integrations";
+import {
+  documentUrl,
+  GoogleDriveDocumentConfigSchema,
+  type IntegrationRegistry,
+} from "@mentorship/integrations";
 
 /**
  * `SagaResolvers` over the real tables — the Postgres counterpart to
@@ -135,6 +139,27 @@ export class PostgresSagaResolvers implements SagaResolvers {
         .from(consents)
         .where(and(eq(consents.orgId, orgId), inArray(consents.participantId, ids)));
 
+      // The guideline doc the running doc is seeded from, reused as the link
+      // participant-facing messages point at. Unconfigured is the normal case,
+      // not an error: the messages simply omit the line.
+      const [documentBinding] = await tx
+        .select({ config: integrationBindings.config })
+        .from(integrationBindings)
+        .where(
+          and(
+            eq(integrationBindings.orgId, orgId),
+            eq(integrationBindings.slot, "document"),
+          ),
+        )
+        .limit(1);
+      const documentConfig = GoogleDriveDocumentConfigSchema.partial().safeParse(
+        documentBinding?.config ?? {},
+      );
+      const playbookUrl =
+        documentConfig.success && documentConfig.data.guidelineDocId
+          ? documentUrl(documentConfig.data.guidelineDocId)
+          : null;
+
       const byId = new Map(people.map((p) => [p.participantId, p]));
       const ordered = ids.map((id) => {
         const person = byId.get(id);
@@ -186,6 +211,7 @@ export class PostgresSagaResolvers implements SagaResolvers {
         participants: participantList,
         lastSessionAt: pairing.lastSessionAt?.toISOString() ?? null,
         documentRef: pairing.documentRef,
+        playbookUrl,
       };
     });
   }

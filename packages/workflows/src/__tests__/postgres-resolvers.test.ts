@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { defaultPolicy } from "@mentorship/core";
 import {
@@ -169,6 +169,8 @@ describe.skipIf(!DATABASE_URL)("PostgresSagaResolvers", () => {
     expect(context.origin).toBe("imported");
     expect(context.lastSessionAt).toBe("2026-09-01T09:00:00.000Z");
     expect(context.documentRef).toBe("doc_42");
+    // No document binding yet — an unconfigured org is the normal case.
+    expect(context.playbookUrl).toBeNull();
     expect(context.participants.map((p) => p.role)).toEqual(["mentor", "mentee"]);
   });
 
@@ -335,6 +337,36 @@ describe.skipIf(!DATABASE_URL)("PostgresSagaResolvers", () => {
 
   it("returns null for a slot nothing is bound to", async () => {
     expect(await resolvers.capabilities("sheet")).toBeNull();
+  });
+
+  // Declared after the other binding tests on purpose: the rows this inserts
+  // are what the `playbookUrl` assertions above assume are absent.
+  it("carries no playbook link when the document binding has no guideline doc", async () => {
+    await handle.db.insert(integrationBindings).values({
+      orgId,
+      slot: "document",
+      adapterId: "google-drive",
+      config: { folderId: "FOLDER_1" },
+      probedAt: new Date(),
+    });
+
+    expect((await resolvers.pairContext(pairingId)).playbookUrl).toBeNull();
+  });
+
+  it("turns a configured guideline doc id into the doc's own URL", async () => {
+    await handle.db
+      .update(integrationBindings)
+      .set({ config: { folderId: "FOLDER_1", guidelineDocId: "GUIDE_1" } })
+      .where(
+        and(
+          eq(integrationBindings.orgId, orgId),
+          eq(integrationBindings.slot, "document"),
+        ),
+      );
+
+    expect((await resolvers.pairContext(pairingId)).playbookUrl).toBe(
+      "https://docs.google.com/document/d/GUIDE_1/edit",
+    );
   });
 
   it("asks the calendar adapter for free/busy rather than the database", async () => {
