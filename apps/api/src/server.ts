@@ -11,9 +11,11 @@ import {
   handleSlackInteraction,
   type AgreementResponder,
   type ChatIdentityResolver,
+  type CounterContextResolver,
   type ExtractionResponder,
   type NotesSink,
   type PairingLocator,
+  type SlackModalOpener,
 } from "@mentorship/integrations";
 import { DocumentPolicySchema } from "@mentorship/core";
 import {
@@ -104,6 +106,13 @@ export interface ApiServerDeps {
   /** Confirm/Edit clicks. Absent means those clicks ack and do nothing. */
   extractions?: ExtractionResponder;
   /**
+   * "Suggest another": the modal opener (called synchronously, inside the
+   * click's own request, because a trigger_id lives about three seconds) and
+   * the reads its submission needs. Absent, a counter click acks and is
+   * recorded as unhandled — what this endpoint did before the modal existed.
+   */
+  counterModal?: { modals: SlackModalOpener; counters: CounterContextResolver };
+  /**
    * The Events API side — free-text notes arriving from a pair's own channel.
    * Absent 404s `/slack/events` rather than accepting messages it has nowhere
    * to put; a caller that only exercises interactions need not supply it.
@@ -184,6 +193,12 @@ async function route(
         identity: deps.identity,
         responder: deps.responder,
         ...(deps.extractions ? { extractions: deps.extractions } : {}),
+        ...(deps.counterModal
+          ? {
+              modals: deps.counterModal.modals,
+              counters: deps.counterModal.counters,
+            }
+          : {}),
         onUnhandled: deps.onUnhandled,
         now: deps.now,
       },

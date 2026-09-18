@@ -664,3 +664,80 @@ describe("the org's playbook link", () => {
     }
   });
 });
+
+/**
+ * What the pair can see while they are deciding. Before this, one person
+ * accepting produced no message at all: the thread went silent until either a
+ * booking appeared or the window closed, which reads as the bot ignoring them.
+ */
+describe("pick-status feedback", () => {
+  const messagesOf = (ctx: Ctx): string[] =>
+    ctx.h.recorder.of("thread.message").map((c) => String(c.detail["body"]));
+
+  it("announces the first pick and who it is waiting on, without booking", async () => {
+    const ctx = await setup();
+    const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+    const option = agreement.options[0]!;
+    await ctx.h.world.respond(
+      agreement.id,
+      agreement.participantIds[0]!,
+      "accept",
+      option.optionId,
+    );
+    await ctx.h.dispatcher.settle();
+
+    expect(messagesOf(ctx)).toContain(
+      `Arjun picked ${option.label}. Waiting on Priya.`,
+    );
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "proposing" });
+    expect(ctx.h.recorder.of("calendar.created")).toHaveLength(0);
+  });
+
+  it("books cleanly when the second person picks the same slot", async () => {
+    const ctx = await setup();
+    await bothAccept(ctx);
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "armed" });
+    expect(ctx.h.recorder.of("calendar.created")).toHaveLength(1);
+    // Both clicks land before the saga steps, so by the time it looks there is
+    // nobody left to wait on — the pick-status line is for a *pending*
+    // agreement and must not appear on an already-unanimous one.
+    expect(messagesOf(ctx).filter((b) => b.includes("Waiting on"))).toEqual([]);
+    expect(messagesOf(ctx).some((b) => b.startsWith("Booked — "))).toBe(true);
+  });
+
+  it("names both picks before re-proposing when they choose different slots", async () => {
+    const ctx = await setup();
+    const first = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+    const [arjunPick, priyaPick] = [first.options[0]!, first.options[1]!];
+    await ctx.h.world.respond(
+      first.id,
+      first.participantIds[0]!,
+      "accept",
+      arjunPick.optionId,
+    );
+    await ctx.h.dispatcher.settle();
+    await ctx.h.world.respond(
+      first.id,
+      first.participantIds[1]!,
+      "accept",
+      priyaPick.optionId,
+    );
+    await ctx.h.dispatcher.settle();
+
+    const proposals = ctx.h.recorder.of("thread.proposal");
+    expect(proposals).toHaveLength(2);
+    const body = String(proposals[1]!.detail["body"]);
+    expect(body).toContain(
+      `Arjun picked ${arjunPick.label}, Priya picked ${priyaPick.label} — let's find one that works for both:`,
+    );
+
+    // Both of the contested slots are re-offered, leading the list.
+    const second = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+    expect(second.id).not.toBe(first.id);
+    expect(second.options.slice(0, 2).map((o) => o.startsAt)).toEqual([
+      arjunPick.startsAt,
+      priyaPick.startsAt,
+    ]);
+    expect(ctx.h.recorder.of("calendar.created")).toHaveLength(0);
+  });
+});

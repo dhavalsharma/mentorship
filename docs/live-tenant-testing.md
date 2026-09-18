@@ -224,8 +224,17 @@ pnpm serve:worker:live
 
 # 4. The endpoint, in another shell, behind the tunnel from "Reaching your
 #    laptop from Slack" below.
-DATABASE_URL=… ORG_ID=$ORG_ID SLACK_SIGNING_SECRET=… pnpm serve:api
+DATABASE_URL=… ORG_ID=$ORG_ID SLACK_SIGNING_SECRET=… SLACK_BOT_TOKEN=… pnpm serve:api
 ```
+
+`SLACK_BOT_TOKEN` is optional here and needed for exactly one thing:
+"Suggest another" calls `views.open` from inside the click's own request,
+because the `trigger_id` that authorises it expires in about three seconds —
+far too soon to hand to the worker's relay. It needs no OAuth scope beyond
+having interactivity enabled (`chat:write` already covers everything this app
+sends), so the manifest is unchanged. Without the token the button acks and
+logs `counter_modal_not_configured`, exactly as it did before the modal
+existed.
 
 The worker's next pass posts a proposal to a group DM with both Slack ids.
 Click a time as one plus-addressed account, then the other — same as any

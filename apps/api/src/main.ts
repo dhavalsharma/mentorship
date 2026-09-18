@@ -4,8 +4,13 @@ import type { MagicLinkStore } from "@mentorship/auth";
 import { commitRosterImport, planRosterImport } from "@mentorship/roster";
 import { bootstrap } from "@mentorship/testkit";
 import {
+  httpSlackTransport,
+  SlackWebApiModalOpener,
+} from "@mentorship/integrations";
+import {
   PostgresAgreementResponder,
   PostgresChatIdentityResolver,
+  PostgresCounterContextResolver,
   PostgresExtractionResponder,
   PostgresNotesSink,
   PostgresPairingLocator,
@@ -42,6 +47,12 @@ if (!SIGNING_SECRET) {
 }
 
 const DATABASE_URL = process.env["DATABASE_URL"];
+/**
+ * Only needed for `views.open` — the one Slack call this process makes itself,
+ * because its trigger_id expires long before the worker's relay would run an
+ * effect. Everything else this app sends goes out through the worker.
+ */
+const SLACK_BOT_TOKEN = process.env["SLACK_BOT_TOKEN"];
 const ORG_ID = process.env["ORG_ID"];
 const TENANT_ROLE = process.env["TENANT_ROLE"];
 
@@ -108,6 +119,16 @@ function postgresDeps(url: string): ApiServerDeps {
     identity: new PostgresChatIdentityResolver(options),
     responder: new PostgresAgreementResponder(options),
     extractions: new PostgresExtractionResponder(options),
+    ...(SLACK_BOT_TOKEN
+      ? {
+          counterModal: {
+            modals: new SlackWebApiModalOpener(
+              httpSlackTransport(SLACK_BOT_TOKEN),
+            ),
+            counters: new PostgresCounterContextResolver(options),
+          },
+        }
+      : {}),
     slackEvents: {
       locator: new PostgresPairingLocator(options),
       notes: new PostgresNotesSink(options),
@@ -221,6 +242,7 @@ async function memoryDeps(): Promise<ApiServerDeps> {
           input.participantId,
           input.kind,
           input.optionId,
+          input.counter,
         ),
     },
     extractions: {
