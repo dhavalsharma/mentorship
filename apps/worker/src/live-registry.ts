@@ -9,9 +9,12 @@ import {
   httpSlackTransport,
   IntegrationRegistry,
   Recorder,
+  refreshableGoogleAccessToken,
   SandboxGuard,
   SlackConversationAdapter,
   SlackDmAdapter,
+  staticAccessToken,
+  type GoogleAccessTokenSource,
   type GoogleDriveDocumentConfig,
 } from "@mentorship/integrations";
 import { documentConfigFromEnv, type DocumentEnv } from "./document-config.js";
@@ -33,7 +36,16 @@ import { documentConfigFromEnv, type DocumentEnv } from "./document-config.js";
 
 export interface LiveEnv extends DocumentEnv {
   SLACK_BOT_TOKEN?: string | undefined;
+  /**
+   * A one-off access token — the simplest path, and the one that expires in
+   * about an hour with no way back except redoing the OAuth exchange by
+   * hand. Prefer the three `GOOGLE_CLIENT_*`/`GOOGLE_REFRESH_TOKEN` vars
+   * below for anything longer than a quick test; see `./auth.ts`.
+   */
   GOOGLE_ACCESS_TOKEN?: string | undefined;
+  GOOGLE_CLIENT_ID?: string | undefined;
+  GOOGLE_CLIENT_SECRET?: string | undefined;
+  GOOGLE_REFRESH_TOKEN?: string | undefined;
   GOOGLE_CALENDAR_ID?: string | undefined;
   SANDBOX_ALLOWLIST?: string | undefined;
 }
@@ -49,9 +61,16 @@ export function buildLiveRegistry(
    */
   documentConfig?: GoogleDriveDocumentConfig | null,
 ): { registry: IntegrationRegistry; recorder: Recorder } {
-  const missing = (
-    ["SLACK_BOT_TOKEN", "GOOGLE_ACCESS_TOKEN", "GOOGLE_CALENDAR_ID", "SANDBOX_ALLOWLIST"] as const
+  const missing: string[] = (
+    ["SLACK_BOT_TOKEN", "GOOGLE_CALENDAR_ID", "SANDBOX_ALLOWLIST"] as const
   ).filter((key) => !env[key]);
+  const hasRefreshCreds =
+    !!env.GOOGLE_CLIENT_ID && !!env.GOOGLE_CLIENT_SECRET && !!env.GOOGLE_REFRESH_TOKEN;
+  if (!env.GOOGLE_ACCESS_TOKEN && !hasRefreshCreds) {
+    missing.push(
+      "GOOGLE_ACCESS_TOKEN (or GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET + GOOGLE_REFRESH_TOKEN)",
+    );
+  }
   if (missing.length > 0) {
     throw new Error(`live mode needs ${missing.join(", ")} — see .env.example`);
   }
@@ -66,7 +85,18 @@ export function buildLiveRegistry(
   registry.bind(guardAdapter(new SlackConversationAdapter(slackCall), guard));
   registry.bind(guardAdapter(new SlackDmAdapter(slackCall), guard));
 
-  const googleCall = httpGoogleTransport(env.GOOGLE_ACCESS_TOKEN!);
+  // Shared by both Google transports, so a refresh triggered by a calendar
+  // call is reused by the very next Docs call rather than each transport
+  // maintaining its own, independently-expiring cache.
+  const googleToken: GoogleAccessTokenSource = hasRefreshCreds
+    ? refreshableGoogleAccessToken({
+        clientId: env.GOOGLE_CLIENT_ID!,
+        clientSecret: env.GOOGLE_CLIENT_SECRET!,
+        refreshToken: env.GOOGLE_REFRESH_TOKEN!,
+      })
+    : staticAccessToken(env.GOOGLE_ACCESS_TOKEN!);
+
+  const googleCall = httpGoogleTransport(googleToken);
   registry.bind(
     guardAdapter(
       new GoogleCalendarAdapter(googleCall, {
@@ -94,7 +124,7 @@ export function buildLiveRegistry(
   registry.bind(
     docConfig
       ? new GoogleDriveDocumentAdapter(
-          httpGoogleDocsTransport(env.GOOGLE_ACCESS_TOKEN!),
+          httpGoogleDocsTransport(googleToken),
           docConfig,
           // A participant silently missing from their own doc is exactly the
           // kind of gap a live run is meant to surface, so the adapter's skip

@@ -5,6 +5,7 @@ import type {
   Interval,
 } from "@mentorship/core";
 import { AdapterCapabilitiesSchema } from "@mentorship/core";
+import { staticAccessToken, type GoogleAccessTokenSource } from "./auth.js";
 
 /**
  * Google Calendar adapter.
@@ -19,7 +20,17 @@ export type GoogleTransport = (
   init: { method: string; body?: unknown; query?: Record<string, string> },
 ) => Promise<Record<string, unknown>>;
 
-export function httpGoogleTransport(accessToken: string): GoogleTransport {
+/**
+ * A bare string keeps working exactly as before — it is wrapped in
+ * `staticAccessToken`, which is the same token forever. Passing a
+ * `GoogleAccessTokenSource` instead (e.g. `refreshableGoogleAccessToken`)
+ * gets a fresh token fetched right before it is needed, not once at boot;
+ * see `./auth.ts` for why that matters.
+ */
+export function httpGoogleTransport(
+  accessToken: string | GoogleAccessTokenSource,
+): GoogleTransport {
+  const getToken = typeof accessToken === "string" ? staticAccessToken(accessToken) : accessToken;
   return async (path, init) => {
     const url = new URL(`https://www.googleapis.com/calendar/v3${path}`);
     for (const [k, v] of Object.entries(init.query ?? {})) {
@@ -28,7 +39,7 @@ export function httpGoogleTransport(accessToken: string): GoogleTransport {
     const res = await fetch(url, {
       method: init.method,
       headers: {
-        authorization: `Bearer ${accessToken}`,
+        authorization: `Bearer ${await getToken()}`,
         "content-type": "application/json",
       },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),

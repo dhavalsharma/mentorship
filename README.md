@@ -70,7 +70,9 @@ scripts.
 | `TENANT_ROLE` | root | Optional. Names the unprivileged Postgres role a connection runs as, so RLS is actually enforced rather than bypassed by a superuser connection |
 | `ANTHROPIC_API_KEY` | root | Optional. Runs the real model behind session intelligence, matching's adjudication and nudge planning. Every primitive works without it — it degrades to a deterministic fallback |
 | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | root | `pnpm serve:worker:live`, the Slack side of a live-tenant test |
-| `GOOGLE_ACCESS_TOKEN`, `GOOGLE_CALENDAR_ID` | root | `pnpm serve:worker:live`, the Google side of a live-tenant test |
+| `GOOGLE_CALENDAR_ID` | root | `pnpm serve:worker:live`, the Google side of a live-tenant test |
+| `GOOGLE_ACCESS_TOKEN` | root | Simplest Google auth — a token that expires in ~1 hour with no automatic renewal. Prefer the three below |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` | root | Preferred Google auth — the app refreshes its own access token automatically. Set all three, or none (fall back to `GOOGLE_ACCESS_TOKEN`) |
 | `GOOGLE_DRIVE_FOLDER_ID` | root | Optional. Turns on the real Google Drive adapter for each pair's running doc. A full folder URL or a bare id. Unset, the `document` slot stays on the fake. An `integration_bindings` row for the org (written by the dashboard's **Shared document** page) wins over this |
 | `GOOGLE_DRIVE_GUIDELINE_DOC_ID` | root | Optional. The template doc copied for each new pair. A full Docs URL or a bare id. Unset, each pair's doc starts blank |
 | `SANDBOX_ALLOWLIST` | root | Required whenever `SLACK_BOT_TOKEN`/`GOOGLE_ACCESS_TOKEN` are set — every real send is refused unless its recipient is on this comma-separated list |
@@ -147,13 +149,24 @@ In short:
 2. **OAuth consent screen** → External → **Testing** → add the account you'll
    authorize as under **Test users**.
 3. **Credentials → Create Credentials → OAuth client ID → Desktop app.**
-4. Get a token without writing a callback server: the
+4. Get credentials without writing a callback server: the
    [OAuth 2.0 Playground](https://developers.google.com/oauthplayground) →
    gear icon → **Use your own OAuth credentials** → your client ID/secret →
-   scope `https://www.googleapis.com/auth/calendar` → **Authorize APIs**,
-   signed in as the test account → **Exchange authorization code for tokens**.
-   Copy the access token into `GOOGLE_ACCESS_TOKEN` — it's short-lived,
-   re-exchange when it expires.
+   also set **Access type: Offline** and check **Force approval prompt** in
+   that same panel → scope `https://www.googleapis.com/auth/calendar` →
+   **Authorize APIs**, signed in as the test account → **Exchange
+   authorization code for tokens**.
+
+   That returns an access token *and* a refresh token. **Use the refresh
+   token, not the access token** — an access token alone expires in about an
+   hour and there's no way back except redoing this exchange by hand every
+   time. Set `GOOGLE_CLIENT_ID` (the OAuth client's own id), `GOOGLE_CLIENT_SECRET`
+   and `GOOGLE_REFRESH_TOKEN` instead, and leave `GOOGLE_ACCESS_TOKEN` blank —
+   `packages/integrations/src/google/auth.ts` mints and re-mints access
+   tokens from the refresh token automatically. In **Testing** consent-screen
+   status the refresh token itself expires after 7 days unused; move to **In
+   production** (still unverified, just a warning screen on authorize) to
+   remove that cap.
 5. Create a **new, dedicated calendar** on that account (not Primary) —
    its ID (under **Settings and sharing → Integrate calendar**) is
    `GOOGLE_CALENDAR_ID`.

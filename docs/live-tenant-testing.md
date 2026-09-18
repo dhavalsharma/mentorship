@@ -151,10 +151,24 @@ verified by design (ADR-0006), so nothing needs to enumerate the directory.
 4. Get a token without writing an OAuth callback server: the
    [OAuth 2.0 Playground](https://developers.google.com/oauthplayground) →
    gear icon → **Use your own OAuth credentials** → paste the client ID/secret
-   → scope `https://www.googleapis.com/auth/calendar` → **Authorize APIs**,
-   signing in as the test account → **Exchange authorization code for
-   tokens**. The access token is short-lived; re-exchange when it expires
-   rather than trying to keep a refresh flow alive for a one-off test.
+   → also in that gear-icon panel, set **Access type: Offline** and check
+   **Force approval prompt** → scope `https://www.googleapis.com/auth/calendar`
+   → **Authorize APIs**, signing in as the test account → **Exchange
+   authorization code for tokens**.
+
+   That exchange now returns both an access token and a **refresh token**.
+   The access token alone expires in about an hour with no way back except
+   redoing this whole exchange by hand — set `GOOGLE_CLIENT_ID` (the OAuth
+   client's own id, not this token), `GOOGLE_CLIENT_SECRET` and
+   `GOOGLE_REFRESH_TOKEN` from this step instead, and
+   `packages/integrations/src/google/auth.ts` mints fresh access tokens
+   automatically from then on — `GOOGLE_ACCESS_TOKEN` can stay blank. One
+   caveat: with the consent screen in **Testing** status (step 2), Google
+   also expires a refresh token after 7 days of being unused for a refresh —
+   this turns "update it every hour" into "every week," not "never." Move
+   the consent screen to **In production** (still unverified — that only
+   adds a one-time warning screen when authorizing) to remove that cap
+   entirely, if a week is still too often for your test.
 
    To exercise the running doc too, authorize **three** scopes in that same
    exchange, not just the calendar one:
