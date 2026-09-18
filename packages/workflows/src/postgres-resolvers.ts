@@ -43,6 +43,28 @@ import {
  * also why none of it needs an idempotency key.
  */
 
+/**
+ * What the caller already resolved about the document slot, for the case where
+ * no `integration_bindings` row exists.
+ *
+ * Why this exists at all: the running-doc *adapter* has always been allowed to
+ * come from the environment (`GOOGLE_DRIVE_GUIDELINE_DOC_ID`) when no admin has
+ * written a binding row yet — that is the quick live-testing path. The link in
+ * participant-facing messages was resolved separately, from the binding row
+ * only, so an env-configured org got a real Drive doc and a message that never
+ * mentioned it. Two readers of "is a guideline doc configured", two answers.
+ *
+ * This package must not read `process.env` (it is not the layer that knows
+ * about environments), so the value arrives as plain data from `apps/worker`,
+ * which resolved it once with `chooseDocumentConfig` and passes the winner on.
+ * Precedence is that function's, unchanged: a binding row wins outright, and
+ * the two are never merged — a half-and-half config is undebuggable.
+ */
+export const DocumentConfigFallbackSchema = GoogleDriveDocumentConfigSchema.pick({
+  guidelineDocId: true,
+});
+export type DocumentConfigFallback = z.infer<typeof DocumentConfigFallbackSchema>;
+
 export interface PostgresResolverOptions {
   db: Db;
   orgId: string;
@@ -50,6 +72,8 @@ export interface PostgresResolverOptions {
   registry: IntegrationRegistry;
   /** Passed to `withTenant`; see the note there about superuser connections. */
   role?: string;
+  /** Used only when the document binding row is absent or has no guideline doc. */
+  documentConfigFallback?: DocumentConfigFallback;
 }
 
 export class PostgresSagaResolvers implements SagaResolvers {
@@ -155,10 +179,13 @@ export class PostgresSagaResolvers implements SagaResolvers {
       const documentConfig = GoogleDriveDocumentConfigSchema.partial().safeParse(
         documentBinding?.config ?? {},
       );
-      const playbookUrl =
-        documentConfig.success && documentConfig.data.guidelineDocId
-          ? documentUrl(documentConfig.data.guidelineDocId)
-          : null;
+      // The row wins if it names a doc; otherwise the fallback the caller
+      // resolved (see `DocumentConfigFallbackSchema`). Never merged: whichever
+      // source answers is the only source consulted.
+      const guidelineDocId =
+        (documentConfig.success ? documentConfig.data.guidelineDocId : undefined) ??
+        this.options.documentConfigFallback?.guidelineDocId;
+      const playbookUrl = guidelineDocId ? documentUrl(guidelineDocId) : null;
 
       const byId = new Map(people.map((p) => [p.participantId, p]));
       const ordered = ids.map((id) => {

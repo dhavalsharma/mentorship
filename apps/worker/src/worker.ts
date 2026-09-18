@@ -18,6 +18,7 @@ import {
   PostgresSagaResolvers,
   PostgresSagaStore,
   relayOnce,
+  type DocumentConfigFallback,
   type RelayResult,
 } from "@mentorship/workflows/postgres";
 
@@ -52,6 +53,14 @@ export interface WorkerOptions {
   /** Where `ai_runs` rows land. Discarded (no cost dashboard) if omitted. */
   runs?: AiRunSink;
   role?: string;
+  /**
+   * The document config this process already resolved (DB row or env), used by
+   * the resolvers only when no `integration_bindings` row answers. `main-live`
+   * passes the winner of its one `resolveDocumentConfig` call rather than
+   * re-reading env, so the adapter and the playbook link in messages can never
+   * disagree about whether a guideline doc is configured — they did, once.
+   */
+  documentConfigFallback?: DocumentConfigFallback;
   ids?: IdFactory;
   now?: () => Date;
   onWarn?: (message: string, detail?: Record<string, unknown>) => void;
@@ -87,6 +96,9 @@ export function createWorker(options: WorkerOptions): Worker {
     orgId: options.orgId,
     registry: options.registry,
     ...scoped,
+    ...(options.documentConfigFallback
+      ? { documentConfigFallback: options.documentConfigFallback }
+      : {}),
   });
   const sink = new PostgresEventSink(options.db, { ...scoped, now });
   const projector = new PostgresProjector(options.db, scoped);

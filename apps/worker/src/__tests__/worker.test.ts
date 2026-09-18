@@ -47,6 +47,8 @@ describe.skipIf(!DATABASE_URL)("the worker, end to end on Postgres", () => {
   const mentorUser = randomUUID();
   const menteeUser = randomUUID();
   let pairingId: string;
+  let mentorParticipantId: string;
+  let menteeParticipantId: string;
 
   // A Monday, so the proposer has working hours to offer inside its window.
   const now = new Date("2026-09-14T06:00:00.000Z");
@@ -131,6 +133,8 @@ describe.skipIf(!DATABASE_URL)("the worker, end to end on Postgres", () => {
       })
       .returning();
     pairingId = pair!.id;
+    mentorParticipantId = people[0]!.id;
+    menteeParticipantId = people[1]!.id;
 
     sink = new PostgresEventSink(handle.db, { now: () => now });
     worker = createWorker({
@@ -276,5 +280,56 @@ describe.skipIf(!DATABASE_URL)("the worker, end to end on Postgres", () => {
       .where(eq(events.orgId, orgId));
     expect(rows.every((r) => r.relayedAt !== null)).toBe(true);
     expect(rows.every((r) => r.deadLetteredAt === null)).toBe(true);
+  });
+
+  // The bug this covers: this org has no `integration_bindings` row at all —
+  // it was configured by env, the way a quick live test is. The Drive adapter
+  // honoured that env and seeded the doc; the proposal message, resolving the
+  // same question from the binding row alone, printed no link. `main-live`
+  // hands the already-resolved answer to `createWorker`, and it has to reach
+  // the resolvers for the link to appear.
+  it("threads a resolved guideline doc into the messages the saga posts", async () => {
+    const liveRecorder = new Recorder();
+    const liveRegistry = new IntegrationRegistry();
+    liveRegistry.bind(new FakeConversation(liveRecorder));
+    liveRegistry.bind(new FakeDm(liveRecorder));
+    liveRegistry.bind(new FakeCalendar(liveRecorder, {}));
+
+    const [pair] = await handle.db
+      .insert(pairings)
+      .values({
+        orgId,
+        cohortId,
+        mentorParticipantId: mentorParticipantId,
+        menteeParticipantId: menteeParticipantId,
+        pairKey: "arjun|priya|env",
+        state: "active",
+        origin: "imported",
+      })
+      .returning();
+
+    const liveWorker = createWorker({
+      db: handle.db,
+      orgId,
+      registry: liveRegistry,
+      now: () => now,
+      documentConfigFallback: { guidelineDocId: "GUIDE_ENV" },
+    });
+
+    await sink.emit({
+      orgId,
+      name: "pair.activated",
+      subjectRef: subjectRef("pairing", pair!.id),
+      payload: { participantIds: [] },
+    });
+    await liveWorker.pass();
+
+    const proposal = liveRecorder.calls.find(
+      (c) => c.kind === "thread.proposal" && c.detail["channel"] === `C-${pair!.id}`,
+    );
+    expect(proposal).toBeDefined();
+    expect(String(proposal!.detail["body"])).toContain(
+      "https://docs.google.com/document/d/GUIDE_ENV/edit",
+    );
   });
 });

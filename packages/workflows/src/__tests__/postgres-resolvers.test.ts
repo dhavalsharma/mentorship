@@ -16,7 +16,10 @@ import {
 } from "@mentorship/db";
 import { connectTestDb, DATABASE_URL, type TestDb } from "@mentorship/db/testing";
 import { FakeCalendar, IntegrationRegistry, Recorder } from "@mentorship/integrations";
-import { PostgresSagaResolvers } from "@mentorship/workflows/postgres";
+import {
+  PostgresSagaResolvers,
+  type DocumentConfigFallback,
+} from "@mentorship/workflows/postgres";
 
 /**
  * The Postgres counterpart to `testkit`'s `World`. What matters is that it
@@ -30,6 +33,7 @@ import { PostgresSagaResolvers } from "@mentorship/workflows/postgres";
 describe.skipIf(!DATABASE_URL)("PostgresSagaResolvers", () => {
   let handle: TestDb;
   let resolvers: PostgresSagaResolvers;
+  let resolversWith: (fallback: DocumentConfigFallback) => PostgresSagaResolvers;
   const orgId = randomUUID();
   const programId = randomUUID();
   const cohortId = randomUUID();
@@ -49,6 +53,15 @@ describe.skipIf(!DATABASE_URL)("PostgresSagaResolvers", () => {
     const registry = new IntegrationRegistry();
     registry.bind(new FakeCalendar(new Recorder(), {}));
     resolvers = new PostgresSagaResolvers({ db: handle.db, orgId, registry });
+    // A second resolver over the same tenant, differing only in the fallback —
+    // so a difference in what it answers is the fallback and nothing else.
+    resolversWith = (documentConfigFallback: DocumentConfigFallback) =>
+      new PostgresSagaResolvers({
+        db: handle.db,
+        orgId,
+        registry,
+        documentConfigFallback,
+      });
 
     await handle.db
       .insert(organizations)
@@ -339,6 +352,17 @@ describe.skipIf(!DATABASE_URL)("PostgresSagaResolvers", () => {
     expect(await resolvers.capabilities("sheet")).toBeNull();
   });
 
+  // Declared before the row below exists, which is the whole point: this is the
+  // shape of the org that hit the bug — configured entirely by env, with no
+  // `integration_bindings` row for anything to read.
+  it("falls back to a caller-supplied guideline doc when no binding row exists", async () => {
+    const withFallback = resolversWith({ guidelineDocId: "GUIDE_ENV" });
+
+    expect((await withFallback.pairContext(pairingId)).playbookUrl).toBe(
+      "https://docs.google.com/document/d/GUIDE_ENV/edit",
+    );
+  });
+
   // Declared after the other binding tests on purpose: the rows this inserts
   // are what the `playbookUrl` assertions above assume are absent.
   it("carries no playbook link when the document binding has no guideline doc", async () => {
@@ -365,6 +389,18 @@ describe.skipIf(!DATABASE_URL)("PostgresSagaResolvers", () => {
       );
 
     expect((await resolvers.pairContext(pairingId)).playbookUrl).toBe(
+      "https://docs.google.com/document/d/GUIDE_1/edit",
+    );
+  });
+
+  // The rule `chooseDocumentConfig` already enforces for the adapter, enforced
+  // here too: one source answers, and it is the row. Merging the two — folder
+  // or guideline from whichever happens to be set — is the "cleanup" that would
+  // silently put the wrong doc in front of a pair.
+  it("prefers the binding row's guideline doc over a supplied fallback", async () => {
+    const withFallback = resolversWith({ guidelineDocId: "GUIDE_ENV" });
+
+    expect((await withFallback.pairContext(pairingId)).playbookUrl).toBe(
       "https://docs.google.com/document/d/GUIDE_1/edit",
     );
   });
