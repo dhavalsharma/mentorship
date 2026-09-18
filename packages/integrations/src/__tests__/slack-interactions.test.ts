@@ -1,8 +1,10 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildCounterModalView,
   handleSlackInteraction,
   parseSlackInteractionPayload,
+  parseSlackViewSubmission,
   verifySlackSignature,
   type AgreementResponder,
   type ChatIdentityResolver,
@@ -330,7 +332,7 @@ describe("handleSlackInteraction", () => {
     );
   });
 
-  it("acks 200 without writing anything for a counter click", async () => {
+  it("acks 200 without writing anything for a counter click with no modal wired", async () => {
     const body = `payload=${encodeURIComponent(
       JSON.stringify({
         user: { id: "U-ARJUN" },
@@ -357,7 +359,7 @@ describe("handleSlackInteraction", () => {
     expect(res.status).toBe(200);
     expect(d.responder.respond).not.toHaveBeenCalled();
     expect(onUnhandled).toHaveBeenCalledWith(
-      "counter_not_implemented",
+      "counter_modal_not_configured",
       expect.objectContaining({ agreementId: "agr_001" }),
     );
   });
@@ -447,6 +449,254 @@ describe("handleSlackInteraction", () => {
     expect(res.status).toBe(500);
     expect(onUnhandled).toHaveBeenCalledWith(
       "respond_failed",
+      expect.objectContaining({ agreementId: "agr_001" }),
+    );
+  });
+});
+
+/**
+ * "Suggest another", end to end through the endpoint: the click opens a modal
+ * synchronously (the trigger_id is spent in this request or not at all), and
+ * the submission is the first thing in this repo to write a real `counter`
+ * response — a structured date and time, never prose (invariant 9).
+ */
+describe("the counter-proposal modal", () => {
+  function counterClickBody(overrides: Record<string, unknown> = {}): string {
+    return `payload=${encodeURIComponent(
+      JSON.stringify({
+        type: "block_actions",
+        user: { id: "U-ARJUN" },
+        trigger_id: "trg-123.456",
+        actions: [
+          {
+            action_id: "counter:agr_001",
+            value: JSON.stringify({ agreementId: "agr_001", kind: "counter" }),
+          },
+        ],
+        ...overrides,
+      }),
+    )}`;
+  }
+
+  function submissionBody(
+    values: Record<string, unknown> | null = null,
+    metadata = JSON.stringify({ agreementId: "agr_001" }),
+  ): string {
+    return `payload=${encodeURIComponent(
+      JSON.stringify({
+        type: "view_submission",
+        user: { id: "U-ARJUN" },
+        view: {
+          callback_id: "counter_proposal",
+          private_metadata: metadata,
+          state: {
+            values: values ?? {
+              counter_date: {
+                counter_date_value: {
+                  type: "datepicker",
+                  selected_date: "2026-09-21",
+                },
+              },
+              counter_time: {
+                counter_time_value: {
+                  type: "timepicker",
+                  selected_time: "14:30",
+                },
+              },
+            },
+          },
+        },
+      }),
+    )}`;
+  }
+
+  function modalDeps(
+    over: Partial<SlackInteractionDeps> = {},
+  ): SlackInteractionDeps {
+    const identity: ChatIdentityResolver = {
+      resolveParticipantId: vi.fn(async (externalId) =>
+        externalId === "U-ARJUN" ? "prt_arjun" : null,
+      ),
+    };
+    return {
+      signingSecret: SECRET,
+      identity,
+      responder: { respond: vi.fn(async () => {}) },
+      modals: { openCounterModal: vi.fn(async () => {}) },
+      counters: {
+        // +05:30, 45-minute sessions — the same shape the Postgres resolver
+        // returns off the program's cadence.
+        resolve: vi.fn(async () => ({
+          tzOffsetMinutes: 330,
+          sessionMinutes: 45,
+        })),
+      },
+      now: () => NOW,
+      ...over,
+    };
+  }
+
+  it("builds a view carrying the agreement id in private_metadata", () => {
+    const view = buildCounterModalView({ agreementId: "agr_001" });
+    expect(JSON.parse(String(view["private_metadata"]))).toEqual({
+      agreementId: "agr_001",
+    });
+    const blocks = view["blocks"] as {
+      block_id: string;
+      element: { type: string };
+    }[];
+    expect(blocks.map((b) => b.block_id)).toEqual([
+      "counter_date",
+      "counter_time",
+    ]);
+    expect(blocks.map((b) => b.element.type)).toEqual([
+      "datepicker",
+      "timepicker",
+    ]);
+  });
+
+  it("opens the modal with the click's trigger_id, inside the click's request", async () => {
+    const body = counterClickBody();
+    const d = modalDeps();
+    const res = await handleSlackInteraction(
+      { rawBody: body, headers: signedHeaders(body) },
+      d,
+    );
+    expect(res.status).toBe(200);
+    expect(d.modals!.openCounterModal).toHaveBeenCalledWith({
+      triggerId: "trg-123.456",
+      agreementId: "agr_001",
+    });
+    // No fact is written by opening a view.
+    expect(d.responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("acks rather than erroring at the user when views.open fails", async () => {
+    const onUnhandled = vi.fn();
+    const body = counterClickBody();
+    const res = await handleSlackInteraction(
+      { rawBody: body, headers: signedHeaders(body) },
+      modalDeps({
+        modals: {
+          openCounterModal: vi.fn(async () => {
+            throw new Error("slack views.open failed: expired_trigger_id");
+          }),
+        },
+        onUnhandled,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(onUnhandled).toHaveBeenCalledWith(
+      "counter_modal_open_failed",
+      expect.objectContaining({ agreementId: "agr_001" }),
+    );
+  });
+
+  it("parses a submission's picked date and time out of view.state.values", () => {
+    expect(parseSlackViewSubmission(submissionBody())).toEqual({
+      slackUserId: "U-ARJUN",
+      agreementId: "agr_001",
+      date: "2026-09-21",
+      time: "14:30",
+    });
+  });
+
+  it("returns null for a submission whose private_metadata carries no agreement", () => {
+    expect(parseSlackViewSubmission(submissionBody(null, "{}"))).toBeNull();
+    expect(parseSlackViewSubmission(submissionBody(null, "not-json"))).toBeNull();
+  });
+
+  it("401s a submission before parsing it when the signature is wrong", async () => {
+    const body = submissionBody();
+    const d = modalDeps();
+    const res = await handleSlackInteraction(
+      {
+        rawBody: body,
+        headers: {
+          "x-slack-request-timestamp": TS,
+          "x-slack-signature": "v0=deadbeef",
+        },
+      },
+      d,
+    );
+    expect(res.status).toBe(401);
+    expect(d.responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("writes a counter response with a UTC instant built from the submitter's offset", async () => {
+    const body = submissionBody();
+    const d = modalDeps();
+    const res = await handleSlackInteraction(
+      { rawBody: body, headers: signedHeaders(body) },
+      d,
+    );
+    // An empty 200 is what closes the modal.
+    expect(res.status).toBe(200);
+    expect(res.body ?? "").toBe("");
+    expect(d.responder.respond).toHaveBeenCalledWith({
+      agreementId: "agr_001",
+      participantId: "prt_arjun",
+      kind: "counter",
+      counter: expect.objectContaining({
+        optionId: "opt_counter",
+        // 14:30 at +05:30 is 09:00 UTC, and a 45-minute session ends at 09:45.
+        startsAt: "2026-09-21T09:00:00.000Z",
+        endsAt: "2026-09-21T09:45:00.000Z",
+      }),
+    });
+  });
+
+  it("answers an empty date with an inline field error, not a silent failure", async () => {
+    const body = submissionBody({
+      counter_date: { counter_date_value: { type: "datepicker" } },
+      counter_time: {
+        counter_time_value: { type: "timepicker", selected_time: "14:30" },
+      },
+    });
+    const d = modalDeps();
+    const res = await handleSlackInteraction(
+      { rawBody: body, headers: signedHeaders(body) },
+      d,
+    );
+    expect(res.status).toBe(200);
+    expect(res.contentType).toBe("application/json");
+    expect(JSON.parse(res.body!)).toEqual({
+      response_action: "errors",
+      errors: { counter_date: "Pick a date." },
+    });
+    expect(d.responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("answers a closed or foreign agreement with an inline error", async () => {
+    const body = submissionBody();
+    const d = modalDeps({ counters: { resolve: vi.fn(async () => null) } });
+    const res = await handleSlackInteraction(
+      { rawBody: body, headers: signedHeaders(body) },
+      d,
+    );
+    expect(JSON.parse(res.body!)).toMatchObject({ response_action: "errors" });
+    expect(d.responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a rejected write in the modal rather than 500ing", async () => {
+    const body = submissionBody();
+    const onUnhandled = vi.fn();
+    const d = modalDeps({
+      responder: {
+        respond: vi.fn(async () => {
+          throw new Error("prt_arjun is not a party to agreement agr_001");
+        }),
+      },
+      onUnhandled,
+    });
+    const res = await handleSlackInteraction(
+      { rawBody: body, headers: signedHeaders(body) },
+      d,
+    );
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body!)).toMatchObject({ response_action: "errors" });
+    expect(onUnhandled).toHaveBeenCalledWith(
+      "counter_respond_failed",
       expect.objectContaining({ agreementId: "agr_001" }),
     );
   });

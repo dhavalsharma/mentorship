@@ -3,12 +3,14 @@ import {
   addHours,
   addMinutes,
   hoursBetween,
+  latestResponses,
   nextDueAt,
   proposeSlots,
   renderNamingTemplate,
   resolveAgreement,
   roundsExhausted,
   subjectRef,
+  type Agreement,
   type Effect,
   type PairContext,
   type ProposalOption,
@@ -194,6 +196,43 @@ function proposalBody(
  * the same string when nothing is configured is the point: an unconfigured org
  * must not gain a trailing blank line it never had.
  */
+/**
+ * Who has picked what so far, in `participantIds` order so the sentence reads
+ * the same way every time rather than following map iteration order. Only
+ * accepts with a recognisable option appear: a pick nobody can name is worse
+ * than no sentence at all.
+ */
+function picksSoFar(
+  pair: PairContext,
+  agreement: Agreement,
+): { name: string; label: string }[] {
+  const latest = latestResponses(agreement);
+  const out: { name: string; label: string }[] = [];
+  for (const participantId of agreement.participantIds) {
+    const response = latest.get(participantId);
+    if (!response || response.kind !== "accept") continue;
+    const option = agreement.options.find(
+      (o) => o.optionId === response.optionId,
+    );
+    if (!option) continue;
+    out.push({
+      name:
+        pair.participants.find((p) => p.participantId === participantId)
+          ?.displayName ?? "Someone",
+      label: option.label,
+    });
+  }
+  return out;
+}
+
+function displayNames(pair: PairContext, participantIds: string[]): string[] {
+  return participantIds.map(
+    (id) =>
+      pair.participants.find((p) => p.participantId === id)?.displayName ??
+      "the other person",
+  );
+}
+
 function withPlaybook(body: string, pair: PairContext): string {
   return pair.playbookUrl ? `${body}\n\nProgram playbook: ${pair.playbookUrl}` : body;
 }
@@ -253,7 +292,28 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
 
           switch (resolution.status) {
             case "pending": {
-              if (input.kind !== "timeout") return keepWaiting;
+              if (input.kind !== "timeout") {
+                // Only a genuinely new response is worth announcing. A re-entry
+                // that is not an event (a replay, a start) would otherwise post
+                // the same sentence again for a pick nobody just made.
+                if (input.kind !== "event") return keepWaiting;
+                const picks = picksSoFar(pair, agreement);
+                const waiting = displayNames(pair, resolution.awaiting);
+                if (picks.length === 0 || waiting.length === 0) {
+                  return keepWaiting;
+                }
+                return {
+                  ...keepWaiting,
+                  effects: [
+                    {
+                      type: "post_message",
+                      body: `${picks
+                        .map((p) => `${p.name} picked ${p.label}.`)
+                        .join(" ")} Waiting on ${waiting.join(" and ")}.`,
+                    },
+                  ],
+                };
+              }
               break; // expired-but-pending falls through to the timeout handling
             }
 
@@ -296,12 +356,23 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
               const picked = agreement.options.filter((o) =>
                 Object.values(resolution.picks).includes(o.optionId),
               );
+              // Say what happened before re-offering. Two people who each said
+              // yes and then saw a fresh proposal with no explanation reasonably
+              // conclude the bot ignored them.
+              const picks = picksSoFar(pair, agreement);
+              const preamble =
+                picks.length > 0
+                  ? `${picks
+                      .map((p) => `${p.name} picked ${p.label}`)
+                      .join(", ")} — let's find one that works for both:`
+                  : undefined;
               return openProposal(
                 pair,
                 ctx,
                 picked,
                 agreement.round + 1,
                 state.firstProposedAt,
+                preamble,
               );
             }
 
