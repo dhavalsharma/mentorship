@@ -741,3 +741,73 @@ describe("pick-status feedback", () => {
     expect(ctx.h.recorder.of("calendar.created")).toHaveLength(0);
   });
 });
+
+/**
+ * The confirming-state counterpart to "pick-status feedback" above. Before
+ * this, Confirm/Edit posted a bare 200 to Slack — nothing appeared in the
+ * thread until *both* participants had responded, which reads identically to
+ * the click having been dropped.
+ */
+describe("confirmation-status feedback", () => {
+  const messagesOf = (ctx: Ctx): string[] =>
+    ctx.h.recorder.of("thread.message").map((c) => String(c.detail["body"]));
+
+  async function toConfirming(ctx: Ctx): Promise<void> {
+    await bothAccept(ctx, 1);
+    await advanceToNextTimer(ctx.h); // reminder
+    await advanceToNextTimer(ctx.h); // session ends, transcript found
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "confirming" });
+  }
+
+  it("announces the first confirmation and who it is waiting on, before feedback starts", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1 });
+    await toConfirming(ctx);
+    const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+
+    await ctx.h.world.confirmExtraction(ctx.pairingId, agreement.participantIds[0]!);
+    await ctx.h.dispatcher.settle();
+
+    expect(messagesOf(ctx)).toContain(
+      "Arjun confirmed the write-up. Waiting on Priya.",
+    );
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "confirming" });
+    expect(ctx.h.recorder.of("dm.sent").filter((c) =>
+      String(c.detail["body"]).startsWith("Was that session useful?"),
+    )).toHaveLength(0);
+  });
+
+  it("words an edit differently from a plain confirm", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1 });
+    await toConfirming(ctx);
+    const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+
+    await ctx.h.world.confirmExtraction(
+      ctx.pairingId,
+      agreement.participantIds[1]!,
+      true,
+    );
+    await ctx.h.dispatcher.settle();
+
+    expect(messagesOf(ctx)).toContain(
+      "Priya is editing the write-up. Waiting on Arjun.",
+    );
+  });
+
+  it("posts no extra acknowledgment once both have responded", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1 });
+    await toConfirming(ctx);
+    const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+
+    for (const p of agreement.participantIds) {
+      await ctx.h.world.confirmExtraction(ctx.pairingId, p);
+    }
+    await ctx.h.dispatcher.settle();
+
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "feedback" });
+    // Exactly the one acknowledgment from the first response — the second,
+    // completing response must not produce a duplicate or a second line.
+    expect(
+      messagesOf(ctx).filter((b) => b.includes("the write-up")),
+    ).toHaveLength(1);
+  });
+});
