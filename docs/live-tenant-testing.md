@@ -30,6 +30,20 @@ A pair needs two people, and the interesting part of the flow is precisely that
 Both deliver to the same inbox and Slack treats them as distinct users, so one
 person can drive both sides of an agreement.
 
+**This does not work for Google Drive.** If you also configure the running-doc
+feature (below), sharing the doc with a plus-addressed email fails outright —
+confirmed directly against the live Drive API:
+`dhavals+mentor@wekancode.com` gets back `400 invalidSharingRequest
+("Sorry, an internal error has occurred")`, while the exact same call with the
+bare `dhavals@wekancode.com` succeeds. Drive has no separate account or ACL
+identity for a plus-addressed alias the way Slack does; it only grants access
+to a real, distinct Google account. `grantEditAccess` in
+`GoogleDriveDocumentAdapter` is not the bug here — it is correctly calling the
+API and Google's own service is the one refusing the address. If you want to
+test the sharing step specifically, `MENTOR_EMAIL`/`MENTEE_EMAIL` need two
+genuinely separate Google accounts; Slack can keep using plus-addressing
+regardless, since the two identity schemes are independent.
+
 **Google: a dedicated calendar, not your primary.** Create a secondary calendar
 on the test account and set `calendarId` to it. Invitations, conference links
 and anything the saga creates land there, and your real calendar is untouched.
@@ -164,8 +178,9 @@ verified by design (ADR-0006), so nothing needs to enumerate the directory.
    messages link back to — see "Google Drive (running doc)" in the README.
    The folder needs no manual sharing: each render explicitly grants both
    participants' emails writer access on the pair's doc, once, and skips
-   anyone who already has it. Both addresses must therefore be real Google
-   accounts — the same ones on `SANDBOX_ALLOWLIST`.
+   anyone who already has it. Both addresses must therefore be real, *distinct*
+   Google accounts, not a plus-addressed pair — see the note under "Isolate
+   the workspace" above for why the sharing call rejects those outright.
 
 ## Reaching your laptop from Slack
 
@@ -173,9 +188,22 @@ Interactivity and the Events API both need a public HTTPS URL. One tunnel to
 `pnpm serve:api` serves both — same host, two paths:
 
 ```bash
-pnpm serve:api                      # localhost:8787
-cloudflared tunnel --url http://localhost:8787
+pnpm serve:api           # localhost:8787
+ngrok http 8787          # brew install ngrok; needs a free account + authtoken
 ```
+
+**Use ngrok, not `cloudflared tunnel --url`.** A `cloudflared` *quick* tunnel
+(`trycloudflare.com`) looks fine from your own machine — `curl` against it
+works, the tunnel process logs no errors — but Slack's own dispatcher does not
+reliably deliver to it: a button click shows "Slack could not handle this
+payload" and zero requests ever arrive at the tunnel, even with a correct
+signing secret and a correctly-saved Request URL. This was confirmed the hard
+way, across a fresh message, a fresh app, and a from-scratch tunnel restart,
+before switching to ngrok fixed it immediately with no other change. ngrok
+needs a one-time `ngrok config add-authtoken <token>` from a free
+[dashboard.ngrok.com](https://dashboard.ngrok.com) account; the free plan's
+URL changes every restart, so re-save both Slack Request URLs whenever you
+restart the tunnel.
 
 Point the app's Interactivity Request URL at
 `https://<tunnel>/slack/interactions`, and, under **Features → Event
@@ -246,6 +274,43 @@ A recipient not on `SANDBOX_ALLOWLIST` never reaches Slack or Google at all:
 is missing, and every guarded call throws `SandboxRefusal` before the
 transport is invoked. `apps/worker/src/__tests__/live-registry.test.ts` proves
 both without a network call.
+
+## Running more than one test org against the same database
+
+Re-seeding for a fresh test (`pnpm seed:live-pair` without `ORG_ID` set, over
+and over across a session) leaves every earlier org's data sitting in the same
+local Postgres. That is normally harmless — but the worker's relay and timer
+scan are **not** scoped to its own `ORG_ID`: they claim whatever is due across
+every org in the database, then resolve it under the *current* process's
+tenant. A leftover `pair.activated` event or a `saga_instances` row whose
+timer you fast-forwarded in an earlier run, from an org this process was never
+started for, hits `pairContext()` under the wrong org and throws
+`unknown pairing <id>`.
+
+The failure-recording write is itself org-scoped, so it silently updates zero
+rows — the bad event never accumulates `attempts` or a `last_error` and is
+never dead-lettered. It is simply reclaimed and re-thrown on the next pass,
+and the one after that, indefinitely, ahead of whatever your current org
+actually has pending. Watch for a repeating `[pass failed] unknown pairing …`
+with no other progress — that is this, not a new bug in whatever you just
+changed.
+
+Until the relay/timer queries are scoped to `ORG_ID` (not done — see
+CLAUDE.md's "what is real" table), the workaround is to silence the foreign
+rows by hand:
+
+```sql
+-- events this process will never successfully relay
+update events set relayed_at = now()
+  where relayed_at is null and org_id != '<your ORG_ID>';
+
+-- sagas whose timer is due, belonging to some other org
+update saga_instances set timeout_at = now() + interval '30 days'
+  where org_id != '<your ORG_ID>' and timeout_at <= now();
+```
+
+Neither touches state or version, only the scheduling columns, and neither is
+destructive — it just stops those rows from being picked up.
 
 ## What a first live run is actually checking
 
