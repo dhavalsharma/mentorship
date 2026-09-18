@@ -782,7 +782,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
 
             const everyone = participantIds(pair).every((p) => p in verdicts);
             if (!everyone) {
-              return {
+              const keepWaiting: SagaStep<SessionLifecycleState> = {
                 next: { ...state, verdicts },
                 waitFor: {
                   names: ["extraction.confirmed", "extraction.edited"],
@@ -792,6 +792,29 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
                   now,
                   pair.policy.confirmation.autoConfirmAfterHours,
                 ),
+              };
+              // Mirror the pending-agreement fix: a click that does not yet
+              // complete the state still deserves a visible acknowledgment,
+              // not silence until the second participant responds too.
+              if (!who) return keepWaiting;
+              const responder = displayNames(pair, [who])[0];
+              const waiting = displayNames(
+                pair,
+                participantIds(pair).filter((p) => !(p in verdicts)),
+              );
+              if (!responder || waiting.length === 0) return keepWaiting;
+              const verb =
+                input.event.name === "extraction.edited"
+                  ? "is editing"
+                  : "confirmed";
+              return {
+                ...keepWaiting,
+                effects: [
+                  {
+                    type: "post_message",
+                    body: `${responder} ${verb} the write-up. Waiting on ${waiting.join(" and ")}.`,
+                  },
+                ],
               };
             }
             return enterFeedback(pair, state.sessionId, ctx, now);
