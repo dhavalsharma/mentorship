@@ -268,6 +268,31 @@ function formatOffset(minutes: number): string {
   return `${sign}${h}:${m}`;
 }
 
+/**
+ * A wall-clock date and time a human picked, in their own zone, turned into a
+ * UTC instant — the one place a "Tuesday 3pm" is ever allowed to enter the
+ * system (invariant 21), and it leaves as an instant.
+ *
+ * The offset sign matches `workingWindows` above (`localMs - offset`), which is
+ * the reason this lives here rather than being hand-rolled at the surface that
+ * collects the input: two places doing this arithmetic is one place doing it
+ * backwards.
+ *
+ * Returns null for anything that is not `YYYY-MM-DD` + `HH:MM` — the caller
+ * shows a validation error rather than booking a NaN.
+ */
+export function wallClockToUtc(input: {
+  date: string;
+  time: string;
+  tzOffsetMinutes: number;
+}): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) return null;
+  if (!/^\d{2}:\d{2}$/.test(input.time)) return null;
+  const localMs = Date.parse(`${input.date}T${input.time}:00.000Z`);
+  if (Number.isNaN(localMs)) return null;
+  return iso(localMs - input.tzOffsetMinutes * MINUTE);
+}
+
 /** When the next session is due, given the pair's agreed frequency. */
 export function nextDueAt(
   lastSessionAt: string | null,

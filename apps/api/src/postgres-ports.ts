@@ -1,23 +1,31 @@
 import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   recordResponse,
+  resolveCadence,
+  StoredProgramPolicySchema,
   subjectRef,
   type Agreement,
   type AgreementResponse,
+  type Cadence,
+  type ProposalOption,
   type ResponseKind,
 } from "@mentorship/core";
 import {
   agreements,
+  cohorts,
   events,
   identityLinks,
   pairings,
   participants,
+  programs,
+  users,
   withTenant,
   type Db,
 } from "@mentorship/db";
 import type {
   AgreementResponder,
   ChatIdentityResolver,
+  CounterContextResolver,
   ExtractionResponder,
   NotesSink,
   PairingLocator,
@@ -97,6 +105,7 @@ export class PostgresAgreementResponder implements AgreementResponder {
     participantId: string;
     kind: ResponseKind;
     optionId?: string;
+    counter?: ProposalOption;
   }): Promise<void> {
     const { db, orgId, role } = this.options;
     const at = (this.options.now?.() ?? new Date()).toISOString();
@@ -140,6 +149,7 @@ export class PostgresAgreementResponder implements AgreementResponder {
           participantId: input.participantId,
           kind: input.kind,
           optionId: input.optionId,
+          counter: input.counter,
           at,
         });
 
@@ -166,8 +176,123 @@ export class PostgresAgreementResponder implements AgreementResponder {
             participantId: input.participantId,
             kind: input.kind,
             optionId: input.optionId ?? null,
+            counter: input.counter ?? null,
           },
         });
+      },
+      role === undefined ? {} : { role },
+    );
+  }
+}
+
+/**
+ * The two reads the "Suggest another" modal's submission needs: the submitter's
+ * fixed timezone offset, and how long a session is for their program. Both come
+ * off the same query shape `PostgresSagaResolvers.pairContext()` uses —
+ * pairing -> cohort -> program policy, then `resolveCadence` down the
+ * program/cohort/pair chain — rather than a second, subtly different source of
+ * truth for what a session's length is.
+ *
+ * Null means "not a counter this endpoint should record": an unknown
+ * agreement, one that has already timed out, or a submitter who is not a party
+ * to it. Refusing here keeps `recordResponse`'s own stranger check from being
+ * the thing a participant meets as a 500.
+ */
+export class PostgresCounterContextResolver implements CounterContextResolver {
+  constructor(private readonly options: PostgresPortOptions) {}
+
+  async resolve(input: {
+    agreementId: string;
+    participantId: string;
+  }): Promise<{ tzOffsetMinutes: number; sessionMinutes: number } | null> {
+    const { db, orgId, role } = this.options;
+    const now = this.options.now?.() ?? new Date();
+
+    return withTenant(
+      db,
+      orgId,
+      async (tx) => {
+        const [agreement] = await tx
+          .select({
+            pairingId: agreements.pairingId,
+            participantIds: agreements.participantIds,
+            timeoutAt: agreements.timeoutAt,
+          })
+          .from(agreements)
+          .where(
+            and(
+              eq(agreements.orgId, orgId),
+              eq(agreements.id, input.agreementId),
+            ),
+          )
+          .limit(1);
+        if (!agreement) return null;
+        if (!(agreement.participantIds as string[]).includes(input.participantId)) {
+          return null;
+        }
+        if (agreement.timeoutAt.getTime() <= now.getTime()) return null;
+
+        const [pairing] = await tx
+          .select({
+            cohortId: pairings.cohortId,
+            cadenceOverride: pairings.cadenceOverride,
+          })
+          .from(pairings)
+          .where(
+            and(eq(pairings.orgId, orgId), eq(pairings.id, agreement.pairingId)),
+          )
+          .limit(1);
+        if (!pairing) return null;
+
+        const [program] = await tx
+          .select({
+            policy: programs.policy,
+            cadenceOverride: cohorts.cadenceOverride,
+          })
+          .from(cohorts)
+          .innerJoin(
+            programs,
+            and(
+              eq(programs.orgId, cohorts.orgId),
+              eq(programs.id, cohorts.programId),
+            ),
+          )
+          .where(
+            and(eq(cohorts.orgId, orgId), eq(cohorts.id, pairing.cohortId)),
+          )
+          .limit(1);
+        if (!program) return null;
+
+        const policy = StoredProgramPolicySchema.parse(program.policy);
+        const cadence = resolveCadence(
+          policy.cadence,
+          program.cadenceOverride as Partial<Cadence> | null,
+          pairing.cadenceOverride as Partial<Cadence> | null,
+        );
+
+        const [person] = await tx
+          .select({ tzOffsetMinutes: users.tzOffsetMinutes })
+          .from(participants)
+          .innerJoin(
+            users,
+            and(
+              eq(users.orgId, participants.orgId),
+              eq(users.id, participants.userId),
+            ),
+          )
+          .where(
+            and(
+              eq(participants.orgId, orgId),
+              eq(participants.id, input.participantId),
+            ),
+          )
+          .limit(1);
+        if (!person) return null;
+
+        return {
+          tzOffsetMinutes: person.tzOffsetMinutes,
+          sessionMinutes: cadence.sessionMinutes,
+        };
       },
       role === undefined ? {} : { role },
     );
