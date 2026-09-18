@@ -56,12 +56,23 @@ export class PostgresProjector {
     const p = event.payload;
     const id = str(p["agreementId"]);
     if (!id) return;
+    // The only handler here that must NOT read the subject ref. Every other
+    // event this projector takes is pairing-scoped at emission, but the `emit`
+    // effect re-subjects anything carrying an `agreementId` to
+    // `agreement:<id>` (see `createEffectRunner`), so `idFromRef` here returned
+    // the agreement's own id and every row's pairing_id equalled its id.
+    // Deliberately no fallback to the subject ref: for this event that value is
+    // known-wrong rather than merely stale, and there is no FK to catch it, so
+    // a missing payload field means dropping the projection rather than
+    // writing a pairing id that points at nothing.
+    const pairingId = str(p["pairingId"]);
+    if (!pairingId) return;
     await tx
       .insert(agreements)
       .values({
         id,
         orgId: event.orgId,
-        pairingId: idFromRef(event.subjectRef),
+        pairingId,
         subject: "session_time",
         options: p["options"] ?? [],
         participantIds: p["participantIds"] ?? [],

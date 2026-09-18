@@ -28,7 +28,7 @@ pnpm serve:api   # the Slack + auth endpoints, live, seeded against testkit
 pnpm dev:web     # the admin dashboard at :3000, proxying to apps/api at :8787
 pnpm typecheck
 
-# the database-backed tests — 66 more, skipped above rather than failing
+# the database-backed tests — 70 more, skipped above rather than failing
 docker compose up -d db && pnpm db:migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
 
