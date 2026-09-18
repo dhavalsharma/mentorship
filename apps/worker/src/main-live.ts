@@ -57,6 +57,13 @@ const worker = createWorker({
   orgId: ORG_ID,
   registry,
   ...(TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE }),
+  // The same resolved config the Drive adapter above was built from, reused
+  // rather than re-derived: the messages' playbook link and the running doc's
+  // seed must be the same answer to the same question. Resolving it twice is
+  // exactly how an env-configured org ended up with a seeded doc and no link.
+  ...(document.config?.guidelineDocId
+    ? { documentConfigFallback: { guidelineDocId: document.config.guidelineDocId } }
+    : {}),
   ...(llm ? { llm, ...(runs ? { runs } : {}) } : {}),
   onWarn: (message, detail) => console.warn(`[warn] ${message}`, detail ?? ""),
   onTrace: (line) =>
