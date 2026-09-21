@@ -6,6 +6,7 @@ import { AdapterCapabilitiesSchema } from "@mentorship/core";
 // quietly stop agreeing, and a doc written by one would then be unreadable by
 // the other. They belong to the projection contract, not to the fake.
 import { MANAGED_END, MANAGED_START } from "../fakes.js";
+import { staticAccessToken, type GoogleAccessTokenSource } from "./auth.js";
 
 /**
  * Google Drive + Docs adapter for the `document` slot — the running shared doc
@@ -60,7 +61,11 @@ const API_BASE: Record<GoogleDocsApi, string> = {
  * carries the same bearer token, and a caller that had to hold two functions
  * could bind them to different credentials without noticing.
  */
-export function httpGoogleDocsTransport(accessToken: string): GoogleDocsTransport {
+/** A bare string or a `GoogleAccessTokenSource` — see `./auth.ts`. */
+export function httpGoogleDocsTransport(
+  accessToken: string | GoogleAccessTokenSource,
+): GoogleDocsTransport {
+  const getToken = typeof accessToken === "string" ? staticAccessToken(accessToken) : accessToken;
   return async (api, path, init) => {
     const url = new URL(`${API_BASE[api]}${path}`);
     for (const [k, v] of Object.entries(init.query ?? {})) {
@@ -69,7 +74,7 @@ export function httpGoogleDocsTransport(accessToken: string): GoogleDocsTranspor
     const res = await fetch(url, {
       method: init.method,
       headers: {
-        authorization: `Bearer ${accessToken}`,
+        authorization: `Bearer ${await getToken()}`,
         "content-type": "application/json",
       },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),

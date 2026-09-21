@@ -89,7 +89,7 @@ export class PostgresSagaStore implements SagaStore {
       .filter((i) => matchesPattern(event, i.awaitingEvent));
   }
 
-  async findDue(now: Date): Promise<SagaInstance[]> {
+  async findDue(now: Date, orgId?: string): Promise<SagaInstance[]> {
     const rows = await this.db
       .select()
       .from(sagaInstances)
@@ -98,6 +98,7 @@ export class PostgresSagaStore implements SagaStore {
           eq(sagaInstances.status, "running"),
           isNotNull(sagaInstances.timeoutAt),
           lte(sagaInstances.timeoutAt, now),
+          ...(orgId ? [eq(sagaInstances.orgId, orgId)] : []),
         ),
       );
     return rows.map(toInstance);

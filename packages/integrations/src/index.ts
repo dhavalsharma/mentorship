@@ -7,5 +7,6 @@ export * from "./slack/verify.js";
 export * from "./slack/interactions.js";
 export * from "./slack/modal.js";
 export * from "./slack/events.js";
+export * from "./google/auth.js";
 export * from "./google/calendar.js";
 export * from "./google/document.js";

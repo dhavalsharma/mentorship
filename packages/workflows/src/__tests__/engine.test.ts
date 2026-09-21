@@ -140,6 +140,34 @@ describe("SagaEngine", () => {
     expect(instance!.status).toBe("done");
   });
 
+  it("scopes tick to one org when asked, leaving another org's due instance untouched", async () => {
+    const store = new MemorySagaStore();
+    const { engine } = harness(store);
+    await engine.start({
+      sagaName: "Tiny",
+      orgId: "org_1",
+      subjectRef: "pairing:p1",
+    });
+    await engine.start({
+      sagaName: "Tiny",
+      orgId: "org_2",
+      subjectRef: "pairing:p2",
+    });
+
+    const later = new SagaEngine({
+      store,
+      runEffect: async () => null,
+      resolvers: noResolvers,
+      now: () => new Date("2026-09-13T06:00:00.000Z"),
+    });
+    later.register(tinySaga());
+
+    expect(await later.tick("org_1")).toBe(1);
+    const instances = await later.instances();
+    expect(instances.find((i) => i.orgId === "org_1")!.status).toBe("done");
+    expect(instances.find((i) => i.orgId === "org_2")!.status).toBe("running");
+  });
+
   it("keeps one live instance per subject", async () => {
     const { engine } = harness();
     const first = await engine.start({

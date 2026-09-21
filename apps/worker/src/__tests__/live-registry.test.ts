@@ -93,4 +93,58 @@ describe("buildLiveRegistry", () => {
     expect(registry.get("transcript")!.id).toBe("fake-transcript");
     expect(registry.get("document")!.id).toBe("fake-doc");
   });
+
+  describe("Google refresh-token credentials", () => {
+    const REFRESH_ENV = {
+      SLACK_BOT_TOKEN: "xoxb-test",
+      GOOGLE_CLIENT_ID: "client-1",
+      GOOGLE_CLIENT_SECRET: "secret-1",
+      GOOGLE_REFRESH_TOKEN: "refresh-1",
+      GOOGLE_CALENDAR_ID: "cal_test",
+      SANDBOX_ALLOWLIST: "dhavals+mentor@wekancode.com,U-TEST",
+    };
+
+    it("starts fine with the three refresh vars and no static access token", () => {
+      expect(() => buildLiveRegistry(REFRESH_ENV)).not.toThrow();
+      const { registry } = buildLiveRegistry(REFRESH_ENV);
+      expect(registry.get("calendar")!.id).toBe("google");
+    });
+
+    it("still refuses to start when neither credential path is complete", () => {
+      const { GOOGLE_CLIENT_ID: _drop, ...partial } = REFRESH_ENV;
+      expect(() => buildLiveRegistry(partial)).toThrow(/GOOGLE_ACCESS_TOKEN/);
+    });
+
+    it("mints an access token from the refresh credentials on first real call", async () => {
+      const fetchSpy = vi.fn(async (url: string | URL, _init?: RequestInit) => {
+        if (String(url) === "https://oauth2.googleapis.com/token") {
+          return new Response(
+            JSON.stringify({ access_token: "minted-token", expires_in: 3600 }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ calendars: {} }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const { registry } = buildLiveRegistry(REFRESH_ENV);
+      const adapter = registry.get<CalendarAdapter>("calendar")!;
+      await adapter.freeBusy({
+        memberRefs: [],
+        window: { start: "2026-09-21T00:00:00.000Z", end: "2026-09-22T00:00:00.000Z" },
+      });
+
+      const tokenCall = fetchSpy.mock.calls.find(
+        ([url]) => String(url) === "https://oauth2.googleapis.com/token",
+      );
+      expect(tokenCall).toBeDefined();
+      const [calendarUrl, calendarInit] = fetchSpy.mock.calls.find(
+        ([url]) => String(url) !== "https://oauth2.googleapis.com/token",
+      )!;
+      expect(String(calendarUrl)).toContain("googleapis.com/calendar");
+      expect((calendarInit!.headers as Record<string, string>)["authorization"]).toBe(
+        "Bearer minted-token",
+      );
+    });
+  });
 });

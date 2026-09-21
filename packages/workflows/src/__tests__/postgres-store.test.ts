@@ -182,6 +182,22 @@ describe.skipIf(!DATABASE_URL)("PostgresSagaStore", () => {
     expect(ids).not.toContain(noTimer.id);
   });
 
+  it("scopes findDue to one org when asked, leaving another org's due instance for its own worker", async () => {
+    const now = new Date("2026-11-01T00:00:00.000Z");
+    const dueHere = instance({
+      timeoutAt: new Date("2026-10-31T23:59:00.000Z").toISOString(),
+    });
+    const dueElsewhere = instance({
+      orgId: otherOrgId,
+      timeoutAt: new Date("2026-10-31T23:59:00.000Z").toISOString(),
+    });
+    for (const i of [dueHere, dueElsewhere]) await store.create(i);
+
+    const ids = (await store.findDue(now, orgId)).map((i) => i.id);
+    expect(ids).toContain(dueHere.id);
+    expect(ids).not.toContain(dueElsewhere.id);
+  });
+
   it("finds an instance by saga name and subject", async () => {
     const original = instance();
     await store.create(original);
