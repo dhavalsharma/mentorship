@@ -142,7 +142,7 @@ export function createWorker(options: WorkerOptions): Worker {
             }
           : {}),
       });
-      const timers = await engine.tick();
+      const timers = await engine.tick(options.orgId);
       return { relay, timers };
     },
   };

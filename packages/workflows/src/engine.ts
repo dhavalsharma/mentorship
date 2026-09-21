@@ -162,9 +162,17 @@ export class SagaEngine {
     return times[0] ?? null;
   }
 
-  /** Fire every due timer. In production this is a pg-boss scheduled job. */
-  async tick(): Promise<number> {
-    const due = await this.store.findDue(this.now());
+  /**
+   * Fire every due timer. In production this is a pg-boss scheduled job.
+   *
+   * `orgId` scopes the scan for a single-tenant worker sharing a database with
+   * other tenants — omitting it (as the in-memory tests and the dispatcher do)
+   * ticks every running instance. Without this a worker built for one org can
+   * pick up another org's due instance, fail resolving it against its own
+   * org-scoped resolvers, and abort the whole pass ahead of its own timers.
+   */
+  async tick(orgId?: string): Promise<number> {
+    const due = await this.store.findDue(this.now(), orgId);
     for (const instance of due) {
       await this.advance(instance, {
         kind: "timeout",

@@ -20,7 +20,8 @@ export interface SagaStore {
   /** Optimistic concurrency: a stale write is rejected, never merged. */
   save(instance: SagaInstance, expectedVersion: number): Promise<SagaInstance>;
   findAwaiting(event: DomainEvent): Promise<SagaInstance[]>;
-  findDue(now: Date): Promise<SagaInstance[]>;
+  /** Unscoped when `orgId` is omitted — callers that cross tenants must opt in. */
+  findDue(now: Date, orgId?: string): Promise<SagaInstance[]>;
   findBySubject(sagaName: string, subjectRef: string): Promise<SagaInstance | null>;
   list(): Promise<SagaInstance[]>;
 }
@@ -65,14 +66,15 @@ export class MemorySagaStore implements SagaStore {
       .map((i) => structuredClone(i));
   }
 
-  async findDue(now: Date): Promise<SagaInstance[]> {
+  async findDue(now: Date, orgId?: string): Promise<SagaInstance[]> {
     const at = now.getTime();
     return [...this.rows.values()]
       .filter(
         (i) =>
           i.status === "running" &&
           i.timeoutAt !== null &&
-          Date.parse(i.timeoutAt) <= at,
+          Date.parse(i.timeoutAt) <= at &&
+          (orgId === undefined || i.orgId === orgId),
       )
       .map((i) => structuredClone(i));
   }
