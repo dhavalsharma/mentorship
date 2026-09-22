@@ -9,6 +9,8 @@
     "@mentorship/db": "workspace:*",
     "@mentorship/events": "workspace:*",
     "@mentorship/integrations": "workspace:*",
+    "@mentorship/primitive-nudge": "workspace:*",
+    "@mentorship/primitive-progress": "workspace:*",
     "@mentorship/primitive-session-intel": "workspace:*",
     "@mentorship/roster": "workspace:*",
     "@mentorship/testkit": "workspace:*",

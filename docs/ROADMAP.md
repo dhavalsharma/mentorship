@@ -83,8 +83,12 @@ The load-bearing wall. Everything after this assumes it.
       shutdown. Not pg-boss, despite ADR-0008 naming it: its headline
       feature is making sure only one worker runs a job, and this loop does
       not need that, because the relay claims with `SKIP LOCKED` and the
-      engine saves with `WHERE version = $expected`. pg-boss still earns its
-      place for cron-shaped work — the temporal sweep, when that exists.
+      engine saves with `WHERE version = $expected`. The temporal sweep now
+      exists (Phase 5) and still did not need pg-boss: `apps/worker/src/
+      scheduler.ts`'s `Scheduler` is ordinary interval polling, gated
+      in-process, on the same reasoning — every sweep underneath is itself
+      idempotent, so two workers ticking it redundantly is merely wasteful,
+      not unsafe.
 - [ ] A relay that serves every tenant. Today's is scoped to one org because
       its resolvers are; a multi-tenant one has to build resolvers per event.
 - [x] **Postgres `SagaResolvers`** — `pairContext`, `freeBusy`, `agreement`,
@@ -119,7 +123,8 @@ The load-bearing wall. Everything after this assumes it.
 - [x] Nudge rate limits, dedupe keys, quiet hours — build before the first real
       notification, because retrofitting does not un-spam anyone.
       `packages/primitives/nudge` — the full gate chain, deterministic and
-      model-proof. Not yet wired to send a real reminder.
+      model-proof. Now wired to a real reminder: `apps/worker`'s scheduled
+      nudge sweep (see Phase 5) calls it on an interval.
 
 ## Phase 2 — Session intelligence
 
@@ -191,16 +196,22 @@ blocked while this waits.
       `requiresHuman` flag, and now a home: `runProgressSweep` +
       `PostgresRiskFindingsSink` persist every finding to a new
       `risk_findings` table (migration `0006`/`0007`, RLS included). It is a
-      durable log, not a queue — nothing schedules the sweep yet and there is
-      still no admin view to read the table from.
+      durable log, not a queue, and there is still no admin view to read the
+      table from — but something now schedules the sweep: see Phase 5.
 - [ ] Structured goals; model-drafted, human-edited SMART framing
-- [ ] Read models for the dashboard; the same model serves the scheduled digest.
+- [x] Read models for the dashboard; the same model serves the scheduled digest.
       A first slice exists end to end: `GET /orgs/:orgId/risk-findings` and
       `GET /orgs/:orgId/nudges` in `apps/api` (`postgres-reads.ts`, now
       session-authenticated), rendered by `apps/web`'s
       `/dashboard/{risk-findings,nudges}` pages. No "pending matches" read
       model, since an approve-gated round has nowhere queryable to read from
-      (Phase 3's own gap, not this one's).
+      (Phase 3's own gap, not this one's). The scheduled digest itself is
+      `apps/worker/src/digest.ts`'s `runDigestSweep`: it queries exactly these
+      two tables over a trailing window (default 24h) and persists a computed
+      summary as a `digest.computed` domain event — there is still no real
+      notification channel (no email, no Slack summary) to render it for a
+      human, so today "digest" honestly means *compute-and-persist*, not
+      *send*. A future channel is a subscriber away.
 - [ ] Authorization layer implementing the visibility matrix, **with tests** —
       including that individual feedback is never attributed outside the pair
 - [ ] Fit the health weights against completed-cohort outcomes (ADR-0007)
@@ -211,8 +222,27 @@ blocked while this waits.
       templates — now that there is outcome history to learn from.
       `packages/primitives/nudge` (`createNudgePlanner`, `ThompsonBandit`).
       `runNudgeSweep` runs it per deficit, dispatches on `gate === "auto"`,
-      and records every outcome to the existing `nudges` table. Still nothing
-      calls the sweep — no scheduler exists yet.
+      and records every outcome to the existing `nudges` table. Something now
+      calls the sweep: `apps/worker`'s `Scheduler` (`scheduler.ts`) adds a
+      periodic, interval-gated tick alongside the existing relay-drain/timer
+      pass — `pnpm serve:worker`'s loop calls `worker.sweep()` every
+      iteration, and each configured job (`nudge`, `progress`, `digest`) only
+      actually runs once its own interval has elapsed, org-scoped to the one
+      `ORG_ID` that worker process serves (matching the fix already made for
+      `SagaStore.findDue`). `createNudgeSweepRunner`/`createProgressSweepRunner`
+      (`apps/worker/src/sweeps.ts`) assemble the real Postgres-backed
+      `NudgeReader`/`ProgressReader` and dispatch through the bound `dm`
+      adapter — with three honest, documented schema gaps: no
+      per-participant mute/snooze/quiet-hours columns yet (every recipient
+      reads as unmuted, on the program-wide default quiet hours), no
+      `template_id`/`tone` column on `nudges` yet (so the bandit always runs
+      on a uniform prior rather than learning from outcomes), and no survey
+      table yet (`survey.unanswered` never fires). None of these are silent —
+      each is called out in `packages/primitives/nudge/src/postgres.ts`.
+      Not pg-boss, for the same reason the relay/timer loop already isn't
+      (ADR-0008): nothing here needs a single-runner guarantee strongly
+      enough to be worth a distributed lock, since every sweep underneath is
+      itself idempotent.
 - [ ] Two or three presets (university, corporate career, founder network) as
       pure policy data. The real test of ADR-0001.
 - [ ] Public API and webhooks

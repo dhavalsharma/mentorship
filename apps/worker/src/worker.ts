@@ -21,6 +21,9 @@ import {
   type DocumentConfigFallback,
   type RelayResult,
 } from "@mentorship/workflows/postgres";
+import { runDigestSweep, type DigestSummary } from "./digest.js";
+import { Scheduler, type SchedulerTickResult, type SweepJob } from "./scheduler.js";
+import { createNudgeSweepRunner, createProgressSweepRunner } from "./sweeps.js";
 
 /**
  * The Postgres path, assembled: store, resolvers, sink, engine and relay.
@@ -65,12 +68,31 @@ export interface WorkerOptions {
   now?: () => Date;
   onWarn?: (message: string, detail?: Record<string, unknown>) => void;
   onTrace?: (line: TraceLine) => void;
+  /**
+   * Periodic (not per-event) sweeps — nudge reminders, progress/risk
+   * assessment, and the read-model digest. Each is off unless configured, and
+   * each runs only against this worker's own `orgId`: the sweep runners built
+   * in `sweeps.ts` and `digest.ts` are constructed once, here, closed over
+   * `options.db`/`options.orgId`, the same "one worker, one tenant" shape the
+   * relay and the timer tick already have. See `scheduler.ts` for why this is
+   * ordinary interval polling rather than another queue.
+   */
+  schedules?: {
+    nudge?: { intervalMs: number };
+    progress?: { intervalMs: number };
+    digest?: { intervalMs: number; windowMs?: number };
+  };
 }
 
 export interface Worker {
   engine: SagaEngine;
   /** One pass: drain the outbox, then fire due timers. */
   pass(): Promise<{ relay: RelayResult; timers: number }>;
+  /**
+   * One scheduler check: any configured sweep that is due runs, scoped to
+   * this worker's own org. A no-op when `schedules` was never configured.
+   */
+  sweep(): Promise<SchedulerTickResult>;
 }
 
 export function createWorker(options: WorkerOptions): Worker {
@@ -124,6 +146,48 @@ export function createWorker(options: WorkerOptions): Worker {
   });
   engine.register(createSessionLifecycle());
 
+  const sweepDeps = {
+    db: options.db,
+    orgId: options.orgId,
+    registry: options.registry,
+    ...scoped,
+    ...(options.llm ? { llm: options.llm } : {}),
+    ...(options.runs ? { runs: options.runs } : {}),
+    ...(options.onWarn ? { onWarn: options.onWarn } : {}),
+    now,
+  };
+
+  const jobs: SweepJob[] = [];
+  if (options.schedules?.progress) {
+    const run = createProgressSweepRunner(sweepDeps);
+    jobs.push({ name: "progress", intervalMs: options.schedules.progress.intervalMs, run });
+  }
+  if (options.schedules?.nudge) {
+    const run = createNudgeSweepRunner(sweepDeps);
+    jobs.push({ name: "nudge", intervalMs: options.schedules.nudge.intervalMs, run });
+  }
+  if (options.schedules?.digest) {
+    const digestConfig = options.schedules.digest;
+    jobs.push({
+      name: "digest",
+      intervalMs: digestConfig.intervalMs,
+      run: (): Promise<DigestSummary> =>
+        runDigestSweep({
+          db: options.db,
+          orgId: options.orgId,
+          sink,
+          ...(digestConfig.windowMs !== undefined ? { windowMs: digestConfig.windowMs } : {}),
+          ...scoped,
+          now,
+        }),
+    });
+  }
+  const scheduler = new Scheduler({
+    jobs,
+    now,
+    ...(options.onWarn ? { onWarn: options.onWarn } : {}),
+  });
+
   return {
     engine,
     async pass() {
@@ -144,6 +208,9 @@ export function createWorker(options: WorkerOptions): Worker {
       });
       const timers = await engine.tick(options.orgId);
       return { relay, timers };
+    },
+    sweep() {
+      return scheduler.tick();
     },
   };
 }
