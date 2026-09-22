@@ -36,6 +36,7 @@ closing a fortnight later. It touches no database, no network and no model.
 | A coding agent, or about to change something | [CLAUDE.md](./CLAUDE.md) — the invariants are the part that matters |
 | Wondering why it is built this way | [docs/decisions/](./docs/decisions/) — one ADR per decision that could have gone the other way |
 | Looking for what is next | [docs/ROADMAP.md](./docs/ROADMAP.md) |
+| Wondering what the tests do and do not prove | [docs/e2e-testing-strategy.md](./docs/e2e-testing-strategy.md) |
 | Getting it onto your machine and into GitHub | [PUSH-TO-GITHUB.md](./PUSH-TO-GITHUB.md) |
 | Setting up Postgres, Anthropic, Slack, Google or the dashboard | [Environment variables](#environment-variables), below |
 

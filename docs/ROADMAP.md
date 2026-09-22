@@ -350,6 +350,15 @@ blocked while this waits.
 
 These are not a phase; they are things that go stale if ignored.
 
+- There is still no CI workflow file anywhere in this repo, so `deps:check`,
+  the RLS cross-tenant leak test and the matching invariants suite all exist
+  and guard nothing automatically. It is the first step in
+  [e2e-testing-strategy.md](./e2e-testing-strategy.md), ahead of writing any
+  new test, because everything else there is hypothetical without it.
+- No test runs `apps/api` and `apps/worker` together against one Postgres.
+  Both composition bugs that have escaped so far (the projector's `pairing_id`,
+  `findDue`'s missing org scope) were exactly that shape and were found by a
+  human running the system. See the same document's tier 2.
 - Keep the status table in `CLAUDE.md` and `README.md` honest. It is the first
   thing a contributor reads and the fastest way to lose their trust.
 - Add an ADR when a decision could reasonably have gone the other way. Record

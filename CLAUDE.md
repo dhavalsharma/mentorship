@@ -302,3 +302,7 @@ projections become outbox-relay subscribers, and `SagaStore.save` becomes
 | [0008](docs/decisions/0008-postgres-only.md) | Postgres only — pgvector, pg-boss, RLS |
 
 `docs/ROADMAP.md` has the build order and why it is in that order.
+`docs/e2e-testing-strategy.md` has the testing one — what the 777 tests
+already prove, the four things "end to end" has to mean here, and why the
+process axis (two processes, one Postgres) is where the escaped bugs have
+actually been.
