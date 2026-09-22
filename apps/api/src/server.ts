@@ -66,12 +66,26 @@ export type StuckSagaQuery = (
   olderThanDays: number,
 ) => Promise<unknown[]>;
 
+/**
+ * `runId` is an `ai_runs.id` — a matching round's `PostgresAiRunSink.record`
+ * call is what created it (see `packages/primitives/matching/src/round.ts`),
+ * so there is no separate "round id" concept to resolve, only the id of the
+ * run that produced it. `null` means the id does not resolve to a matching
+ * run for this org — not found, or not a matching primitive's run — which
+ * the route turns into a 404 rather than an empty list.
+ */
+export type MatchingRoundCandidatesQuery = (
+  orgId: string,
+  runId: string,
+) => Promise<unknown | null>;
+
 export interface AdminReadsDeps {
   riskFindings: AdminListQuery;
   nudges: AdminListQuery;
   /** ROADMAP phase 1's monitoring gap — see `packages/workflows/src/postgres-reads.ts`. */
   stuckSagas: StuckSagaQuery;
   deadLetters: AdminListQuery;
+  matchingRoundCandidates: MatchingRoundCandidatesQuery;
 }
 
 /**
@@ -163,6 +177,13 @@ const SESSION_COOKIE = "mentorship_session";
 
 /** A backend that has nothing to say for one of these routes — see `main.ts`. */
 export function notImplementedReads(): AdminListQuery {
+  return async () => {
+    throw new NotImplementedError();
+  };
+}
+
+/** Same idea as `notImplementedReads`, for the differently-shaped matching-rounds query. */
+export function notImplementedMatchingReads(): MatchingRoundCandidatesQuery {
   return async () => {
     throw new NotImplementedError();
   };
@@ -292,6 +313,14 @@ async function route(
     }
   }
 
+  if (req.method === "GET" && req.url) {
+    const match = matchMatchingRoundCandidatesRoute(req.url);
+    if (match) {
+      await handleMatchingRoundCandidates(req, res, deps, match.orgId, match.runId);
+      return;
+    }
+  }
+
   res.writeHead(404, { "content-type": "text/plain" });
   res.end("not found");
 }
@@ -400,6 +429,69 @@ async function handleAdminList(
     if (error instanceof NotImplementedError) {
       writeJson(res, 501, {
         error: `the in-memory backend does not track ${kind}`,
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
+/** `/orgs/:orgId/matching-rounds/:runId/candidates` — the appeal-UI read model. */
+function matchMatchingRoundCandidatesRoute(
+  url: string,
+): { orgId: string; runId: string } | null {
+  const parsed = new URL(url, "http://internal");
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length !== 5) return null;
+  const [orgs, orgId, resource, runId, tail] = segments as [
+    string,
+    string,
+    string,
+    string,
+    string,
+  ];
+  if (orgs !== "orgs" || resource !== "matching-rounds" || tail !== "candidates") {
+    return null;
+  }
+  return { orgId: orgId!, runId: runId! };
+}
+
+async function handleMatchingRoundCandidates(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiServerDeps,
+  orgId: string,
+  runId: string,
+): Promise<void> {
+  if (!UUID_RE.test(orgId) || !UUID_RE.test(runId)) {
+    writeJson(res, 400, { error: "orgId and runId must both be UUIDs" });
+    return;
+  }
+
+  // Same authenticate-then-authorize order as `handleAdminList`, and for the
+  // same reason (invariant 3): a session's own org, never the URL's, is what
+  // decides whether this request may proceed.
+  const authed = await authenticateAdmin(req, res, deps, orgId);
+  if (!authed) return; // response already written (401 or 403)
+
+  if (!deps.admin) {
+    writeJson(res, 501, {
+      error: "admin reads are not configured on this server",
+    });
+    return;
+  }
+
+  try {
+    const result = await deps.admin.matchingRoundCandidates(orgId, runId);
+    if (result === null) {
+      writeJson(res, 404, { error: "no matching round found for that run id" });
+      return;
+    }
+    writeJson(res, 200, result);
+  } catch (error) {
+    if (error instanceof NotImplementedError) {
+      writeJson(res, 501, {
+        error: "the in-memory backend does not track matching rounds",
       });
       return;
     }

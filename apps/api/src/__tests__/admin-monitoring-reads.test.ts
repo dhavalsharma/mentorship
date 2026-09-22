@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { MagicLinkStore } from "@mentorship/auth";
 import {
   createServer,
+  notImplementedMatchingReads,
   notImplementedReads,
   type AdminListQuery,
   type AuthDeps,
@@ -83,6 +84,7 @@ describe("stuck-sagas and dead-letters routes over a real socket", () => {
         ? {
             riskFindings: notImplementedReads(),
             nudges: notImplementedReads(),
+            matchingRoundCandidates: notImplementedMatchingReads(),
             ...admin,
           }
         : undefined,

@@ -82,3 +82,38 @@ export interface DocumentSettings {
   guidelineDocId: string | null;
   namingTemplate: string;
 }
+
+/**
+ * Mirrors `CandidateRecord` from `@mentorship/primitive-matching`, plus
+ * `won` — the one field the read model adds that the persisted record does
+ * not carry itself (see `getMatchingRoundCandidates` in
+ * `apps/api/src/postgres-reads.ts`). Kept local rather than imported from
+ * that package for the same reason `RiskFinding`/`Nudge` are: this app's
+ * concern is the response body's shape, not the primitive's internal types.
+ */
+export interface MatchingRoundCandidate {
+  menteeId: string;
+  mentorId: string;
+  eligible: boolean;
+  violations: string[];
+  features: Record<string, number>;
+  explanations: Record<string, string>;
+  deterministicScore: number;
+  adjustment: number;
+  adjustedScore: number;
+  rank: number;
+  shortlisted: boolean;
+  rationale: string | null;
+  riskFlags: string[];
+  evidence: unknown[];
+  won: boolean;
+}
+
+/** The body `/orgs/:orgId/matching-rounds/:runId/candidates` returns. */
+export interface MatchingRoundCandidates {
+  runId: string;
+  cohortId: string;
+  asOf: string;
+  createdAt: string;
+  candidates: MatchingRoundCandidate[];
+}

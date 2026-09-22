@@ -17,6 +17,7 @@ import {
   PostgresPairingLocator,
 } from "./postgres-ports.js";
 import {
+  getMatchingRoundCandidates,
   listDeadLetters,
   listOpenRiskFindings,
   listRecentNudges,
@@ -25,6 +26,7 @@ import {
 import { PostgresDocumentSettingsStore } from "./postgres-settings.js";
 import {
   createServer,
+  notImplementedMatchingReads,
   notImplementedReads,
   type ApiServerDeps,
 } from "./server.js";
@@ -153,6 +155,8 @@ function postgresDeps(url: string): ApiServerDeps {
       stuckSagas: (orgId, limit, olderThanDays) =>
         listStuckSagas(db, orgId, limit, olderThanDays, TENANT_ROLE),
       deadLetters: (orgId, limit) => listDeadLetters(db, orgId, limit, TENANT_ROLE),
+      matchingRoundCandidates: (orgId, runId) =>
+        getMatchingRoundCandidates(db, orgId, runId, TENANT_ROLE),
     },
     documentSettings: new PostgresDocumentSettingsStore(
       db,
@@ -292,6 +296,7 @@ async function memoryDeps(): Promise<ApiServerDeps> {
       nudges: notImplementedReads(),
       stuckSagas: notImplementedReads(),
       deadLetters: notImplementedReads(),
+      matchingRoundCandidates: notImplementedMatchingReads(),
     },
     auth: {
       store: inMemoryMagicLinkStore([
