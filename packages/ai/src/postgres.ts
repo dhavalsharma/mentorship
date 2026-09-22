@@ -1,3 +1,4 @@
+import { and, eq } from "drizzle-orm";
 import { aiRuns, withTenant, type Db } from "@mentorship/db";
 import type { AiRunRecord, AiRunSink } from "./run.js";
 
@@ -32,7 +33,33 @@ export class PostgresAiRunSink implements AiRunSink {
           costUsd: run.costUsd === undefined ? null : String(run.costUsd),
           latencyMs: run.latencyMs ?? null,
           error: run.error ?? null,
+          subjectId: run.subjectId ?? null,
         });
+      },
+      role === undefined ? {} : { role },
+    );
+  }
+
+  /** Invariant 19/20: the confirm/edit tap becomes the eval label, in place. */
+  async setVerdict(input: {
+    orgId: string;
+    subjectId: string;
+    verdict: string;
+  }): Promise<void> {
+    const { role } = this.options;
+    await withTenant(
+      this.db,
+      input.orgId,
+      async (tx) => {
+        await tx
+          .update(aiRuns)
+          .set({ verdict: input.verdict })
+          .where(
+            and(
+              eq(aiRuns.orgId, input.orgId),
+              eq(aiRuns.subjectId, input.subjectId),
+            ),
+          );
       },
       role === undefined ? {} : { role },
     );

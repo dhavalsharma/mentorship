@@ -416,6 +416,93 @@ describe("capability and consent branches", () => {
     expect(runs.runs[0]!.error).toBeDefined();
   });
 
+  it("routes a safeguarding flag straight to the named contact, never through render/confirm", async () => {
+    const ctx = await setup({
+      transcription: "none",
+      policy: { safeguarding: { contactMemberRef: "U-ADMIN" } },
+      llm: new DeterministicProvider({
+        scripted: [
+          {
+            when: "BEGIN SESSION RECORD",
+            value: {
+              summary: ["A disclosure was made."],
+              actionItems: [],
+              goalProgress: [],
+              blockers: [],
+              sentimentBand: "strained",
+              riskFlags: ["safeguarding"],
+              nextSessionPrep: [],
+            },
+          },
+        ],
+      }),
+    });
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h);
+    await advanceToNextTimer(ctx.h);
+
+    await ctx.h.world.submitNotes(
+      ctx.pairingId,
+      "Priya: something happened I need to report.",
+    );
+    await ctx.h.dispatcher.settle();
+
+    // Invariant 16: no queue, no batching, no nudge, and — critically — never
+    // the render/confirm flow, which would post into the pair's own thread.
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "cooling" });
+    expect(ctx.h.recorder.of("document.rendered")).toHaveLength(0);
+    expect(ctx.h.recorder.of("thread.confirmation")).toHaveLength(0);
+
+    const alert = ctx.h.recorder.of("dm.sent").find((e) => e.detail["to"] === "U-ADMIN");
+    expect(alert).toBeDefined();
+    expect(String(alert!.detail["body"])).toContain("Review immediately");
+
+    expect(
+      ctx.h.log.all().filter((e) => e.name === "safeguarding.flagged"),
+    ).toHaveLength(1);
+  });
+
+  it("warns loudly instead of silently dropping a safeguarding flag with no contact configured", async () => {
+    const ctx = await setup({
+      transcription: "none",
+      llm: new DeterministicProvider({
+        scripted: [
+          {
+            when: "BEGIN SESSION RECORD",
+            value: {
+              summary: ["A disclosure was made."],
+              actionItems: [],
+              goalProgress: [],
+              blockers: [],
+              sentimentBand: "strained",
+              riskFlags: ["safeguarding"],
+              nextSessionPrep: [],
+            },
+          },
+        ],
+      }),
+    });
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h);
+    await advanceToNextTimer(ctx.h);
+
+    await ctx.h.world.submitNotes(
+      ctx.pairingId,
+      "Priya: something happened I need to report.",
+    );
+    await ctx.h.dispatcher.settle();
+
+    expect(
+      ctx.h.recorder.of("dm.sent").some((e) => /Review immediately/.test(String(e.detail["body"]))),
+    ).toBe(false);
+    expect(
+      ctx.warnings.some((w) => /safeguarding flagged with no contact configured/.test(w)),
+    ).toBe(true);
+    expect(
+      ctx.h.log.all().filter((e) => e.name === "safeguarding.flagged"),
+    ).toHaveLength(1);
+  });
+
   it("falls back to an internal page when no document slot is bound", async () => {
     const ctx = await setup({
       transcriptAvailableAfter: 1,

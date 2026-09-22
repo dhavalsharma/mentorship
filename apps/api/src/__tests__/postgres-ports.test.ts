@@ -1,19 +1,23 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agreements,
+  aiRuns,
   events,
   identityLinks,
   organizations,
+  pairings,
   participants,
   users,
 } from "@mentorship/db";
 import { connectTestDb, DATABASE_URL, type TestDb } from "@mentorship/db/testing";
+import { PostgresAiRunSink } from "@mentorship/ai/postgres";
 import {
   pendingOutbox,
   PostgresAgreementResponder,
   PostgresChatIdentityResolver,
+  PostgresExtractionResponder,
 } from "../postgres-ports.js";
 
 /**
@@ -29,6 +33,7 @@ describe.skipIf(!DATABASE_URL)("the Postgres-backed Slack ports", () => {
   let mentorParticipantId: string;
   let menteeParticipantId: string;
   let agreementId: string;
+  let pairingId: string;
 
   beforeAll(async () => {
     handle = await connectTestDb();
@@ -50,6 +55,19 @@ describe.skipIf(!DATABASE_URL)("the Postgres-backed Slack ports", () => {
       .returning();
     mentorParticipantId = inserted[0]!.id;
     menteeParticipantId = inserted[1]!.id;
+
+    const [pairing] = await handle.db
+      .insert(pairings)
+      .values({
+        orgId,
+        cohortId,
+        mentorParticipantId,
+        menteeParticipantId,
+        origin: "imported",
+        pairKey: `${mentorParticipantId}:${menteeParticipantId}`,
+      })
+      .returning();
+    pairingId = pairing!.id;
 
     await handle.db.insert(identityLinks).values([
       {
@@ -89,7 +107,9 @@ describe.skipIf(!DATABASE_URL)("the Postgres-backed Slack ports", () => {
   afterAll(async () => {
     if (!handle) return;
     await handle.db.delete(events).where(eq(events.orgId, orgId));
+    await handle.db.delete(aiRuns).where(eq(aiRuns.orgId, orgId));
     await handle.db.delete(agreements).where(eq(agreements.orgId, orgId));
+    await handle.db.delete(pairings).where(eq(pairings.orgId, orgId));
     await handle.db.delete(identityLinks).where(eq(identityLinks.orgId, orgId));
     await handle.db.delete(participants).where(eq(participants.orgId, orgId));
     await handle.db.delete(users).where(eq(users.orgId, orgId));
@@ -185,5 +205,74 @@ describe.skipIf(!DATABASE_URL)("the Postgres-backed Slack ports", () => {
         optionId: "opt_invented",
       }),
     ).rejects.toThrow(/unknown option/);
+  });
+
+  it("turns a Confirm click into both the domain event and the ai_runs verdict (invariants 19/20)", async () => {
+    const extractionId = randomUUID();
+    await handle.db.insert(aiRuns).values({
+      orgId,
+      primitive: "session.intel",
+      promptVersion: "test@v1",
+      model: "deterministic",
+      inputHash: "hash",
+      subjectId: extractionId,
+    });
+    await handle.db.insert(events).values({
+      orgId,
+      name: "extraction.completed",
+      subjectRef: `pairing:${pairingId}`,
+      occurredAt: new Date(),
+      payload: { extractionId },
+    });
+
+    const runs = new PostgresAiRunSink(handle.db);
+    const responder = new PostgresExtractionResponder({ db: handle.db, orgId }, runs);
+    await responder.respond({
+      extractionId,
+      participantId: mentorParticipantId,
+      kind: "confirm",
+    });
+
+    const [confirmed] = await handle.db
+      .select()
+      .from(events)
+      .where(
+        and(eq(events.orgId, orgId), eq(events.name, "extraction.confirmed")),
+      );
+    expect(confirmed!.payload).toMatchObject({ extractionId });
+
+    const [run] = await handle.db
+      .select()
+      .from(aiRuns)
+      .where(
+        and(eq(aiRuns.orgId, orgId), eq(aiRuns.subjectId, extractionId)),
+      );
+    expect(run!.verdict).toBe("confirm");
+  });
+
+  it("still records the event when no AiRunSink is wired in", async () => {
+    const extractionId = randomUUID();
+    await handle.db.insert(events).values({
+      orgId,
+      name: "extraction.completed",
+      subjectRef: `pairing:${pairingId}`,
+      occurredAt: new Date(),
+      payload: { extractionId },
+    });
+
+    const responder = new PostgresExtractionResponder({ db: handle.db, orgId });
+    await responder.respond({
+      extractionId,
+      participantId: menteeParticipantId,
+      kind: "edit",
+    });
+
+    const [edited] = await handle.db
+      .select()
+      .from(events)
+      .where(
+        and(eq(events.name, "extraction.edited"), eq(events.orgId, orgId)),
+      );
+    expect(edited!.payload).toMatchObject({ extractionId });
   });
 });

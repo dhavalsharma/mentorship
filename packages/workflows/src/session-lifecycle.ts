@@ -716,6 +716,31 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
             const extractionId =
               (input.event.payload["extractionId"] as string | undefined) ??
               input.event.id;
+
+            if (input.event.payload["safeguarding"] === true) {
+              // Invariant 16: bypass render/confirm entirely — that flow
+              // posts into the pair's own thread, exactly where a
+              // safeguarding disclosure must never surface. Reach the named
+              // human out of band and keep the program's own cadence moving.
+              return {
+                next: { name: "cooling", lastSessionAt: now },
+                ...coolingStep(pair, now, now),
+                effects: [
+                  {
+                    type: "notify_safeguarding",
+                    sessionId: state.sessionId,
+                    extractionId,
+                    summary: markdown,
+                  },
+                  {
+                    type: "emit",
+                    name: "safeguarding.flagged",
+                    payload: { sessionId: state.sessionId, extractionId },
+                  },
+                ],
+              };
+            }
+
             return {
               next: { ...state, stage: "render", extractionId },
               waitFor: {

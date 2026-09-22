@@ -59,6 +59,17 @@ export const ArtifactPolicySchema = z.object({
   manualNotesWindowHours: z.number().min(1).max(336).default(72),
 });
 
+/**
+ * `safeguarding` bypasses everything (invariant 16) — no queue, no batching,
+ * no nudge. It reaches this one named human, out of band. Null means the flag
+ * can still be raised, but there is nowhere configured to deliver it, which
+ * the effect runner treats as loud operational failure, never silent drop.
+ */
+export const SafeguardingPolicySchema = z.object({
+  contactMemberRef: z.string().nullable().default(null),
+});
+export type SafeguardingPolicy = z.infer<typeof SafeguardingPolicySchema>;
+
 export const ConsentPolicySchema = z.object({
   aiProcessing: z.enum(["required", "optional"]).default("optional"),
   /**
@@ -148,6 +159,7 @@ export const ProgramPolicySchema = z.object({
     })
     .default({}),
   consent: ConsentPolicySchema.default({}),
+  safeguarding: SafeguardingPolicySchema.default({}),
   document: DocumentPolicySchema.default({}),
   integrations: IntegrationProfileSchema.default({}),
   healthWeights: z

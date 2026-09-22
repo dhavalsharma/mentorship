@@ -115,7 +115,11 @@ The load-bearing wall. Everything after this assumes it.
       Both are blocked only on credentials now: `docs/live-tenant-testing.md`
       has the isolation plan, and `SandboxGuard` refuses any recipient not on
       an allowlist so a stray row cannot reach a colleague.
-- [ ] Monitoring: saga instances not advanced in N days; dead-letter review
+- [ ] Monitoring: saga instances not advanced in N days; dead-letter review.
+      The relay's dead-lettering itself is real (`onDeadLettered`,
+      `deadLetteredAt`, tested in `packages/workflows/src/relay.ts`) — what's
+      missing is anything admin-facing: no route, no dashboard page, no query
+      for "stuck N days" or a dead-letter list.
 - [x] Nudge rate limits, dedupe keys, quiet hours — build before the first real
       notification, because retrofitting does not un-spam anyone.
       `packages/primitives/nudge` — the full gate chain, deterministic and
@@ -134,9 +138,28 @@ repair retry, and the eval harness.
       bug this exposed: `run_extraction` never carried the note body through,
       so every notes-path extraction ran on empty text.
 - [x] Keep the evidence spans — they are what makes a claim checkable
-- [ ] Pending-then-confirm UI; confirmations become eval labels
-- [ ] Risk-flag routing, including the `safeguarding` out-of-band path. **Do not
-      ship the flag without the routing.**
+- [x] Pending-then-confirm UI — the Confirm/Edit buttons on a Slack extraction
+      message (`confirm_extraction:<id>` / `edit_extraction:<id>`), the same
+      write-the-fact-then-let-the-relay-advance-the-saga path as an agreement
+      click (invariant 19: prose is never read as a verdict).
+- [x] Confirmations become eval labels — `ai_runs` gained a `subjectId`
+      column (migration `0012`) so a run can be found again by an
+      extraction id; `runPrimitive`/`createPrimitiveSessionIntel` stamp it on
+      write, and `PostgresExtractionResponder.respond` calls the new
+      `AiRunSink.setVerdict` right after recording `extraction.confirmed` /
+      `extraction.edited`, best-effort and outside that transaction so a
+      label write can never fail the click itself.
+- [x] Risk-flag routing for `safeguarding` — the effect runner's
+      `run_extraction` now reads the primitive's `gate`, and the saga's
+      `extracting` state branches on it *before* stage `render`: a
+      safeguarding flag skips `render_document`/`request_confirmation`
+      entirely (those post into the pair's own thread — exactly where a
+      disclosure must not surface) and instead runs a new
+      `notify_safeguarding` effect that DMs the org's configured
+      `policy.safeguarding.contactMemberRef`, plus emits `safeguarding.flagged`
+      for the durable record. An unconfigured contact warns loudly rather
+      than silently dropping the disclosure — there is nowhere left to queue
+      or batch it (invariant 16).
 - [ ] Document pinning and echo suppression (ADR-0005) before enabling real
       document writes
 - [x] Golden fixtures; field-level precision/recall in CI — `eval.ts` +
@@ -164,9 +187,12 @@ risk, and it is the only one that *generates* the labelled data the others need.
       mentee forty gets nobody while mentors sit under capacity.
 - [x] LLM adjudication on the shortlist only, returning rationale and risk
       flags within bounds
-- [ ] Persist every candidate with its features and explanation, for appeals —
-      the shape exists (`CandidateRecord`, every pair, winners and losers) and
-      round-trips through `ai_runs`; no dedicated read model or appeal UI yet
+- [x] Persist every candidate with its features and explanation — every pair
+      the pipeline looked at (`CandidateRecord`, winners and losers) rides
+      inside `MatchingOutput` and genuinely round-trips through
+      `PostgresAiRunSink` into `ai_runs`, not just an in-memory shape.
+- [ ] A read model and appeal UI over those persisted candidates — nothing
+      queries `ai_runs` for this yet
 - [ ] Constraint-satisfaction and coverage assertions in CI — covered by
       `pipeline.test.ts` today; not yet a named CI gate
 - [x] Commit a round into real pairings — `runMatchingRound`/
@@ -194,13 +220,14 @@ blocked while this waits.
       durable log, not a queue — nothing schedules the sweep yet and there is
       still no admin view to read the table from.
 - [ ] Structured goals; model-drafted, human-edited SMART framing
-- [ ] Read models for the dashboard; the same model serves the scheduled digest.
-      A first slice exists end to end: `GET /orgs/:orgId/risk-findings` and
-      `GET /orgs/:orgId/nudges` in `apps/api` (`postgres-reads.ts`, now
-      session-authenticated), rendered by `apps/web`'s
-      `/dashboard/{risk-findings,nudges}` pages. No "pending matches" read
-      model, since an approve-gated round has nowhere queryable to read from
-      (Phase 3's own gap, not this one's).
+- [x] Read models for the dashboard — `GET /orgs/:orgId/risk-findings` and
+      `GET /orgs/:orgId/nudges` in `apps/api` (`postgres-reads.ts`), gated by
+      `authenticateAdmin` (session + org match, 401/403), rendered by
+      `apps/web`'s `/dashboard/{risk-findings,nudges}` pages. No "pending
+      matches" read model, since an approve-gated round has nowhere queryable
+      to read from (Phase 3's own gap, not this one's).
+- [ ] The same read model serving a scheduled digest — the query exists, but
+      nothing calls it on a schedule yet; that's Wave 2's scheduler work.
 - [ ] Authorization layer implementing the visibility matrix, **with tests** —
       including that individual feedback is never attributed outside the pair
 - [ ] Fit the health weights against completed-cohort outcomes (ADR-0007)

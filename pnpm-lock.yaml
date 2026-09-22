@@ -39,6 +39,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@mentorship/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@mentorship/auth':
         specifier: workspace:*
         version: link:../../packages/auth
@@ -160,6 +163,9 @@ importers:
       '@mentorship/db':
         specifier: workspace:*
         version: link:../db
+      drizzle-orm:
+        specifier: ^0.38.3
+        version: 0.38.4(@types/react@19.3.0)(postgres@3.4.9)(react@19.2.8)
       zod:
         specifier: ^3.24.1
         version: 3.25.76

@@ -27,7 +27,13 @@ export interface SessionIntel {
     sourceRef: string;
     text: string;
     pair: PairContext;
-  }): Promise<{ extractionId: string; markdown: string; actionItems: string[] }>;
+  }): Promise<{
+    extractionId: string;
+    markdown: string;
+    actionItems: string[];
+    /** Invariant 16: true routes straight to `notify_safeguarding`, never through render/confirm. */
+    safeguarding?: boolean;
+  }>;
 }
 
 export interface EffectRunnerOptions {
@@ -304,8 +310,30 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           markdown: result.markdown,
           actionItems: result.actionItems,
           sourceRef: effect.sourceRef,
+          ...(result.safeguarding ? { safeguarding: true } : {}),
         });
         return { extractionId: result.extractionId };
+      }
+
+      case "notify_safeguarding": {
+        const contact = pair.policy.safeguarding.contactMemberRef;
+        const dm = opts.registry.get<DmAdapter>("dm");
+        if (!contact || !dm) {
+          // Invariant 16 leaves no queue or batch to fall back to — an
+          // unconfigured or unbound destination is a loud operational
+          // warning, never a silently dropped disclosure.
+          warn("safeguarding flagged with no contact configured; not delivered", {
+            sessionId: effect.sessionId,
+            extractionId: effect.extractionId,
+          });
+          return { notified: false };
+        }
+        await dm.send({
+          memberRef: contact,
+          body: `Safeguarding flag raised on session ${effect.sessionId} (${pair.title}). Review immediately:\n\n${effect.summary}`,
+          idempotencyKey: ctx.key,
+        });
+        return { notified: true };
       }
 
       case "render_document": {

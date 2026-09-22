@@ -1,4 +1,5 @@
 import { createClient } from "@mentorship/db";
+import { PostgresAiRunSink } from "@mentorship/ai/postgres";
 import { PostgresMagicLinkStore } from "@mentorship/auth/postgres";
 import type { MagicLinkStore } from "@mentorship/auth";
 import { commitRosterImport, planRosterImport } from "@mentorship/roster";
@@ -118,7 +119,13 @@ function postgresDeps(url: string): ApiServerDeps {
     slackSigningSecret: SIGNING_SECRET!,
     identity: new PostgresChatIdentityResolver(options),
     responder: new PostgresAgreementResponder(options),
-    extractions: new PostgresExtractionResponder(options),
+    extractions: new PostgresExtractionResponder(
+      options,
+      new PostgresAiRunSink(
+        db,
+        TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE },
+      ),
+    ),
     ...(SLACK_BOT_TOKEN
       ? {
           counterModal: {

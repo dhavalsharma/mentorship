@@ -46,6 +46,8 @@ export interface SessionIntelExtractResult {
   /** The structured record. Markdown is a projection of this, never the truth. */
   output: SessionIntelOutput;
   gate: GateDecision;
+  /** Invariant 16: mirrors `gate === "escalate"`, spelled out for callers that don't want to know the gate vocabulary. */
+  safeguarding: boolean;
   degraded: boolean;
   /**
    * Always `pending` (invariant 19). A field rather than a constant in the
@@ -79,6 +81,10 @@ export function createPrimitiveSessionIntel(
 
   return {
     async extract({ sessionId, sourceRef, text, pair }) {
+      // Generated up front, not after the run, so it can be stamped onto the
+      // `ai_runs` row as its `subjectId` — the join a later Confirm/Edit tap
+      // needs to turn into that row's `verdict` (invariants 19/20).
+      const extractionId = ids.next("ext");
       const run = await runPrimitive({
         primitive,
         trigger: {
@@ -98,6 +104,7 @@ export function createPrimitiveSessionIntel(
         llm: options.llm,
         policy: pair.policy,
         orgId: pair.orgId,
+        subjectId: extractionId,
         ...(options.runs ? { runs: options.runs } : {}),
         // Unanimous consent, checked before the model is reached rather than
         // after (invariant 12): one participant's refusal is not outvoted.
@@ -110,7 +117,7 @@ export function createPrimitiveSessionIntel(
       });
 
       return {
-        extractionId: ids.next("ext"),
+        extractionId,
         markdown: renderExtractionMarkdown(run.output, pair, {
           sourceRef,
           degraded: run.degraded,
@@ -118,6 +125,7 @@ export function createPrimitiveSessionIntel(
         actionItems: actionItemLines(run.output, pair),
         output: run.output,
         gate: run.gate,
+        safeguarding: run.gate === "escalate",
         degraded: run.degraded,
         status: "pending",
       };
