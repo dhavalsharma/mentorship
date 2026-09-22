@@ -1,7 +1,12 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { SheetAdapter } from "@mentorship/core";
 import { integrationBindings, nudges, riskFindings, withTenant, type Db } from "@mentorship/db";
-import { GoogleSheetConfigSchema, type GoogleSheetConfig } from "@mentorship/integrations";
+import {
+  extractDriveFolderId,
+  extractSpreadsheetId,
+  GoogleSheetConfigSchema,
+  type GoogleSheetConfig,
+} from "@mentorship/integrations";
 import type { IntegrationRegistry } from "@mentorship/integrations";
 
 /**
@@ -286,9 +291,13 @@ export interface ResolvedSheetConfig {
 
 /** Accepts a full Drive/Sheets URL or a bare id, for both variables. */
 export function sheetConfigFromEnv(env: SheetEnv): GoogleSheetConfig | null {
-  const folderId = env.GOOGLE_SHEETS_FOLDER_ID?.trim();
+  const folderId = env.GOOGLE_SHEETS_FOLDER_ID
+    ? extractDriveFolderId(env.GOOGLE_SHEETS_FOLDER_ID)
+    : null;
   if (!folderId) return null;
-  const spreadsheetId = env.GOOGLE_SHEETS_SPREADSHEET_ID?.trim();
+  const spreadsheetId = env.GOOGLE_SHEETS_SPREADSHEET_ID
+    ? extractSpreadsheetId(env.GOOGLE_SHEETS_SPREADSHEET_ID)
+    : null;
   return GoogleSheetConfigSchema.parse({
     folderId,
     ...(spreadsheetId ? { spreadsheetId } : {}),

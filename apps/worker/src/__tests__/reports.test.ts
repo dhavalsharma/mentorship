@@ -133,6 +133,15 @@ describe("sheetConfigFromEnv", () => {
       }),
     ).toEqual({ folderId: "F1", spreadsheetId: "S1" });
   });
+
+  it("accepts URLs as well as bare ids, same as documentConfigFromEnv", () => {
+    expect(
+      sheetConfigFromEnv({
+        GOOGLE_SHEETS_FOLDER_ID: "https://drive.google.com/drive/folders/F1",
+        GOOGLE_SHEETS_SPREADSHEET_ID: "https://docs.google.com/spreadsheets/d/S1/edit",
+      }),
+    ).toEqual({ folderId: "F1", spreadsheetId: "S1" });
+  });
 });
 
 describe("chooseSheetConfig", () => {
