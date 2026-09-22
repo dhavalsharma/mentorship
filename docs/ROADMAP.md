@@ -320,6 +320,29 @@ blocked while this waits.
 - [ ] Full Apache-2.0 licence text
 - [ ] A custom-primitive walkthrough, and the eval harness front and centre so
       contributors can change prompts safely
+- [x] Sync program-progress data into a Google Spreadsheet. `risk-findings`
+      and `nudges` report types (`apps/worker/src/reports.ts`'s `REPORT_SOURCES`
+      registry — one new file/function to add a third), a new `SheetAdapter`
+      port (`packages/core/src/capabilities.ts`) with a real
+      `GoogleSheetsAdapter` (`packages/integrations/src/google/sheet.ts`,
+      create-then-move-into-folder via Drive, same dance
+      `GoogleDriveDocumentAdapter` uses) and a `FakeSheet` for tests/demo.
+      One spreadsheet per org, one tab per report type, full overwrite on
+      every sync (never append/dedupe — see the comment on
+      `syncReports`). No spreadsheet id configured → the first sync creates
+      one in the org's Drive folder and persists the id back onto
+      `integration_bindings` (slot `"sheet"`), so a second sync reuses it —
+      proven on Postgres in `apps/worker/src/__tests__/report-sync.test.ts`.
+      Scheduled the same way the nudge/progress/digest sweeps are
+      (`Scheduler`/`worker.ts`, `REPORT_SYNC_INTERVAL_MS`, default hourly,
+      org-scoped). `/orgs/:orgId/settings/sheet` (admin-gated, mirrors
+      `/settings/document`) and `apps/web`'s `/dashboard/settings/sheet` let
+      an admin configure the folder and, optionally, an existing
+      spreadsheet. A `progress` report type was considered and left out:
+      there is no persisted, queryable health score anywhere yet (ADR-0007 —
+      the model explains a score, nothing stores one for later reporting),
+      and inventing a table for it would be the same mistake `digest.ts`'s
+      own comment warns against for a fake email adapter.
 
 ---
 

@@ -22,6 +22,7 @@ import {
   type RelayResult,
 } from "@mentorship/workflows/postgres";
 import { runDigestSweep, type DigestSummary } from "./digest.js";
+import { createReportSyncRunner, type SheetEnv, type SyncReportsResult } from "./reports.js";
 import { Scheduler, type SchedulerTickResult, type SweepJob } from "./scheduler.js";
 import { createNudgeSweepRunner, createProgressSweepRunner } from "./sweeps.js";
 
@@ -81,7 +82,22 @@ export interface WorkerOptions {
     nudge?: { intervalMs: number };
     progress?: { intervalMs: number };
     digest?: { intervalMs: number; windowMs?: number };
+    /**
+     * Syncs `risk_findings`/`nudges` (and any other registered report type,
+     * see `apps/worker/src/reports.ts`) into the org's configured Google
+     * Spreadsheet. A no-op tick (not an error) when no `sheet` adapter is
+     * bound or no destination is configured yet — the same "off unless
+     * configured" shape every other sweep here has.
+     */
+    reportSync?: { intervalMs: number; spreadsheetTitle?: string };
   };
+  /**
+   * Env-only fallback for the `sheet` destination, read only when no
+   * `integration_bindings` row for that slot exists yet — same precedence
+   * rule `documentConfigFallback` follows for `document`. Ignored unless
+   * `schedules.reportSync` is configured.
+   */
+  reportSyncEnv?: SheetEnv;
 }
 
 export interface Worker {
@@ -180,6 +196,25 @@ export function createWorker(options: WorkerOptions): Worker {
           ...scoped,
           now,
         }),
+    });
+  }
+  if (options.schedules?.reportSync) {
+    const reportSyncConfig = options.schedules.reportSync;
+    const run = createReportSyncRunner({
+      db: options.db,
+      orgId: options.orgId,
+      registry: options.registry,
+      ...scoped,
+      ...(options.reportSyncEnv ? { env: options.reportSyncEnv } : {}),
+      ...(reportSyncConfig.spreadsheetTitle
+        ? { spreadsheetTitle: reportSyncConfig.spreadsheetTitle }
+        : {}),
+      ...(options.onWarn ? { onWarn: options.onWarn } : {}),
+    });
+    jobs.push({
+      name: "report-sync",
+      intervalMs: reportSyncConfig.intervalMs,
+      run: (): Promise<SyncReportsResult | null> => run(),
     });
   }
   const scheduler = new Scheduler({

@@ -88,10 +88,29 @@ describe("buildLiveRegistry", () => {
     expect(fetchSpy).toHaveBeenCalledOnce();
   });
 
-  it("still binds fake transcript and document, unguarded", () => {
+  it("still binds fake transcript, document and sheet, unguarded", () => {
     const { registry } = buildLiveRegistry(FULL_ENV);
     expect(registry.get("transcript")!.id).toBe("fake-transcript");
     expect(registry.get("document")!.id).toBe("fake-doc");
+    expect(registry.get("sheet")!.id).toBe("fake-sheet");
+  });
+
+  it("binds a real Google Sheets adapter when a sheet config is passed, not guarded", async () => {
+    const { registry } = buildLiveRegistry(FULL_ENV, undefined, null, {
+      folderId: "folder_1",
+    });
+    const adapter = registry.get("sheet")!;
+    expect(adapter.id).toBe("google-sheets");
+
+    // Not wrapped in SandboxGuard: a call reaches the transport directly
+    // rather than throwing SandboxRefusal for an unlisted "recipient" — a
+    // spreadsheet folder addresses nobody, so there is nothing to guard.
+    const fetchSpy = vi.fn(
+      async () => new Response(JSON.stringify({ id: "folder_1" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    await expect((adapter as { probe(): Promise<unknown> }).probe()).resolves.toBeDefined();
+    expect(fetchSpy).toHaveBeenCalledOnce();
   });
 
   describe("Google refresh-token credentials", () => {

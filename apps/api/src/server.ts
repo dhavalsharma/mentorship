@@ -7,6 +7,7 @@ import {
 import {
   extractDriveFolderId,
   extractGoogleDocId,
+  extractSpreadsheetId,
   handleSlackEvent,
   handleSlackInteraction,
   type AgreementResponder,
@@ -114,6 +115,25 @@ export interface DocumentSettingsStore {
 }
 
 /**
+ * Settings for the `sheet` slot — the report-sync spreadsheet destination.
+ * `folderId` is where a new spreadsheet is created when none is configured
+ * yet; `spreadsheetId` is filled in either by an admin pasting an existing
+ * spreadsheet, or by the sync job persisting the one it created (see
+ * `apps/worker/src/reports.ts`). Both live on `integration_bindings.config`
+ * — unlike `document`, there is no program-policy half (no per-report
+ * naming template), so this is the simpler of the two settings shapes.
+ */
+export interface SheetSettings {
+  folderId: string | null;
+  spreadsheetId: string | null;
+}
+
+export interface SheetSettingsStore {
+  read(orgId: string): Promise<SheetSettings>;
+  write(orgId: string, settings: SheetSettings): Promise<void>;
+}
+
+/**
  * This server is single-tenant-per-process (see `main.ts`'s `ORG_ID`), so
  * `orgId` here is the one org this whole process is bound to — the same
  * pattern `postgres-ports.ts`'s `PostgresPortOptions` already uses for
@@ -170,6 +190,12 @@ export interface ApiServerDeps {
    * `admin` is; absent, the routes below 501 rather than throwing.
    */
   documentSettings?: DocumentSettingsStore;
+  /**
+   * Read/write settings for the `sheet` slot. Optional for the same reason
+   * `documentSettings` is; absent, the routes below 501 rather than
+   * throwing.
+   */
+  sheetSettings?: SheetSettingsStore;
   /**
    * Magic-link auth. Optional for the same reason `admin` is — a caller that
    * only exercises the Slack route need not supply it — but its *absence*
@@ -299,6 +325,14 @@ async function route(
     const orgId = matchDocumentSettingsRoute(req.url);
     if (orgId !== null) {
       await handleDocumentSettings(req, res, deps, orgId, req.method === "PUT");
+      return;
+    }
+  }
+
+  if ((req.method === "GET" || req.method === "PUT") && req.url) {
+    const orgId = matchSheetSettingsRoute(req.url);
+    if (orgId !== null) {
+      await handleSheetSettings(req, res, deps, orgId, req.method === "PUT");
       return;
     }
   }
@@ -605,6 +639,106 @@ async function handleDocumentSettings(
 
   await store.write(orgId, parsed.settings);
   writeJson(res, 200, parsed.settings);
+}
+
+/** `/orgs/:orgId/settings/sheet`. */
+function matchSheetSettingsRoute(url: string): string | null {
+  const parsed = new URL(url, "http://internal");
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length !== 4) return null;
+  const [orgs, orgId, settings, resource] = segments as [
+    string,
+    string,
+    string,
+    string,
+  ];
+  if (orgs !== "orgs" || settings !== "settings" || resource !== "sheet") {
+    return null;
+  }
+  return orgId;
+}
+
+async function handleSheetSettings(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiServerDeps,
+  orgId: string,
+  isWrite: boolean,
+): Promise<void> {
+  if (!UUID_RE.test(orgId)) {
+    writeJson(res, 400, { error: "orgId must be a UUID" });
+    return;
+  }
+
+  const authed = await authenticateAdmin(req, res, deps, orgId);
+  if (!authed) return; // response already written (401 or 403)
+
+  const store = deps.sheetSettings;
+  if (!store) {
+    writeJson(res, 501, {
+      error: "sheet settings are not configured on this server",
+    });
+    return;
+  }
+
+  if (!isWrite) {
+    writeJson(res, 200, await store.read(orgId));
+    return;
+  }
+
+  let rawBody: string;
+  try {
+    rawBody = await readBody(req, MAX_BODY_BYTES);
+  } catch {
+    res.writeHead(413, { "content-type": "text/plain" });
+    res.end("payload too large");
+    return;
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(rawBody) as Record<string, unknown>;
+  } catch {
+    writeJson(res, 400, { error: "invalid JSON body" });
+    return;
+  }
+
+  const parsed = parseSheetSettings(body);
+  if ("error" in parsed) {
+    writeJson(res, 400, { error: parsed.error });
+    return;
+  }
+
+  await store.write(orgId, parsed.settings);
+  writeJson(res, 200, parsed.settings);
+}
+
+/**
+ * `folder` accepts either a pasted Drive folder URL or a bare id, same
+ * reasoning as `parseDocumentSettings`. `spreadsheet` is optional — an admin
+ * who already has a spreadsheet may paste its URL or id to point sync at it
+ * directly, rather than let the first sync create one.
+ */
+function parseSheetSettings(
+  body: Record<string, unknown>,
+): { settings: SheetSettings } | { error: string } {
+  const folderRaw = typeof body["folder"] === "string" ? body["folder"] : "";
+  const folderId = extractDriveFolderId(folderRaw);
+  if (folderId === null) {
+    return { error: "folder must be a Drive folder URL or id" };
+  }
+
+  const spreadsheetRaw =
+    typeof body["spreadsheet"] === "string" ? body["spreadsheet"].trim() : "";
+  let spreadsheetId: string | null = null;
+  if (spreadsheetRaw.length > 0) {
+    spreadsheetId = extractSpreadsheetId(spreadsheetRaw);
+    if (spreadsheetId === null) {
+      return { error: "spreadsheet must be a Google Sheets URL or id" };
+    }
+  }
+
+  return { settings: { folderId, spreadsheetId } };
 }
 
 /**

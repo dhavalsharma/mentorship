@@ -185,3 +185,43 @@ export interface DocumentAdapter extends Adapter {
     pinned: boolean;
   }>;
 }
+
+/**
+ * The `sheet` slot: a periodic reporting destination, not a per-pair
+ * artifact like `document`. One spreadsheet per org, one tab per report
+ * type, full-overwrite on every sync (see `apps/worker/src/reports.ts` for
+ * why append/dedupe was rejected). Modeled directly on `DocumentAdapter`
+ * above — same two-call shape (locate-or-create, then write) — because the
+ * underlying problem is the same one: a vendor-agnostic contract that must
+ * never leak the word "spreadsheet ID" or "tab" as anything but an opaque
+ * string core cares nothing about.
+ */
+export interface SheetAdapter extends Adapter {
+  slot: "sheet";
+  /**
+   * Locates the destination spreadsheet, creating one (inside whatever
+   * folder-equivalent the adapter's own config names) only when
+   * `spreadsheetId` is `null`. Idempotent by key, same discipline as every
+   * other effect (invariant 6) — a retried sync must not create a second
+   * spreadsheet.
+   */
+  ensureSpreadsheet(input: {
+    spreadsheetId: string | null;
+    title: string;
+    idempotencyKey: string;
+  }): Promise<{ spreadsheetId: string; url: string }>;
+  /**
+   * Creates the tab if it does not exist, then replaces its entire used
+   * range with `columns` (the header row) followed by `rows` — a full
+   * overwrite, never an append. A report tab is a live snapshot of "what is
+   * true right now"; append/dedupe would need a stable row key and a sheet
+   * that only ever grows, which nothing here needs.
+   */
+  writeTab(input: {
+    spreadsheetId: string;
+    tabTitle: string;
+    columns: string[];
+    rows: unknown[][];
+    idempotencyKey: string;
+  }): Promise<void>;
+}

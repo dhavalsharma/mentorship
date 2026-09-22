@@ -1,10 +1,13 @@
 import {
   FakeDocument,
+  FakeSheet,
   FakeTranscript,
   GoogleCalendarAdapter,
   GoogleDriveDocumentAdapter,
+  GoogleSheetsAdapter,
   guardAdapter,
   httpGoogleDocsTransport,
+  httpGoogleSheetsTransport,
   httpGoogleTransport,
   httpSlackTransport,
   IntegrationRegistry,
@@ -16,8 +19,10 @@ import {
   staticAccessToken,
   type GoogleAccessTokenSource,
   type GoogleDriveDocumentConfig,
+  type GoogleSheetConfig,
 } from "@mentorship/integrations";
 import { documentConfigFromEnv, type DocumentEnv } from "./document-config.js";
+import { sheetConfigFromEnv, type SheetEnv } from "./reports.js";
 
 /**
  * The registry for a live-tenant test: real Slack and Google, everything else
@@ -34,7 +39,7 @@ import { documentConfigFromEnv, type DocumentEnv } from "./document-config.js";
  * a live run could forget it.
  */
 
-export interface LiveEnv extends DocumentEnv {
+export interface LiveEnv extends DocumentEnv, SheetEnv {
   SLACK_BOT_TOKEN?: string | undefined;
   /**
    * A one-off access token — the simplest path, and the one that expires in
@@ -60,6 +65,8 @@ export function buildLiveRegistry(
    * nothing about `db` anywhere else.
    */
   documentConfig?: GoogleDriveDocumentConfig | null,
+  /** Same "already resolved, outranks the environment" reasoning, for the `sheet` slot. */
+  sheetConfig?: GoogleSheetConfig | null,
 ): { registry: IntegrationRegistry; recorder: Recorder } {
   const missing: string[] = (
     ["SLACK_BOT_TOKEN", "GOOGLE_CALENDAR_ID", "SANDBOX_ALLOWLIST"] as const
@@ -132,6 +139,24 @@ export function buildLiveRegistry(
           (message, detail) => console.warn(`[warn] ${message}`, detail ?? ""),
         )
       : new FakeDocument(recorder),
+  );
+
+  // Not guarded, for the same reason the document adapter above is not:
+  // `SandboxGuard`'s job is stopping a test run from putting a message or an
+  // invite in front of a real *person*, and a report-sync spreadsheet
+  // addresses a folder, not a participant — it is bounded by `folderId`
+  // (the config the admin nominated), which plays the allowlist's role for
+  // this slot the same way it does for `document`. Verified by rereading
+  // `GoogleDriveDocumentAdapter`'s own binding above rather than assumed by
+  // analogy: neither adapter sends anything to a chat member or a mentor's
+  // inbox, they both only write to a Drive artifact the org already owns.
+  const sheetCfg = sheetConfig ?? sheetConfigFromEnv(env);
+  registry.bind(
+    sheetCfg
+      ? new GoogleSheetsAdapter(httpGoogleSheetsTransport(googleToken), sheetCfg, (message, detail) =>
+          console.warn(`[warn] ${message}`, detail ?? ""),
+        )
+      : new FakeSheet(recorder),
   );
 
   return { registry, recorder };

@@ -83,6 +83,12 @@ export interface DocumentSettings {
   namingTemplate: string;
 }
 
+/** The body `/orgs/:orgId/settings/sheet` returns and accepts. */
+export interface SheetSettings {
+  folderId: string | null;
+  spreadsheetId: string | null;
+}
+
 /**
  * Mirrors `CandidateRecord` from `@mentorship/primitive-matching`, plus
  * `won` — the one field the read model adds that the persisted record does
