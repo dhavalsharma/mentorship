@@ -120,9 +120,9 @@ sync both.
 
 **Harder**
 - Pinning must actually be implemented before anyone edits a managed region, or
-  the first overwrite loses a user's trust. *(Currently designed, not built —
-  `FakeDocument` replaces the whole region.)*
-- Echo suppression needs the service account identity per provider.
+  the first overwrite loses a user's trust. *(Built — see Action Items 4–5.)*
+- Echo suppression needs the service account identity per provider. *(Built —
+  see Action Items 4–5.)*
 - The thread becomes the place changes happen, which needs clear copy so it does
   not feel like a detour.
 - Two surfaces can look briefly inconsistent.
@@ -138,8 +138,24 @@ sync both.
 1. [x] Managed-region markers; render from DB state
 2. [x] Unverified marking on confirmation timeout
 3. [x] Internal-page fallback when no document slot is bound
-4. [ ] Echo suppression via service-account revision identity
-5. [ ] Pinning — detect a human edit in the region, capture it as an override,
-       stop re-rendering that block. **Do not enable real document writes
-       before this exists.**
+4. [x] Echo suppression via service-account revision identity —
+       `resolveManagedRegionWrite` (`packages/core/src/document-projection.ts`)
+       takes an `isEcho` flag and never pins on it; `GoogleDriveDocumentAdapter`
+       supplies it from Drive's own revision history
+       (`isEchoRevision`/`lastModifyingUser.me`, `packages/integrations/src/google/document.ts`).
+       `FakeDocument` tracks the same thing in-memory for tests
+       (`packages/integrations/src/fakes.ts`).
+5. [x] Pinning — detect a human edit in the region, capture it as an override,
+       stop re-rendering that block. Implemented by the same
+       `resolveManagedRegionWrite`: it compares the region's current content
+       against what we last rendered, and a divergence that is not an echo is
+       preserved (the render is skipped, not partially applied) with
+       `pinned: true` on `DocumentAdapter.renderManagedRegion`'s result. The
+       block stays pinned on every subsequent render until the doc's content
+       matches our baseline again. Covered end to end in
+       `packages/integrations/src/__tests__/fake-document.test.ts` and
+       `packages/integrations/src/__tests__/google-document.test.ts`
+       ("echo suppression and pinning"). Real document writes were already
+       enabled in live testing before this landed (see CLAUDE.md's status
+       table) — this closes that gap.
 6. [ ] Make the managed region visibly demarcated for readers

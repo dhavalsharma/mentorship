@@ -73,14 +73,26 @@ function stubTransport(
   initial: {
     docText?: string;
     permissions?: { emailAddress: string; role: string }[];
+    /** Who authored the current revision before any call is made. */
+    revisionAuthor?: "service" | "human";
   } = {},
 ): {
   call: GoogleDocsTransport;
   calls: Call[];
   text: () => string;
+  /** Test hook: a human edits the doc directly, out of band from any render. */
+  humanEdit: (newText: string) => void;
+  /**
+   * Test hook: the doc's bytes change (e.g. Drive reformatting on save) but
+   * the revision is still ours — the case echo suppression must not confuse
+   * with a human edit.
+   */
+  serviceEcho: (newText: string) => void;
 } {
   const calls: Call[] = [];
   let text = initial.docText ?? "";
+  let revisionCounter = 1;
+  let revisionAuthor: "service" | "human" = initial.revisionAuthor ?? "service";
   const permissions = [...(initial.permissions ?? [])];
 
   const call: GoogleDocsTransport = async (api, path, init) => {
@@ -92,6 +104,13 @@ function stubTransport(
       ...(init.query === undefined ? {} : { query: init.query }),
     });
 
+    if (api === "drive" && path.endsWith("/revisions")) {
+      return {
+        revisions: [
+          { lastModifyingUser: { me: revisionAuthor === "service" } },
+        ],
+      };
+    }
     if (api === "drive" && path.endsWith("/permissions")) {
       if (init.method === "GET") return { permissions };
       const body = init.body as { emailAddress: string; role: string };
@@ -110,13 +129,29 @@ function stubTransport(
     if (api === "docs" && path.endsWith(":batchUpdate")) {
       const { requests } = init.body as { requests: unknown[] };
       text = applyRequests(text, requests);
-      return { writeControl: { requiredRevisionId: "rev2" } };
+      revisionAuthor = "service";
+      revisionCounter++;
+      return { writeControl: { requiredRevisionId: `rev${revisionCounter}` } };
     }
-    if (api === "docs" && init.method === "GET") return docFromText(text);
+    if (api === "docs" && init.method === "GET") return docFromText(text, `rev${revisionCounter}`);
     return {};
   };
 
-  return { call, calls, text: () => text };
+  return {
+    call,
+    calls,
+    text: () => text,
+    humanEdit: (newText: string) => {
+      text = newText;
+      revisionAuthor = "human";
+      revisionCounter++;
+    },
+    serviceEcho: (newText: string) => {
+      text = newText;
+      revisionAuthor = "service";
+      revisionCounter++;
+    },
+  };
 }
 
 const CONFIG = { folderId: "folder_1" };
@@ -388,6 +423,130 @@ describe("sharing the running doc with the pair", () => {
     });
 
     expect(calls.some((c) => c.path.endsWith("/permissions"))).toBe(false);
+  });
+});
+
+/**
+ * ADR-0005's two safeguards, against the real write path (Docs `batchUpdate`
+ * + Drive `revisions.list`) rather than the in-memory `FakeDocument`.
+ */
+describe("echo suppression and pinning", () => {
+  it("re-renders normally when nobody has touched the region", async () => {
+    const before = [MANAGED_START, "old", MANAGED_END, "kept", ""].join("\n");
+    const { call, text } = stubTransport({ docText: before });
+    const adapter = new GoogleDriveDocumentAdapter(call, CONFIG);
+
+    const first = await adapter.renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "one",
+      collaborators: PAIR,
+      idempotencyKey: "k1",
+    });
+    expect(first.pinned).toBe(false);
+
+    const second = await adapter.renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "two",
+      collaborators: PAIR,
+      idempotencyKey: "k2",
+    });
+
+    expect(second.pinned).toBe(false);
+    expect(text()).toBe([MANAGED_START, "two", MANAGED_END, "kept", ""].join("\n"));
+  });
+
+  it("does not pin when the diverging revision is our own echo", async () => {
+    const before = [MANAGED_START, "old", MANAGED_END, "kept", ""].join("\n");
+    const { call, text, serviceEcho } = stubTransport({ docText: before });
+    const adapter = new GoogleDriveDocumentAdapter(call, CONFIG);
+
+    await adapter.renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "one",
+      collaborators: PAIR,
+      idempotencyKey: "k1",
+    });
+
+    // Stand-in for Drive reformatting our own write on save: the bytes in
+    // the region differ from what we rendered, but the revision is still us.
+    serviceEcho([MANAGED_START, "one (reformatted)", MANAGED_END, "kept", ""].join("\n"));
+
+    const rerender = await adapter.renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "two",
+      collaborators: PAIR,
+      idempotencyKey: "k2",
+    });
+
+    expect(rerender.pinned).toBe(false);
+    expect(text()).toBe([MANAGED_START, "two", MANAGED_END, "kept", ""].join("\n"));
+  });
+
+  it("pins a genuine human edit inside the managed region", async () => {
+    const before = [MANAGED_START, "old", MANAGED_END, "kept", ""].join("\n");
+    const { call, text, humanEdit } = stubTransport({ docText: before });
+    const adapter = new GoogleDriveDocumentAdapter(call, CONFIG);
+
+    await adapter.renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "one",
+      collaborators: PAIR,
+      idempotencyKey: "k1",
+    });
+
+    humanEdit(
+      [MANAGED_START, "one\n\nArjun: adding my own note.", MANAGED_END, "kept", ""].join("\n"),
+    );
+
+    const rerender = await adapter.renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "two",
+      collaborators: PAIR,
+      idempotencyKey: "k2",
+    });
+
+    expect(rerender.pinned).toBe(true);
+    // Nothing was written: the human's own text is exactly what it was,
+    // never partially applied, never overwritten.
+    expect(text()).toBe(
+      [MANAGED_START, "one\n\nArjun: adding my own note.", MANAGED_END, "kept", ""].join("\n"),
+    );
+  });
+
+  it("stays pinned across repeated renders until the divergence is resolved", async () => {
+    const before = [MANAGED_START, "old", MANAGED_END, "kept", ""].join("\n");
+    const { call, text, humanEdit } = stubTransport({ docText: before });
+    const adapter = new GoogleDriveDocumentAdapter(call, CONFIG);
+
+    await adapter.renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "one",
+      collaborators: PAIR,
+      idempotencyKey: "k1",
+    });
+    humanEdit([MANAGED_START, "human override", MANAGED_END, "kept", ""].join("\n"));
+
+    for (const markdown of ["two", "three"]) {
+      const result = await adapter.renderManagedRegion({
+        docRef: "doc_1",
+        title: "t",
+        markdown,
+        collaborators: PAIR,
+        idempotencyKey: markdown,
+      });
+      expect(result.pinned).toBe(true);
+    }
+
+    expect(text()).toBe(
+      [MANAGED_START, "human override", MANAGED_END, "kept", ""].join("\n"),
+    );
   });
 });
 

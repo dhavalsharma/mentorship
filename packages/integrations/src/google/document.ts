@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { AdapterCapabilities, DocumentAdapter } from "@mentorship/core";
-import { AdapterCapabilitiesSchema } from "@mentorship/core";
+import { AdapterCapabilitiesSchema, resolveManagedRegionWrite } from "@mentorship/core";
 // The markers are imported from `fakes.ts` rather than redeclared here: two
 // copies of a delimiter is how a real adapter and the reference implementation
 // quietly stop agreeing, and a doc written by one would then be unreadable by
@@ -91,6 +91,15 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
   readonly slot = "document" as const;
   readonly id = "google-drive";
 
+  // ADR-0005's two safeguards. Per-instance and in-memory, like every other
+  // fake/adapter bookkeeping in this repo (`FakeCalendar`'s dedupe map is the
+  // same shape of gap) — a worker restart forgets the baseline and the very
+  // next render treats the region as untouched, which is safe (it just skips
+  // one opportunity to detect an edit) rather than unsafe. Moving this into
+  // durable storage is a `db`-layer concern (invariant 2: adapters never
+  // import `db`), and belongs to whichever caller wires this adapter up.
+  private readonly lastRendered = new Map<string, string>();
+
   constructor(
     private readonly call: GoogleDocsTransport,
     private readonly config: GoogleDriveDocumentConfig,
@@ -117,7 +126,7 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
     markdown: string;
     collaborators: { email: string }[];
     idempotencyKey: string;
-  }): Promise<{ docRef: string; url: string; revisionId: string }> {
+  }): Promise<{ docRef: string; url: string; revisionId: string; pinned: boolean }> {
     const documentId = input.docRef ?? (await this.createDoc(input.title));
     // Before the write, not after: a render that fails half way should still
     // have left the pair able to open the doc. Neither the folder's own
@@ -125,8 +134,8 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
     // source document's permissions onto the copy — so without this step the
     // link the saga posts can go nowhere.
     await this.grantEditAccess(documentId, input.collaborators);
-    const revisionId = await this.writeManagedRegion(documentId, input.markdown);
-    return { docRef: documentId, url: documentUrl(documentId), revisionId };
+    const { revisionId, pinned } = await this.writeManagedRegion(documentId, input.markdown);
+    return { docRef: documentId, url: documentUrl(documentId), revisionId, pinned };
   }
 
   // -------------------------------------------------------------------------
@@ -257,12 +266,39 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
   private async writeManagedRegion(
     documentId: string,
     markdown: string,
-  ): Promise<string> {
+  ): Promise<{ revisionId: string; pinned: boolean }> {
     const doc = await this.call("docs", `/documents/${documentId}`, {
       method: "GET",
     });
     const runs = collectTextRuns(doc);
     const region = findManagedRegion(runs);
+    const baseline = this.lastRendered.get(documentId) ?? null;
+
+    // Only worth asking "was this us?" when there is both an existing region
+    // and a baseline to compare it against — a brand new document, or one
+    // we've never rendered into this process, has nothing to protect yet
+    // (`resolveManagedRegionWrite` treats a null baseline as "always render"),
+    // so skip the extra Drive round trip.
+    const isEcho =
+      region !== null && baseline !== null
+        ? await this.isEchoRevision(documentId)
+        : false;
+
+    const { text, pinned } = resolveManagedRegionWrite({
+      markdown,
+      currentRegionText: region?.text ?? null,
+      lastRendered: baseline,
+      isEcho,
+    });
+
+    if (pinned) {
+      // A human edited the managed region since our last render, and it was
+      // not our own echo — their edit wins (ADR-0005). Skip the write
+      // entirely rather than overwrite it; the baseline is left untouched, so
+      // the same divergence is detected again next time and the block stays
+      // pinned until the doc's content matches our baseline again.
+      return { revisionId: String(doc["revisionId"] ?? ""), pinned: true };
+    }
 
     const requests =
       region === null
@@ -270,7 +306,7 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
             {
               insertText: {
                 location: { index: endOfBody(runs) },
-                text: `\n${MANAGED_START}\n${markdown}\n${MANAGED_END}\n`,
+                text: `\n${MANAGED_START}\n${text}\n${MANAGED_END}\n`,
               },
             },
           ]
@@ -290,7 +326,7 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
             {
               insertText: {
                 location: { index: region.start },
-                text: `\n${markdown}\n`,
+                text: `\n${text}\n`,
               },
             },
           ];
@@ -303,7 +339,27 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
     const writeControl = res["writeControl"] as
       | { requiredRevisionId?: string }
       | undefined;
-    return writeControl?.requiredRevisionId ?? String(doc["revisionId"] ?? "");
+    const revisionId = writeControl?.requiredRevisionId ?? String(doc["revisionId"] ?? "");
+    this.lastRendered.set(documentId, text);
+    return { revisionId, pinned: false };
+  }
+
+  /**
+   * Echo suppression (ADR-0005): true when the document's current revision
+   * was authored by us rather than a human. Drive's `User` resource carries
+   * `me: true` for the authenticated caller on the revision that made the
+   * change, which is the vendor-specific fact the core comparison logic in
+   * `resolveManagedRegionWrite` cannot know on its own.
+   */
+  private async isEchoRevision(documentId: string): Promise<boolean> {
+    const res = await this.call("drive", `/files/${documentId}/revisions`, {
+      method: "GET",
+      query: { fields: "revisions(lastModifyingUser(me))", pageSize: "1000" },
+    });
+    const revisions =
+      (res["revisions"] as { lastModifyingUser?: { me?: boolean } }[] | undefined) ?? [];
+    const last = revisions[revisions.length - 1];
+    return last?.lastModifyingUser?.me === true;
   }
 }
 
@@ -405,16 +461,21 @@ function toDocIndex(runs: TextRun[], flatOffset: number): number {
  */
 export function findManagedRegion(
   runs: TextRun[],
-): { start: number; end: number } | null {
+): { start: number; end: number; text: string } | null {
   const text = flatten(runs);
   const startMarker = text.indexOf(MANAGED_START);
   if (startMarker === -1) return null;
-  const endMarker = text.indexOf(MANAGED_END, startMarker + MANAGED_START.length);
+  const contentFlatStart = startMarker + MANAGED_START.length;
+  const endMarker = text.indexOf(MANAGED_END, contentFlatStart);
   if (endMarker === -1) return null;
 
   return {
-    start: toDocIndex(runs, startMarker + MANAGED_START.length),
+    start: toDocIndex(runs, contentFlatStart),
     end: toDocIndex(runs, endMarker),
+    // Mirrors `wrapManaged`'s framing (a leading/trailing newline around the
+    // markdown) so this compares like-for-like against `lastRendered`, which
+    // is always the bare markdown we were asked to render.
+    text: text.slice(contentFlatStart, endMarker).replace(/^\n/, "").replace(/\n$/, ""),
   };
 }
 

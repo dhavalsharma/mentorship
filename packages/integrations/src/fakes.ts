@@ -10,7 +10,7 @@ import type {
   ThreadRef,
   TranscriptAdapter,
 } from "@mentorship/core";
-import { AdapterCapabilitiesSchema } from "@mentorship/core";
+import { AdapterCapabilitiesSchema, resolveManagedRegionWrite } from "@mentorship/core";
 
 /**
  * In-memory adapters. These are what the test suite and the demo run on, and
@@ -322,6 +322,13 @@ export class FakeDocument implements DocumentAdapter {
   private revision = 0;
   private readonly docs = new Map<string, string>();
   private readonly shares = new Map<string, Set<string>>();
+  // ADR-0005's two safeguards, kept per doc: what we last rendered ourselves
+  // (the baseline pinning compares against) and who authored the region's
+  // current content — "service" (us, most recently) or "human" (someone
+  // edited it directly, via `humanEdit`/`simulateServiceEcho` below in
+  // tests, or a real editor in the corresponding vendor adapter).
+  private readonly lastRendered = new Map<string, string>();
+  private readonly revisionAuthor = new Map<string, "service" | "human">();
 
   constructor(readonly recorder: Recorder) {}
 
@@ -335,11 +342,30 @@ export class FakeDocument implements DocumentAdapter {
     markdown: string;
     collaborators: { email: string }[];
     idempotencyKey: string;
-  }): Promise<{ docRef: string; url: string; revisionId: string }> {
+  }): Promise<{ docRef: string; url: string; revisionId: string; pinned: boolean }> {
     const docRef = input.docRef ?? `doc_${this.docs.size + 1}`;
+    const existing = this.docs.get(docRef) ?? null;
+    const currentRegionText = existing === null ? null : readManagedRegion(existing);
+    const isEcho = this.revisionAuthor.get(docRef) === "service";
+
+    const { text, pinned } = resolveManagedRegionWrite({
+      markdown: input.markdown,
+      currentRegionText,
+      lastRendered: this.lastRendered.get(docRef) ?? null,
+      isEcho,
+    });
+
     // Only the managed region is replaced; anything the pair wrote outside the
-    // markers is left alone.
-    this.docs.set(docRef, wrapManaged(input.markdown));
+    // markers is left alone. When pinned, `text` is the human's own content,
+    // so this is a no-op write rather than a clobber — and the revision stays
+    // attributed to the human, not us, so the same divergence is detected
+    // again on the next render instead of being mistaken for our own echo.
+    this.docs.set(docRef, wrapManaged(text));
+    if (!pinned) {
+      this.lastRendered.set(docRef, text);
+      this.revisionAuthor.set(docRef, "service");
+    }
+
     // A set, not a list: the real adapter grants access once and skips anyone
     // who already has it, so a fake that accumulated duplicates on every
     // re-render would let a regression there pass unnoticed here.
@@ -352,13 +378,15 @@ export class FakeDocument implements DocumentAdapter {
     this.recorder.record("document.rendered", {
       docRef,
       title: input.title,
-      bytes: input.markdown.length,
+      bytes: text.length,
       collaborators: [...shared],
+      pinned,
     });
     return {
       docRef,
       url: `https://docs.example/${docRef}`,
       revisionId: `rev_${this.revision}`,
+      pinned,
     };
   }
 
@@ -370,6 +398,28 @@ export class FakeDocument implements DocumentAdapter {
   sharedWith(docRef: string): string[] {
     return [...(this.shares.get(docRef) ?? [])];
   }
+
+  /**
+   * Test hook standing in for a human opening the doc and editing the
+   * managed region directly — the exact case pinning exists to protect
+   * against. Marks the current revision as human-authored, so the next
+   * render detects the divergence from our own last-rendered baseline.
+   */
+  humanEdit(docRef: string, markdown: string): void {
+    this.docs.set(docRef, wrapManaged(markdown));
+    this.revisionAuthor.set(docRef, "human");
+  }
+
+  /**
+   * Test hook standing in for the vendor's own side effects on our write —
+   * e.g. Drive reformatting whitespace on save — where the bytes in the
+   * region differ from what we rendered, but the revision is still ours.
+   * Exercises echo suppression: this must never be mistaken for pinning.
+   */
+  simulateServiceEcho(docRef: string, driftedMarkdown: string): void {
+    this.docs.set(docRef, wrapManaged(driftedMarkdown));
+    this.revisionAuthor.set(docRef, "service");
+  }
 }
 
 export const MANAGED_START = "<!-- mentorship:managed:start -->";
@@ -377,4 +427,14 @@ export const MANAGED_END = "<!-- mentorship:managed:end -->";
 
 export function wrapManaged(markdown: string): string {
   return `${MANAGED_START}\n${markdown}\n${MANAGED_END}`;
+}
+
+/** The inverse of `wrapManaged` — `null` when the markers are not present. */
+export function readManagedRegion(text: string): string | null {
+  const start = text.indexOf(MANAGED_START);
+  if (start === -1) return null;
+  const contentStart = start + MANAGED_START.length;
+  const end = text.indexOf(MANAGED_END, contentStart);
+  if (end === -1) return null;
+  return text.slice(contentStart, end).replace(/^\n/, "").replace(/\n$/, "");
 }

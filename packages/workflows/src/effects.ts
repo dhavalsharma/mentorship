@@ -328,6 +328,10 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           url: rendered.url,
           docRef: rendered.docRef,
           revisionId: rendered.revisionId,
+          // ADR-0005: a human edit was detected inside the managed region and
+          // preserved instead of overwritten — the block the saga just asked
+          // to render did not actually change.
+          pinned: rendered.pinned,
         });
         return rendered;
       }
