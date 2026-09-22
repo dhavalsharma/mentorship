@@ -84,12 +84,13 @@ export function defaultMatchingPolicy(
 /**
  * Pull the matching block out of a program policy.
  *
- * KNOWN GAP: `ProgramPolicySchema` in core has no `matching` block yet, and a
- * zod object strips unknown keys — so a `matching` key on a parsed policy does
- * not survive. Until core grows the block (the documented move, per "Where to
- * add what"), the reader supplies the override alongside the pool and this
- * function is the single place that knows it. The one thing genuinely read
- * from the program policy today is mentor capacity, which already lives there.
+ * `ProgramPolicySchema.matching` (added while building the preset policies,
+ * ADR-0001 action item 4) is a deliberately untyped `z.record(z.unknown())`
+ * bag — core cannot import `MatchingPolicySchema` without inverting the
+ * `primitives -> core` dependency direction, so it round-trips the block
+ * without validating its shape. This function remains the single place that
+ * actually parses it into a `MatchingPolicy`, and an `override` still wins
+ * over whatever the stored program policy carries.
  */
 export function readMatchingPolicy(
   programPolicy: ProgramPolicy,

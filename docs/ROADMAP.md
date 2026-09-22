@@ -213,8 +213,15 @@ blocked while this waits.
       `runNudgeSweep` runs it per deficit, dispatches on `gate === "auto"`,
       and records every outcome to the existing `nudges` table. Still nothing
       calls the sweep — no scheduler exists yet.
-- [ ] Two or three presets (university, corporate career, founder network) as
-      pure policy data. The real test of ADR-0001.
+- [x] Two or three presets (university, corporate career, founder network) as
+      pure policy data. The real test of ADR-0001. `packages/core/src/presets.ts`
+      (`PROGRAM_POLICY_PRESETS`), tested in `presets.test.ts`. Held up, with
+      two real schema gaps found and closed as data, not branches:
+      `ProgramPolicySchema` had no shape for what a goal is (`goals`, new) and
+      no field for matching weights at all (`matching`, an untyped
+      passthrough — core still cannot import `MatchingPolicySchema`, see the
+      field comment in `policy.ts` and `readMatchingPolicy` in
+      `packages/primitives/matching/src/policy.ts`).
 - [ ] Public API and webhooks
 - [ ] Docs site
 - [x] `dependency-cruiser` enforcing the boundary rule — `.dependency-cruiser.cjs`

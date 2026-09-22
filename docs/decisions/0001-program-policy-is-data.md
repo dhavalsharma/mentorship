@@ -121,11 +121,24 @@ level; parameters are data.
   variant cannot cover, reopen Option C.
 - If the schema passes ~50 fields, split it per concern rather than letting one
   object accumulate.
+- Building the three presets (action item 4) found two real gaps, both closed
+  as data rather than as a branch or an escape hatch: `ProgramPolicySchema`
+  had no shape for what a goal is at all (added as `goals` —
+  structure/cycle length/due-date requirement), and no field for matching
+  weights (added as `matching`, a deliberately untyped `z.record(z.unknown())`
+  passthrough — core still cannot import `MatchingPolicySchema` from
+  `packages/primitives/matching` without inverting the dependency direction,
+  so it carries the block without validating it; `readMatchingPolicy` there
+  is still the only place that parses it). Neither required touching a code
+  path — both are exactly the "schema grows" cost this ADR already priced in
+  under Option A's cons, not evidence for Option C.
 
 ## Action Items
 
 1. [x] `ProgramPolicySchema` with defaults on every field
 2. [x] Cadence resolution: program → cohort → pair
 3. [ ] Admin UI that constrains rather than exposes raw JSON
-4. [ ] Ship two or three presets — the real test of the claim
+4. [x] Ship two or three presets — the real test of the claim.
+       `packages/core/src/presets.ts`, tested in `presets.test.ts`. See "To
+       revisit" for the two schema gaps it found.
 5. [ ] Record the resolved policy version on `ai_runs` and saga history

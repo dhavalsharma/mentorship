@@ -118,6 +118,25 @@ export function renderNamingTemplate(
   return rendered.trim().length === 0 ? template : rendered;
 }
 
+/**
+ * What a goal looks like for this program. Added while building the preset
+ * policies (ADR-0001 action item 4): a university program bounds goals to an
+ * academic term, a corporate program ties them to a quarterly review cycle,
+ * and a founder network wants neither — none of that had anywhere to live
+ * before this. `cycleDays: 0` means goals are open-ended (no cycle boundary),
+ * matching how `cadence.everyDays: 0` already means "ad hoc" — the same
+ * convention, not a new one.
+ */
+export const GoalPolicySchema = z.object({
+  /** Whether a goal must carry structured fields or is free-text narrative. */
+  structure: z.enum(["structured", "freeform"]).default("freeform"),
+  /** 0 = goals are open-ended, no recurring cycle boundary. */
+  cycleDays: z.number().int().min(0).max(400).default(0),
+  label: z.string().default("open-ended"),
+  requireDueDate: z.boolean().default(false),
+});
+export type GoalPolicy = z.infer<typeof GoalPolicySchema>;
+
 export const ProgramPolicySchema = z.object({
   version: z.literal(1).default(1),
   roles: z.array(z.string()).default(["mentor", "mentee"]),
@@ -131,6 +150,7 @@ export const ProgramPolicySchema = z.object({
     })
     .default({}),
   cadence: CadenceSchema.default({ everyDays: 14 }),
+  goals: GoalPolicySchema.default({}),
   agreement: AgreementPolicySchema.default({}),
   artifact: ArtifactPolicySchema.default({}),
   confirmation: z
@@ -150,6 +170,19 @@ export const ProgramPolicySchema = z.object({
   consent: ConsentPolicySchema.default({}),
   document: DocumentPolicySchema.default({}),
   integrations: IntegrationProfileSchema.default({}),
+  /**
+   * Matching weights and thresholds, shaped by `MatchingPolicySchema` in
+   * `packages/primitives/matching`. Core cannot import that schema (core has
+   * zero infrastructure/primitive dependencies, and the dependency direction
+   * is `primitives -> core`, never the reverse) so this is a deliberately
+   * untyped passthrough bag — closing the gap `readMatchingPolicy` used to
+   * document: a zod object strips unknown keys, so a `matching` block on a
+   * parsed `ProgramPolicy` used to vanish before matching ever saw it. Found
+   * while building the founder-network preset, which needs to lean the
+   * matching weights toward `narrative_similarity` / `skill_fit_directional`
+   * and had nowhere in core's schema to say so.
+   */
+  matching: z.record(z.unknown()).default({}),
   healthWeights: z
     .record(z.number())
     .default({
