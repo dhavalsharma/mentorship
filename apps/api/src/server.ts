@@ -43,6 +43,9 @@ const UUID_RE =
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
+const DEFAULT_STUCK_DAYS = 3;
+const MAX_STUCK_DAYS = 90;
+
 /**
  * A query function the server calls without caring which backend answers it.
  * Postgres wires in a real query against `risk_findings`/`nudges`; the
@@ -51,9 +54,24 @@ const MAX_LIMIT = 200;
  */
 export type AdminListQuery = (orgId: string, limit: number) => Promise<unknown[]>;
 
+/**
+ * Same idea as `AdminListQuery`, with the one extra dimension "stuck" needs:
+ * how many days without progress counts as stuck. Kept as a distinct type
+ * rather than overloading `AdminListQuery` so a backend that wires the wrong
+ * query in for the wrong route is a type error, not a runtime surprise.
+ */
+export type StuckSagaQuery = (
+  orgId: string,
+  limit: number,
+  olderThanDays: number,
+) => Promise<unknown[]>;
+
 export interface AdminReadsDeps {
   riskFindings: AdminListQuery;
   nudges: AdminListQuery;
+  /** ROADMAP phase 1's monitoring gap — see `packages/workflows/src/postgres-reads.ts`. */
+  stuckSagas: StuckSagaQuery;
+  deadLetters: AdminListQuery;
 }
 
 /**
@@ -261,7 +279,15 @@ async function route(
   if (req.method === "GET" && req.url) {
     const match = matchAdminRoute(req.url);
     if (match) {
-      await handleAdminList(req, res, deps, match.orgId, match.limit, match.kind);
+      await handleAdminList(
+        req,
+        res,
+        deps,
+        match.orgId,
+        match.limit,
+        match.olderThanDays,
+        match.kind,
+      );
       return;
     }
   }
@@ -270,15 +296,28 @@ async function route(
   res.end("not found");
 }
 
-/** `/orgs/:orgId/risk-findings` or `/orgs/:orgId/nudges`, with an optional `?limit=`. */
+type AdminListKind = "risk-findings" | "nudges" | "stuck-sagas" | "dead-letters";
+
+const ADMIN_LIST_KINDS: readonly AdminListKind[] = [
+  "risk-findings",
+  "nudges",
+  "stuck-sagas",
+  "dead-letters",
+];
+
+/**
+ * `/orgs/:orgId/{risk-findings,nudges,stuck-sagas,dead-letters}`, with an
+ * optional `?limit=` (all four) and `?days=` (`stuck-sagas` only — how many
+ * days without progress counts as stuck).
+ */
 function matchAdminRoute(
   url: string,
-): { orgId: string; limit: number; kind: "risk-findings" | "nudges" } | null {
+): { orgId: string; limit: number; olderThanDays: number; kind: AdminListKind } | null {
   const parsed = new URL(url, "http://internal");
   const segments = parsed.pathname.split("/").filter(Boolean);
   if (segments.length !== 3 || segments[0] !== "orgs") return null;
   const [, orgId, resource] = segments as [string, string, string];
-  if (resource !== "risk-findings" && resource !== "nudges") return null;
+  if (!ADMIN_LIST_KINDS.includes(resource as AdminListKind)) return null;
 
   const rawLimit = parsed.searchParams.get("limit");
   const parsedLimit = rawLimit === null ? undefined : Number(rawLimit);
@@ -287,7 +326,14 @@ function matchAdminRoute(
       ? DEFAULT_LIMIT
       : Math.min(Math.floor(parsedLimit), MAX_LIMIT);
 
-  return { orgId: orgId!, limit, kind: resource };
+  const rawDays = parsed.searchParams.get("days");
+  const parsedDays = rawDays === null ? undefined : Number(rawDays);
+  const olderThanDays =
+    parsedDays === undefined || !Number.isFinite(parsedDays) || parsedDays <= 0
+      ? DEFAULT_STUCK_DAYS
+      : Math.min(Math.floor(parsedDays), MAX_STUCK_DAYS);
+
+  return { orgId: orgId!, limit, olderThanDays, kind: resource as AdminListKind };
 }
 
 async function handleAdminList(
@@ -296,7 +342,8 @@ async function handleAdminList(
   deps: ApiServerDeps,
   orgId: string,
   limit: number,
-  kind: "risk-findings" | "nudges",
+  olderThanDays: number,
+  kind: AdminListKind,
 ): Promise<void> {
   if (!UUID_RE.test(orgId)) {
     writeJson(res, 400, { error: "orgId must be a UUID" });
@@ -339,9 +386,15 @@ async function handleAdminList(
     return;
   }
 
-  const query = kind === "risk-findings" ? deps.admin.riskFindings : deps.admin.nudges;
   try {
-    const rows = await query(orgId, limit);
+    const rows =
+      kind === "risk-findings"
+        ? await deps.admin.riskFindings(orgId, limit)
+        : kind === "nudges"
+          ? await deps.admin.nudges(orgId, limit)
+          : kind === "stuck-sagas"
+            ? await deps.admin.stuckSagas(orgId, limit, olderThanDays)
+            : await deps.admin.deadLetters(orgId, limit);
     writeJson(res, 200, rows);
   } catch (error) {
     if (error instanceof NotImplementedError) {

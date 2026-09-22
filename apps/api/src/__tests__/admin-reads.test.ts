@@ -95,7 +95,16 @@ describe("admin read routes over a real socket", () => {
       slackSigningSecret: "test-signing-secret",
       identity: noopIdentity(),
       responder: noopResponder(),
-      admin,
+      // stuck-sagas/dead-letters are exercised by their own test file
+      // (`admin-monitoring-reads.test.ts`); these routes are the pre-existing
+      // risk-findings/nudges ones, so they get a harmless stand-in here.
+      admin: admin
+        ? {
+            ...admin,
+            stuckSagas: notImplementedReads(),
+            deadLetters: notImplementedReads(),
+          }
+        : undefined,
       auth,
     });
     await new Promise<void>((resolve) => server.listen(0, resolve));

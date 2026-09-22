@@ -11,6 +11,7 @@
     "@mentorship/integrations": "workspace:*",
     "@mentorship/roster": "workspace:*",
     "@mentorship/testkit": "workspace:*",
+    "@mentorship/workflows": "workspace:*",
     "drizzle-orm": "^0.38.3"
   }
 }

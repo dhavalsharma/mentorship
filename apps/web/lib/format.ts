@@ -41,3 +41,17 @@ export function nudgeStateTone(state: string): SeverityTone {
   if (normalized === "planned") return "warning";
   return "neutral";
 }
+
+/**
+ * "3 days", "1 day", or "less than a day" — how long ago `updatedAt` was,
+ * for the stuck-sagas table. Deliberately coarse: an admin triaging a stuck
+ * saga needs "has this been ignored for a week," not a precise duration.
+ */
+export function daysSince(value: string, now: () => Date = () => new Date()): string {
+  const then = new Date(value);
+  if (Number.isNaN(then.getTime())) return "—";
+  const days = Math.floor((now().getTime() - then.getTime()) / (24 * 60 * 60 * 1000));
+  if (days <= 0) return "less than a day";
+  if (days === 1) return "1 day";
+  return `${days} days`;
+}
