@@ -119,11 +119,18 @@ export class GoogleSheetsAdapter implements SheetAdapter {
       return { spreadsheetId: configured, url: spreadsheetUrl(configured) };
     }
 
-    // Same retry-safety dance as `GoogleDriveDocumentAdapter.createDoc`:
-    // neither Sheets nor Drive takes an idempotency key, so a retry between
-    // "spreadsheet created" and "id persisted back" would otherwise create a
-    // second spreadsheet on every retry. An existing file of the same name
-    // in the folder is adopted instead.
+    // Same retry-safety dance as `GoogleDriveDocumentAdapter.createDoc`, and
+    // the same limit: neither Sheets nor Drive takes an idempotency key, so
+    // `input.idempotencyKey` is accepted (every `SheetAdapter` write method
+    // takes one, for parity with the engine's uniform `ctx.key` — invariant
+    // 6's "belt and braces") but genuinely unused here, not silently dropped
+    // by oversight. An existing file of the same name in the folder is
+    // adopted instead of creating a second one — narrower than true
+    // key-based idempotency: two callers racing before either has created
+    // anything can still each create a spreadsheet, since this check and the
+    // create below are not atomic. Acceptable for a single-writer-per-org
+    // scheduler tick; not safe if this is ever called from more than one
+    // worker process for the same org at once.
     const existing = await this.findByName(input.title);
     if (existing !== null) {
       return { spreadsheetId: existing, url: spreadsheetUrl(existing) };

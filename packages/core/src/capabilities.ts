@@ -201,9 +201,20 @@ export interface SheetAdapter extends Adapter {
   /**
    * Locates the destination spreadsheet, creating one (inside whatever
    * folder-equivalent the adapter's own config names) only when
-   * `spreadsheetId` is `null`. Idempotent by key, same discipline as every
-   * other effect (invariant 6) — a retried sync must not create a second
-   * spreadsheet.
+   * `spreadsheetId` is `null`.
+   *
+   * `idempotencyKey` is here for the same reason `renderManagedRegion` on
+   * `DocumentAdapter` takes one: every write-effect port carries it, so the
+   * engine can pass `ctx.key` uniformly (invariant 6's "belt and braces"),
+   * and an adapter backed by a vendor API that *can* dedupe by key (like
+   * `FakeCalendar`) does. Neither Drive nor Sheets accepts an idempotency
+   * key, though, so a real implementation cannot use it for this call any
+   * more than `GoogleDriveDocumentAdapter.createDoc` can — the vendor-level
+   * fallback both share is adopting an existing file of the same name
+   * rather than creating a second one, which is a narrower guarantee than
+   * true key-based idempotency (two concurrent callers racing before either
+   * has created anything can still each create one). Do not read this
+   * signature as promising more than that.
    */
   ensureSpreadsheet(input: {
     spreadsheetId: string | null;
