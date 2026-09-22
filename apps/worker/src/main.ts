@@ -6,6 +6,7 @@ import {
   FakeConversation,
   FakeDm,
   FakeDocument,
+  FakeSheet,
   FakeTranscript,
   IntegrationRegistry,
   Recorder,
@@ -44,6 +45,10 @@ const TENANT_ROLE = process.env["TENANT_ROLE"];
 const NUDGE_SWEEP_INTERVAL_MS = Number(process.env["NUDGE_SWEEP_INTERVAL_MS"] ?? 15 * 60_000);
 const PROGRESS_SWEEP_INTERVAL_MS = Number(process.env["PROGRESS_SWEEP_INTERVAL_MS"] ?? 15 * 60_000);
 const DIGEST_INTERVAL_MS = Number(process.env["DIGEST_INTERVAL_MS"] ?? 60 * 60_000);
+// A report tab is for a human to check in on periodically, not something
+// that needs sub-minute freshness, so this defaults to the same hourly
+// cadence as the digest rather than the 15-minute nudge/progress sweeps.
+const REPORT_SYNC_INTERVAL_MS = Number(process.env["REPORT_SYNC_INTERVAL_MS"] ?? 60 * 60_000);
 
 if (!DATABASE_URL || !ORG_ID) {
   console.error("DATABASE_URL and ORG_ID are both required");
@@ -59,6 +64,7 @@ registry.bind(new FakeDm(recorder));
 registry.bind(new FakeCalendar(recorder, {}));
 registry.bind(new FakeTranscript(recorder, { autoTranscription: "native" }));
 registry.bind(new FakeDocument(recorder));
+registry.bind(new FakeSheet(recorder));
 
 // Session intelligence runs for real once a key is present; otherwise the
 // deterministic stub keeps the worker usable with no external dependency at
@@ -84,6 +90,11 @@ const worker = createWorker({
     ...(NUDGE_SWEEP_INTERVAL_MS > 0 ? { nudge: { intervalMs: NUDGE_SWEEP_INTERVAL_MS } } : {}),
     ...(PROGRESS_SWEEP_INTERVAL_MS > 0 ? { progress: { intervalMs: PROGRESS_SWEEP_INTERVAL_MS } } : {}),
     ...(DIGEST_INTERVAL_MS > 0 ? { digest: { intervalMs: DIGEST_INTERVAL_MS } } : {}),
+    ...(REPORT_SYNC_INTERVAL_MS > 0 ? { reportSync: { intervalMs: REPORT_SYNC_INTERVAL_MS } } : {}),
+  },
+  reportSyncEnv: {
+    GOOGLE_SHEETS_FOLDER_ID: process.env["GOOGLE_SHEETS_FOLDER_ID"],
+    GOOGLE_SHEETS_SPREADSHEET_ID: process.env["GOOGLE_SHEETS_SPREADSHEET_ID"],
   },
 });
 
@@ -97,7 +108,8 @@ console.log(
 console.log(
   `sweeps: nudge ${NUDGE_SWEEP_INTERVAL_MS > 0 ? `every ${NUDGE_SWEEP_INTERVAL_MS}ms` : "off"}, ` +
     `progress ${PROGRESS_SWEEP_INTERVAL_MS > 0 ? `every ${PROGRESS_SWEEP_INTERVAL_MS}ms` : "off"}, ` +
-    `digest ${DIGEST_INTERVAL_MS > 0 ? `every ${DIGEST_INTERVAL_MS}ms` : "off"}\n`,
+    `digest ${DIGEST_INTERVAL_MS > 0 ? `every ${DIGEST_INTERVAL_MS}ms` : "off"}, ` +
+    `report-sync ${REPORT_SYNC_INTERVAL_MS > 0 ? `every ${REPORT_SYNC_INTERVAL_MS}ms` : "off"}\n`,
 );
 
 const controller = new AbortController();

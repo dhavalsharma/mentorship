@@ -185,3 +185,54 @@ export interface DocumentAdapter extends Adapter {
     pinned: boolean;
   }>;
 }
+
+/**
+ * The `sheet` slot: a periodic reporting destination, not a per-pair
+ * artifact like `document`. One spreadsheet per org, one tab per report
+ * type, full-overwrite on every sync (see `apps/worker/src/reports.ts` for
+ * why append/dedupe was rejected). Modeled directly on `DocumentAdapter`
+ * above — same two-call shape (locate-or-create, then write) — because the
+ * underlying problem is the same one: a vendor-agnostic contract that must
+ * never leak the word "spreadsheet ID" or "tab" as anything but an opaque
+ * string core cares nothing about.
+ */
+export interface SheetAdapter extends Adapter {
+  slot: "sheet";
+  /**
+   * Locates the destination spreadsheet, creating one (inside whatever
+   * folder-equivalent the adapter's own config names) only when
+   * `spreadsheetId` is `null`.
+   *
+   * `idempotencyKey` is here for the same reason `renderManagedRegion` on
+   * `DocumentAdapter` takes one: every write-effect port carries it, so the
+   * engine can pass `ctx.key` uniformly (invariant 6's "belt and braces"),
+   * and an adapter backed by a vendor API that *can* dedupe by key (like
+   * `FakeCalendar`) does. Neither Drive nor Sheets accepts an idempotency
+   * key, though, so a real implementation cannot use it for this call any
+   * more than `GoogleDriveDocumentAdapter.createDoc` can — the vendor-level
+   * fallback both share is adopting an existing file of the same name
+   * rather than creating a second one, which is a narrower guarantee than
+   * true key-based idempotency (two concurrent callers racing before either
+   * has created anything can still each create one). Do not read this
+   * signature as promising more than that.
+   */
+  ensureSpreadsheet(input: {
+    spreadsheetId: string | null;
+    title: string;
+    idempotencyKey: string;
+  }): Promise<{ spreadsheetId: string; url: string }>;
+  /**
+   * Creates the tab if it does not exist, then replaces its entire used
+   * range with `columns` (the header row) followed by `rows` — a full
+   * overwrite, never an append. A report tab is a live snapshot of "what is
+   * true right now"; append/dedupe would need a stable row key and a sheet
+   * that only ever grows, which nothing here needs.
+   */
+  writeTab(input: {
+    spreadsheetId: string;
+    tabTitle: string;
+    columns: string[];
+    rows: unknown[][];
+    idempotencyKey: string;
+  }): Promise<void>;
+}

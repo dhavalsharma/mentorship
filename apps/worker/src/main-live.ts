@@ -3,6 +3,7 @@ import { PostgresAiRunSink } from "@mentorship/ai/postgres";
 import { createClient } from "@mentorship/db";
 import { buildLiveRegistry } from "./live-registry.js";
 import { resolveDocumentConfig } from "./document-config.js";
+import { resolveSheetConfig } from "./reports.js";
 import { createWorker } from "./worker.js";
 
 /**
@@ -33,6 +34,10 @@ if (!DATABASE_URL || !ORG_ID) {
 const { db, sqlClient } = createClient(DATABASE_URL);
 
 const document = await resolveDocumentConfig(db, ORG_ID, process.env, TENANT_ROLE);
+const sheet = await resolveSheetConfig(db, ORG_ID, process.env, TENANT_ROLE);
+// Hourly, matching main.ts's default — a report tab is checked in on
+// periodically, not something that needs sub-minute freshness.
+const REPORT_SYNC_INTERVAL_MS = Number(process.env["REPORT_SYNC_INTERVAL_MS"] ?? 60 * 60_000);
 
 let registry: ReturnType<typeof buildLiveRegistry>["registry"];
 let recorder: ReturnType<typeof buildLiveRegistry>["recorder"];
@@ -42,6 +47,7 @@ try {
     (detail) =>
       console.warn(`[sandbox] refused ${detail.adapter}: ${detail.refused.join(", ")}`),
     document.config,
+    sheet.config,
   ));
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
@@ -71,6 +77,13 @@ const worker = createWorker({
       `  ${line.input.padEnd(20)} ${line.from} → ${line.to}` +
         (line.effects.length > 0 ? `  effects: ${line.effects.join(", ")}` : ""),
     ),
+  ...(REPORT_SYNC_INTERVAL_MS > 0
+    ? { schedules: { reportSync: { intervalMs: REPORT_SYNC_INTERVAL_MS } } }
+    : {}),
+  reportSyncEnv: {
+    GOOGLE_SHEETS_FOLDER_ID: process.env["GOOGLE_SHEETS_FOLDER_ID"],
+    GOOGLE_SHEETS_SPREADSHEET_ID: process.env["GOOGLE_SHEETS_SPREADSHEET_ID"],
+  },
 });
 
 console.log(`LIVE worker started for org ${ORG_ID}, polling every ${INTERVAL_MS}ms`);
@@ -85,6 +98,11 @@ console.log(
           ? `, seeded from doc ${document.config.guidelineDocId}`
           : ", starting blank")
     : "document: fake (no integration_bindings row and no GOOGLE_DRIVE_FOLDER_ID)",
+);
+console.log(
+  sheet.config
+    ? `sheet: real Google Sheets, folder ${sheet.config.folderId} (from ${sheet.source})`
+    : "sheet: fake (no integration_bindings row and no GOOGLE_SHEETS_FOLDER_ID)",
 );
 console.log(
   llm

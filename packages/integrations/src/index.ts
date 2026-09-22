@@ -10,3 +10,4 @@ export * from "./slack/events.js";
 export * from "./google/auth.js";
 export * from "./google/calendar.js";
 export * from "./google/document.js";
+export * from "./google/sheet.js";

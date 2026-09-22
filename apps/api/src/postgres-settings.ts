@@ -6,8 +6,16 @@ import {
   withTenant,
   type Db,
 } from "@mentorship/db";
-import { GoogleDriveDocumentConfigSchema } from "@mentorship/integrations";
-import type { DocumentSettings, DocumentSettingsStore } from "./server.js";
+import {
+  GoogleDriveDocumentConfigSchema,
+  GoogleSheetConfigSchema,
+} from "@mentorship/integrations";
+import type {
+  DocumentSettings,
+  DocumentSettingsStore,
+  SheetSettings,
+  SheetSettingsStore,
+} from "./server.js";
 
 /**
  * The read/write pair behind `/orgs/:orgId/settings/document`.
@@ -118,6 +126,82 @@ export class PostgresDocumentSettingsStore implements DocumentSettingsStore {
           .update(programs)
           .set({ policy: merged, updatedAt: new Date() })
           .where(and(eq(programs.orgId, orgId), eq(programs.id, program.id)));
+      },
+      this.roleOptions(),
+    );
+  }
+
+  private roleOptions(): { role?: string } {
+    return this.options.role === undefined ? {} : { role: this.options.role };
+  }
+}
+
+/**
+ * The read/write pair behind `/orgs/:orgId/settings/sheet` — the `sheet`
+ * slot's counterpart to `PostgresDocumentSettingsStore` above. Simpler than
+ * the document store: there is no program-policy half to keep in sync, only
+ * vendor config on `integration_bindings`, so one table, one transaction.
+ *
+ * `spreadsheetId` is deliberately writable here too, not only by the sync
+ * job's own write-back (`apps/worker/src/reports.ts`'s `persistSpreadsheetId`)
+ * — an admin who already has a spreadsheet may want to point sync at it
+ * rather than let a new one be created.
+ */
+export class PostgresSheetSettingsStore implements SheetSettingsStore {
+  constructor(
+    private readonly db: Db,
+    private readonly options: { role?: string } = {},
+  ) {}
+
+  async read(orgId: string): Promise<SheetSettings> {
+    return withTenant(
+      this.db,
+      orgId,
+      async (tx) => {
+        const [binding] = await tx
+          .select({ config: integrationBindings.config })
+          .from(integrationBindings)
+          .where(
+            and(
+              eq(integrationBindings.orgId, orgId),
+              eq(integrationBindings.slot, "sheet"),
+            ),
+          )
+          .limit(1);
+
+        const config = GoogleSheetConfigSchema.partial().safeParse(binding?.config ?? {});
+
+        return {
+          folderId: config.success ? (config.data.folderId ?? null) : null,
+          spreadsheetId: config.success ? (config.data.spreadsheetId ?? null) : null,
+        };
+      },
+      this.roleOptions(),
+    );
+  }
+
+  async write(orgId: string, settings: SheetSettings): Promise<void> {
+    await withTenant(
+      this.db,
+      orgId,
+      async (tx) => {
+        const config = {
+          ...(settings.folderId ? { folderId: settings.folderId } : {}),
+          ...(settings.spreadsheetId ? { spreadsheetId: settings.spreadsheetId } : {}),
+        };
+
+        await tx
+          .insert(integrationBindings)
+          .values({
+            orgId,
+            slot: "sheet",
+            adapterId: "google-sheets",
+            config,
+          })
+          .onConflictDoUpdate({
+            target: [integrationBindings.orgId, integrationBindings.slot],
+            set: { config, updatedAt: new Date() },
+          });
       },
       this.roleOptions(),
     );

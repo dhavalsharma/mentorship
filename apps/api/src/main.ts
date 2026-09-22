@@ -23,7 +23,10 @@ import {
   listRecentNudges,
   listStuckSagas,
 } from "./postgres-reads.js";
-import { PostgresDocumentSettingsStore } from "./postgres-settings.js";
+import {
+  PostgresDocumentSettingsStore,
+  PostgresSheetSettingsStore,
+} from "./postgres-settings.js";
 import {
   createServer,
   notImplementedMatchingReads,
@@ -159,6 +162,10 @@ function postgresDeps(url: string): ApiServerDeps {
         getMatchingRoundCandidates(db, orgId, runId, TENANT_ROLE),
     },
     documentSettings: new PostgresDocumentSettingsStore(
+      db,
+      TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE },
+    ),
+    sheetSettings: new PostgresSheetSettingsStore(
       db,
       TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE },
     ),

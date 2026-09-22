@@ -60,6 +60,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
           >
             Shared document
           </Link>
+          <Link
+            href="/dashboard/settings/sheet"
+            className="text-sm hover:underline"
+          >
+            Report spreadsheet
+          </Link>
         </nav>
       </header>
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">{children}</main>

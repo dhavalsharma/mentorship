@@ -7,6 +7,7 @@ import type {
   DocumentAdapter,
   Interval,
   ProposalOption,
+  SheetAdapter,
   ThreadRef,
   TranscriptAdapter,
 } from "@mentorship/core";
@@ -420,6 +421,85 @@ export class FakeDocument implements DocumentAdapter {
     this.docs.set(docRef, wrapManaged(driftedMarkdown));
     this.revisionAuthor.set(docRef, "service");
   }
+}
+
+/**
+ * In-memory stand-in for `GoogleSheetsAdapter` — one spreadsheet
+ * (create-or-reuse, keyed by an id it hands back), one tab per report type,
+ * full overwrite on every `writeTab`. Tracks writes so a test can assert
+ * "tab X now has exactly these rows" without a real Sheets account, the same
+ * role `FakeDocument` plays for the document slot.
+ */
+export class FakeSheet implements SheetAdapter {
+  readonly slot = "sheet" as const;
+  readonly id = "fake-sheet";
+  private nextId = 1;
+  private readonly spreadsheets = new Set<string>();
+  private readonly tabs = new Map<string, Map<string, { columns: string[]; rows: unknown[][] }>>();
+
+  constructor(readonly recorder: Recorder) {}
+
+  async probe(): Promise<AdapterCapabilities> {
+    return caps({});
+  }
+
+  async ensureSpreadsheet(input: {
+    spreadsheetId: string | null;
+    title: string;
+    idempotencyKey: string;
+  }): Promise<{ spreadsheetId: string; url: string }> {
+    if (input.spreadsheetId !== null && this.spreadsheets.has(input.spreadsheetId)) {
+      return { spreadsheetId: input.spreadsheetId, url: sheetUrl(input.spreadsheetId) };
+    }
+    if (input.spreadsheetId !== null) {
+      // A configured id this fake has never seen — adopt it rather than
+      // silently minting a different one, the same "trust the caller's own
+      // record" rule the real adapter follows once a spreadsheet is
+      // configured.
+      this.spreadsheets.add(input.spreadsheetId);
+      return { spreadsheetId: input.spreadsheetId, url: sheetUrl(input.spreadsheetId) };
+    }
+    const spreadsheetId = `sheet_${this.nextId++}`;
+    this.spreadsheets.add(spreadsheetId);
+    this.recorder.record("sheet.created", { spreadsheetId, title: input.title });
+    return { spreadsheetId, url: sheetUrl(spreadsheetId) };
+  }
+
+  async writeTab(input: {
+    spreadsheetId: string;
+    tabTitle: string;
+    columns: string[];
+    rows: unknown[][];
+    idempotencyKey: string;
+  }): Promise<void> {
+    const tabs = this.tabs.get(input.spreadsheetId) ?? new Map();
+    // A full overwrite, never a merge with the previous rows — same
+    // discipline the real adapter's clear-then-write documents.
+    tabs.set(input.tabTitle, { columns: input.columns, rows: input.rows });
+    this.tabs.set(input.spreadsheetId, tabs);
+    this.recorder.record("sheet.tab_written", {
+      spreadsheetId: input.spreadsheetId,
+      tabTitle: input.tabTitle,
+      rows: input.rows.length,
+    });
+  }
+
+  /** Test hook: what a tab currently holds, or `undefined` if never written. */
+  tab(
+    spreadsheetId: string,
+    tabTitle: string,
+  ): { columns: string[]; rows: unknown[][] } | undefined {
+    return this.tabs.get(spreadsheetId)?.get(tabTitle);
+  }
+
+  /** Test hook: every tab title ever written for a spreadsheet. */
+  tabTitles(spreadsheetId: string): string[] {
+    return [...(this.tabs.get(spreadsheetId)?.keys() ?? [])];
+  }
+}
+
+function sheetUrl(spreadsheetId: string): string {
+  return `https://docs.google.example/spreadsheets/${spreadsheetId}`;
 }
 
 export const MANAGED_START = "<!-- mentorship:managed:start -->";
