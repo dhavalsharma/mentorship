@@ -54,6 +54,9 @@ importers:
       '@mentorship/integrations':
         specifier: workspace:*
         version: link:../../packages/integrations
+      '@mentorship/primitive-matching':
+        specifier: workspace:*
+        version: link:../../packages/primitives/matching
       '@mentorship/roster':
         specifier: workspace:*
         version: link:../../packages/roster

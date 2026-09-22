@@ -191,10 +191,23 @@ risk, and it is the only one that *generates* the labelled data the others need.
       the pipeline looked at (`CandidateRecord`, winners and losers) rides
       inside `MatchingOutput` and genuinely round-trips through
       `PostgresAiRunSink` into `ai_runs`, not just an in-memory shape.
-- [ ] A read model and appeal UI over those persisted candidates — nothing
-      queries `ai_runs` for this yet
-- [ ] Constraint-satisfaction and coverage assertions in CI — covered by
-      `pipeline.test.ts` today; not yet a named CI gate
+- [x] A read model and appeal UI over those persisted candidates —
+      `getMatchingRoundCandidates` (`apps/api/src/postgres-reads.ts`) reads a
+      round's full candidate set (winners and losers, features, explanation,
+      `won`) straight back out of `ai_runs` by run id, behind
+      `GET /orgs/:orgId/matching-rounds/:runId/candidates`
+      (`authenticateAdmin`-gated, same as `risk-findings`/`nudges`).
+      `/dashboard/matching-rounds` renders it as a table. No list of past
+      rounds exists yet — it is a lookup by run id, not a browsable index —
+      since nothing yet writes a round-to-cohort index a listing could read.
+- [x] Constraint-satisfaction and coverage assertions in CI — named,
+      standalone suite at
+      `packages/primitives/matching/src/__tests__/invariants.test.ts`,
+      asserting zero constraint violations, capacity never exceeded, and
+      coverage at least matching a greedy baseline across 40 randomized,
+      seeded cohorts. Runs as part of the default `pnpm test` (also runnable
+      alone via `pnpm test:matching-invariants`); still no CI workflow file
+      in this repo for it to be wired into.
 - [x] Commit a round into real pairings — `runMatchingRound`/
       `commitMatchingRound` (`round.ts`) turn assignments into `pair.activated`
       through the same sink shape `RosterSink` already uses; `World` satisfies

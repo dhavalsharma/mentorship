@@ -16,10 +16,15 @@ import {
   PostgresNotesSink,
   PostgresPairingLocator,
 } from "./postgres-ports.js";
-import { listOpenRiskFindings, listRecentNudges } from "./postgres-reads.js";
+import {
+  getMatchingRoundCandidates,
+  listOpenRiskFindings,
+  listRecentNudges,
+} from "./postgres-reads.js";
 import { PostgresDocumentSettingsStore } from "./postgres-settings.js";
 import {
   createServer,
+  notImplementedMatchingReads,
   notImplementedReads,
   type ApiServerDeps,
 } from "./server.js";
@@ -145,6 +150,8 @@ function postgresDeps(url: string): ApiServerDeps {
       riskFindings: (orgId, limit) =>
         listOpenRiskFindings(db, orgId, limit, TENANT_ROLE),
       nudges: (orgId, limit) => listRecentNudges(db, orgId, limit, TENANT_ROLE),
+      matchingRoundCandidates: (orgId, runId) =>
+        getMatchingRoundCandidates(db, orgId, runId, TENANT_ROLE),
     },
     documentSettings: new PostgresDocumentSettingsStore(
       db,
@@ -281,6 +288,7 @@ async function memoryDeps(): Promise<ApiServerDeps> {
     admin: {
       riskFindings: notImplementedReads(),
       nudges: notImplementedReads(),
+      matchingRoundCandidates: notImplementedMatchingReads(),
     },
     auth: {
       store: inMemoryMagicLinkStore([

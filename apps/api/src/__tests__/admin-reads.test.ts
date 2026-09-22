@@ -3,9 +3,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { MagicLinkStore } from "@mentorship/auth";
 import {
   createServer,
+  notImplementedMatchingReads,
   notImplementedReads,
   type AdminListQuery,
   type AuthDeps,
+  type MatchingRoundCandidatesQuery,
 } from "../server.js";
 
 /**
@@ -88,6 +90,7 @@ describe("admin read routes over a real socket", () => {
   async function listen(admin?: {
     riskFindings: AdminListQuery;
     nudges: AdminListQuery;
+    matchingRoundCandidates?: MatchingRoundCandidatesQuery;
   }): Promise<{ base: string; auth: AuthDeps; store: FakeMagicLinkStore }> {
     const store = new FakeMagicLinkStore();
     const auth: AuthDeps = { store, orgId: VALID_ORG_ID };
@@ -95,7 +98,13 @@ describe("admin read routes over a real socket", () => {
       slackSigningSecret: "test-signing-secret",
       identity: noopIdentity(),
       responder: noopResponder(),
-      admin,
+      admin: admin
+        ? {
+            ...admin,
+            matchingRoundCandidates:
+              admin.matchingRoundCandidates ?? notImplementedMatchingReads(),
+          }
+        : undefined,
       auth,
     });
     await new Promise<void>((resolve) => server.listen(0, resolve));
@@ -270,6 +279,148 @@ describe("admin read routes over a real socket", () => {
     });
     expect(res.status).toBe(403);
     await expect(res.json()).resolves.toEqual({ error: "forbidden" });
+    expect(called).toBe(false);
+  });
+});
+
+const VALID_RUN_ID = "33333333-3333-3333-3333-333333333333";
+
+/**
+ * `GET /orgs/:orgId/matching-rounds/:runId/candidates` — the appeal-UI read
+ * model. Same real-socket style as the suite above; kept as its own describe
+ * block because the route takes a second path segment (`runId`) the
+ * risk-findings/nudges routes do not, with its own 400/404 shape.
+ */
+describe("matching-round candidates route over a real socket", () => {
+  let close: (() => void) | undefined;
+
+  afterEach(() => {
+    close?.();
+    close = undefined;
+  });
+
+  async function listen(
+    matchingRoundCandidates?: MatchingRoundCandidatesQuery,
+  ): Promise<{ base: string; store: FakeMagicLinkStore }> {
+    const store = new FakeMagicLinkStore();
+    const auth: AuthDeps = { store, orgId: VALID_ORG_ID };
+    const server = createServer({
+      slackSigningSecret: "test-signing-secret",
+      identity: noopIdentity(),
+      responder: noopResponder(),
+      admin: matchingRoundCandidates
+        ? {
+            riskFindings: notImplementedReads(),
+            nudges: notImplementedReads(),
+            matchingRoundCandidates,
+          }
+        : undefined,
+      auth,
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    close = () => server.close();
+    const { port } = server.address() as AddressInfo;
+    return { base: `http://127.0.0.1:${port}`, store };
+  }
+
+  function cookieFor(store: FakeMagicLinkStore): string {
+    const sessionId = store.seedSession(VALID_ORG_ID, "user-1");
+    return `mentorship_session=${sessionId}`;
+  }
+
+  it("returns the candidates from the injected query as JSON with a 200", async () => {
+    const fake = { runId: VALID_RUN_ID, cohortId: "coh_1", asOf: "x", createdAt: "y", candidates: [] };
+    const query: MatchingRoundCandidatesQuery = async (orgId, runId) => {
+      expect(orgId).toBe(VALID_ORG_ID);
+      expect(runId).toBe(VALID_RUN_ID);
+      return fake;
+    };
+    const { base, store } = await listen(query);
+
+    const res = await fetch(
+      `${base}/orgs/${VALID_ORG_ID}/matching-rounds/${VALID_RUN_ID}/candidates`,
+      { headers: { cookie: cookieFor(store) } },
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    await expect(res.json()).resolves.toEqual(fake);
+  });
+
+  it("404s when the query resolves null (no such run, or not a matching run)", async () => {
+    const { base, store } = await listen(async () => null);
+
+    const res = await fetch(
+      `${base}/orgs/${VALID_ORG_ID}/matching-rounds/${VALID_RUN_ID}/candidates`,
+      { headers: { cookie: cookieFor(store) } },
+    );
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBeTruthy();
+  });
+
+  it("400s a non-UUID runId before ever calling the query", async () => {
+    let called = false;
+    const { base, store } = await listen(async () => {
+      called = true;
+      return null;
+    });
+
+    const res = await fetch(
+      `${base}/orgs/${VALID_ORG_ID}/matching-rounds/not-a-uuid/candidates`,
+      { headers: { cookie: cookieFor(store) } },
+    );
+    expect(res.status).toBe(400);
+    expect(called).toBe(false);
+  });
+
+  it("501s with a JSON body when the backend does not track matching rounds", async () => {
+    const { base, store } = await listen(notImplementedMatchingReads());
+
+    const res = await fetch(
+      `${base}/orgs/${VALID_ORG_ID}/matching-rounds/${VALID_RUN_ID}/candidates`,
+      { headers: { cookie: cookieFor(store) } },
+    );
+    expect(res.status).toBe(501);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/matching rounds/);
+  });
+
+  it("501s when the server has no admin deps configured at all", async () => {
+    const { base, store } = await listen(undefined);
+
+    const res = await fetch(
+      `${base}/orgs/${VALID_ORG_ID}/matching-rounds/${VALID_RUN_ID}/candidates`,
+      { headers: { cookie: cookieFor(store) } },
+    );
+    expect(res.status).toBe(501);
+  });
+
+  it("401s with no session cookie at all, without ever calling the query", async () => {
+    let called = false;
+    const { base } = await listen(async () => {
+      called = true;
+      return null;
+    });
+
+    const res = await fetch(
+      `${base}/orgs/${VALID_ORG_ID}/matching-rounds/${VALID_RUN_ID}/candidates`,
+    );
+    expect(res.status).toBe(401);
+    expect(called).toBe(false);
+  });
+
+  it("403s when the session's own org does not match the URL's :orgId, without ever calling the query", async () => {
+    let called = false;
+    const { base, store } = await listen(async () => {
+      called = true;
+      return null;
+    });
+
+    const res = await fetch(
+      `${base}/orgs/${OTHER_ORG_ID}/matching-rounds/${VALID_RUN_ID}/candidates`,
+      { headers: { cookie: cookieFor(store) } },
+    );
+    expect(res.status).toBe(403);
     expect(called).toBe(false);
   });
 });
