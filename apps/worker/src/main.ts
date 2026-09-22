@@ -36,6 +36,15 @@ const ORG_ID = process.env["ORG_ID"];
 const INTERVAL_MS = Number(process.env["WORKER_INTERVAL_MS"] ?? 1000);
 const TENANT_ROLE = process.env["TENANT_ROLE"];
 
+// Periodic sweeps, each independently configurable and each off by passing
+// 0 or a negative number — matching the "off unless configured" default
+// `WorkerOptions.schedules` documents. Defaults are minutes-scale on purpose:
+// these are about absence and drift, not anything that needs the relay's
+// sub-second responsiveness.
+const NUDGE_SWEEP_INTERVAL_MS = Number(process.env["NUDGE_SWEEP_INTERVAL_MS"] ?? 15 * 60_000);
+const PROGRESS_SWEEP_INTERVAL_MS = Number(process.env["PROGRESS_SWEEP_INTERVAL_MS"] ?? 15 * 60_000);
+const DIGEST_INTERVAL_MS = Number(process.env["DIGEST_INTERVAL_MS"] ?? 60 * 60_000);
+
 if (!DATABASE_URL || !ORG_ID) {
   console.error("DATABASE_URL and ORG_ID are both required");
   process.exit(1);
@@ -71,6 +80,11 @@ const worker = createWorker({
       `  ${line.input.padEnd(20)} ${line.from} → ${line.to}` +
         (line.effects.length > 0 ? `  effects: ${line.effects.join(", ")}` : ""),
     ),
+  schedules: {
+    ...(NUDGE_SWEEP_INTERVAL_MS > 0 ? { nudge: { intervalMs: NUDGE_SWEEP_INTERVAL_MS } } : {}),
+    ...(PROGRESS_SWEEP_INTERVAL_MS > 0 ? { progress: { intervalMs: PROGRESS_SWEEP_INTERVAL_MS } } : {}),
+    ...(DIGEST_INTERVAL_MS > 0 ? { digest: { intervalMs: DIGEST_INTERVAL_MS } } : {}),
+  },
 });
 
 console.log(`worker started for org ${ORG_ID}, polling every ${INTERVAL_MS}ms`);
@@ -79,6 +93,11 @@ console.log(
   llm
     ? `session intelligence: ${llm.model}, ai_runs recorded\n`
     : "session intelligence: deterministic stub (set ANTHROPIC_API_KEY to use the real primitive)\n",
+);
+console.log(
+  `sweeps: nudge ${NUDGE_SWEEP_INTERVAL_MS > 0 ? `every ${NUDGE_SWEEP_INTERVAL_MS}ms` : "off"}, ` +
+    `progress ${PROGRESS_SWEEP_INTERVAL_MS > 0 ? `every ${PROGRESS_SWEEP_INTERVAL_MS}ms` : "off"}, ` +
+    `digest ${DIGEST_INTERVAL_MS > 0 ? `every ${DIGEST_INTERVAL_MS}ms` : "off"}\n`,
 );
 
 const controller = new AbortController();
@@ -104,6 +123,8 @@ while (!controller.signal.aborted) {
           (relay.deadLettered > 0 ? `, ${relay.deadLettered} parked` : ""),
       );
     }
+    const { ran } = await worker.sweep();
+    if (ran.length > 0) console.log(`sweep: ${ran.join(", ")}`);
     for (const call of recorder.calls.slice(seen)) {
       console.log(`    ↳ ${call.kind}`);
     }

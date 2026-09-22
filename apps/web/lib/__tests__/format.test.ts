@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  daysSince,
   formatTimestamp,
   nudgeStateTone,
   requiresHumanLabel,
@@ -52,5 +53,25 @@ describe("nudgeStateTone", () => {
     expect(nudgeStateTone("dropped")).toBe("critical");
     expect(nudgeStateTone("planned")).toBe("warning");
     expect(nudgeStateTone("sent")).toBe("neutral");
+  });
+});
+
+describe("daysSince", () => {
+  const now = () => new Date("2026-09-22T12:00:00.000Z");
+
+  it("renders a placeholder for an unparsable value", () => {
+    expect(daysSince("not-a-date", now)).toBe("—");
+  });
+
+  it("renders 'less than a day' for something within the last 24h", () => {
+    expect(daysSince("2026-09-22T00:00:00.000Z", now)).toBe("less than a day");
+  });
+
+  it("renders '1 day' for exactly one day ago", () => {
+    expect(daysSince("2026-09-21T11:00:00.000Z", now)).toBe("1 day");
+  });
+
+  it("renders 'N days' for more than a day ago", () => {
+    expect(daysSince("2026-09-15T12:00:00.000Z", now)).toBe("7 days");
   });
 });

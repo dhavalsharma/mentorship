@@ -74,6 +74,59 @@ describe("runPrimitive", () => {
     });
   });
 
+  it("stamps a caller-given subjectId onto the recorded run, success or degraded", async () => {
+    const runs = new NullAiRunSink();
+    const llm = new DeterministicProvider({
+      scripted: [{ when: "summarise p1", value: { headline: "went well", confident: true } }],
+    });
+
+    await runPrimitive({
+      primitive: primitive(),
+      trigger: { id: "p1" },
+      reader: undefined,
+      llm,
+      policy,
+      orgId: "org_1",
+      runs,
+      subjectId: "ext_1",
+    });
+
+    await runPrimitive({
+      primitive: primitive(),
+      trigger: { id: "p2" },
+      reader: undefined,
+      llm: new DeterministicProvider({ failWith: new Error("503") }),
+      policy,
+      orgId: "org_1",
+      runs,
+      subjectId: "ext_2",
+    });
+
+    expect(runs.runs.map((r) => r.subjectId)).toEqual(["ext_1", "ext_2"]);
+  });
+
+  it("lets a later verdict find its way back to the run by subjectId", async () => {
+    const runs = new NullAiRunSink();
+    const llm = new DeterministicProvider({
+      scripted: [{ when: "summarise p1", value: { headline: "went well", confident: true } }],
+    });
+
+    await runPrimitive({
+      primitive: primitive(),
+      trigger: { id: "p1" },
+      reader: undefined,
+      llm,
+      policy,
+      orgId: "org_1",
+      runs,
+      subjectId: "ext_1",
+    });
+
+    await runs.setVerdict({ orgId: "org_1", subjectId: "ext_1", verdict: "confirm" });
+
+    expect(runs.runs[0]).toMatchObject({ subjectId: "ext_1", verdict: "confirm" });
+  });
+
   it("falls back rather than throwing when the model is down", async () => {
     const runs = new NullAiRunSink();
     const llm = new DeterministicProvider({ failWith: new Error("503 from vendor") });

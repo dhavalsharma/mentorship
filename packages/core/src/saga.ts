@@ -63,6 +63,18 @@ export type Effect =
        */
       text?: string;
     }
+  /**
+   * Invariant 16: reaches the policy-configured safeguarding contact out of
+   * band. Never routed through `render_document` / `request_confirmation` —
+   * those post into the pair's own thread, exactly where a safeguarding
+   * disclosure must not surface.
+   */
+  | {
+      type: "notify_safeguarding";
+      sessionId: string;
+      extractionId: string;
+      summary: string;
+    }
   | { type: "render_document"; title: string; markdown: string }
   | { type: "request_feedback"; participantId: string; question: string }
   | {

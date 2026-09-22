@@ -1,4 +1,5 @@
 import { createClient } from "@mentorship/db";
+import { PostgresAiRunSink } from "@mentorship/ai/postgres";
 import { PostgresMagicLinkStore } from "@mentorship/auth/postgres";
 import type { MagicLinkStore } from "@mentorship/auth";
 import { commitRosterImport, planRosterImport } from "@mentorship/roster";
@@ -15,10 +16,17 @@ import {
   PostgresNotesSink,
   PostgresPairingLocator,
 } from "./postgres-ports.js";
-import { listOpenRiskFindings, listRecentNudges } from "./postgres-reads.js";
+import {
+  getMatchingRoundCandidates,
+  listDeadLetters,
+  listOpenRiskFindings,
+  listRecentNudges,
+  listStuckSagas,
+} from "./postgres-reads.js";
 import { PostgresDocumentSettingsStore } from "./postgres-settings.js";
 import {
   createServer,
+  notImplementedMatchingReads,
   notImplementedReads,
   type ApiServerDeps,
 } from "./server.js";
@@ -118,7 +126,13 @@ function postgresDeps(url: string): ApiServerDeps {
     slackSigningSecret: SIGNING_SECRET!,
     identity: new PostgresChatIdentityResolver(options),
     responder: new PostgresAgreementResponder(options),
-    extractions: new PostgresExtractionResponder(options),
+    extractions: new PostgresExtractionResponder(
+      options,
+      new PostgresAiRunSink(
+        db,
+        TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE },
+      ),
+    ),
     ...(SLACK_BOT_TOKEN
       ? {
           counterModal: {
@@ -138,6 +152,11 @@ function postgresDeps(url: string): ApiServerDeps {
       riskFindings: (orgId, limit) =>
         listOpenRiskFindings(db, orgId, limit, TENANT_ROLE),
       nudges: (orgId, limit) => listRecentNudges(db, orgId, limit, TENANT_ROLE),
+      stuckSagas: (orgId, limit, olderThanDays) =>
+        listStuckSagas(db, orgId, limit, olderThanDays, TENANT_ROLE),
+      deadLetters: (orgId, limit) => listDeadLetters(db, orgId, limit, TENANT_ROLE),
+      matchingRoundCandidates: (orgId, runId) =>
+        getMatchingRoundCandidates(db, orgId, runId, TENANT_ROLE),
     },
     documentSettings: new PostgresDocumentSettingsStore(
       db,
@@ -267,13 +286,17 @@ async function memoryDeps(): Promise<ApiServerDeps> {
       },
     },
     onUnhandled,
-    // The in-memory `World` predates `risk_findings`/`nudges` — those are
-    // Postgres-only concepts from this session, and there is nothing here to
-    // read. A deliberate 501 beats an empty array that reads as "no findings"
-    // when the honest answer is "this backend doesn't track that."
+    // The in-memory `World` predates `risk_findings`/`nudges`/`saga_instances`
+    // monitoring/dead letters — those are Postgres-only concepts, and there is
+    // nothing here to read. A deliberate 501 beats an empty array that reads
+    // as "nothing stuck" when the honest answer is "this backend doesn't
+    // track that."
     admin: {
       riskFindings: notImplementedReads(),
       nudges: notImplementedReads(),
+      stuckSagas: notImplementedReads(),
+      deadLetters: notImplementedReads(),
+      matchingRoundCandidates: notImplementedMatchingReads(),
     },
     auth: {
       store: inMemoryMagicLinkStore([

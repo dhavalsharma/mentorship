@@ -27,7 +27,13 @@ export interface SessionIntel {
     sourceRef: string;
     text: string;
     pair: PairContext;
-  }): Promise<{ extractionId: string; markdown: string; actionItems: string[] }>;
+  }): Promise<{
+    extractionId: string;
+    markdown: string;
+    actionItems: string[];
+    /** Invariant 16: true routes straight to `notify_safeguarding`, never through render/confirm. */
+    safeguarding?: boolean;
+  }>;
 }
 
 export interface EffectRunnerOptions {
@@ -304,8 +310,30 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           markdown: result.markdown,
           actionItems: result.actionItems,
           sourceRef: effect.sourceRef,
+          ...(result.safeguarding ? { safeguarding: true } : {}),
         });
         return { extractionId: result.extractionId };
+      }
+
+      case "notify_safeguarding": {
+        const contact = pair.policy.safeguarding.contactMemberRef;
+        const dm = opts.registry.get<DmAdapter>("dm");
+        if (!contact || !dm) {
+          // Invariant 16 leaves no queue or batch to fall back to — an
+          // unconfigured or unbound destination is a loud operational
+          // warning, never a silently dropped disclosure.
+          warn("safeguarding flagged with no contact configured; not delivered", {
+            sessionId: effect.sessionId,
+            extractionId: effect.extractionId,
+          });
+          return { notified: false };
+        }
+        await dm.send({
+          memberRef: contact,
+          body: `Safeguarding flag raised on session ${effect.sessionId} (${pair.title}). Review immediately:\n\n${effect.summary}`,
+          idempotencyKey: ctx.key,
+        });
+        return { notified: true };
       }
 
       case "render_document": {
@@ -328,6 +356,10 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           url: rendered.url,
           docRef: rendered.docRef,
           revisionId: rendered.revisionId,
+          // ADR-0005: a human edit was detected inside the managed region and
+          // preserved instead of overwritten — the block the saga just asked
+          // to render did not actually change.
+          pinned: rendered.pinned,
         });
         return rendered;
       }
@@ -382,6 +414,19 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
  *
  * Replace with a schema-bound model call — and keep the evidence spans, which
  * are what make an extracted claim checkable rather than believable.
+ *
+ * It emits **no risk flags, ever, including `safeguarding`** — deliberately,
+ * the same call `packages/primitives/session-intel/src/fallback.ts` makes
+ * for the model-degraded path (see that file's doc comment for the full
+ * argument): a cue-phrase regex cannot tell a disclosure from someone
+ * quoting one, and `safeguarding` wakes a named human out of band
+ * (invariant 16) — a regex does not get to make that call. This is why the
+ * `extracting` saga state still routes every extraction through
+ * render/confirm when this path is used: the degraded write-up lands in
+ * front of a human either way, which is the actual safety net here, not
+ * keyword matching. Any tenant that needs real safeguarding *detection* —
+ * not just eventual human visibility — must configure an `llm` (see
+ * `createWorker`/`bootstrap()`); this stub is a floor, not a substitute.
  */
 export function heuristicSessionIntel(ids: IdFactory = uuidIds): SessionIntel {
   const CUES = [

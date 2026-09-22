@@ -33,17 +33,45 @@ export interface AiRunRecord {
   costUsd?: number;
   latencyMs?: number;
   error?: string;
+  /**
+   * A caller-chosen correlation id — an extraction id for session-intel, a
+   * round id for matching, and so on — that a later human verdict can be
+   * looked up by, without every primitive inventing its own join.
+   */
+  subjectId?: string;
 }
 
 export interface AiRunSink {
   record(run: AiRunRecord): Promise<void>;
+  /**
+   * Invariant 19/20: the human's confirm/edit tap is both the UX and the eval
+   * label. Optional because not every sink cares to store one (or has
+   * anywhere to put it) — a sink that omits this quietly keeps recording runs
+   * with no verdict, exactly like before this existed.
+   */
+  setVerdict?(input: {
+    orgId: string;
+    subjectId: string;
+    verdict: string;
+  }): Promise<void>;
 }
 
 /** Discards runs. Fine for tests; in production it means no cost dashboard. */
 export class NullAiRunSink implements AiRunSink {
-  readonly runs: AiRunRecord[] = [];
+  readonly runs: (AiRunRecord & { verdict?: string })[] = [];
   async record(run: AiRunRecord): Promise<void> {
     this.runs.push(run);
+  }
+  async setVerdict(input: {
+    orgId: string;
+    subjectId: string;
+    verdict: string;
+  }): Promise<void> {
+    for (const run of this.runs) {
+      if (run.orgId === input.orgId && run.subjectId === input.subjectId) {
+        run.verdict = input.verdict;
+      }
+    }
   }
 }
 
@@ -55,6 +83,8 @@ export interface RunPrimitiveOptions<Trigger, Ctx, Out, Reader> {
   policy: ProgramPolicy;
   orgId: string;
   runs?: AiRunSink;
+  /** Threaded onto the recorded run so a later verdict can find it again. */
+  subjectId?: string;
   /**
    * Off when the participant has not consented to AI processing. The platform
    * keeps working and the primitive skips — consent that breaks the product
@@ -93,6 +123,7 @@ export async function runPrimitive<Trigger, Ctx, Out, Reader>(
       model: llm.model,
       inputHash,
       error: reason,
+      ...(options.subjectId ? { subjectId: options.subjectId } : {}),
     });
     options.onWarn?.("primitive degraded to fallback", {
       primitive: primitive.name,
@@ -134,6 +165,7 @@ export async function runPrimitive<Trigger, Ctx, Out, Reader>(
       model: usage?.model ?? llm.model,
       inputHash,
       output: parsed,
+      ...(options.subjectId ? { subjectId: options.subjectId } : {}),
       ...(usage
         ? {
             tokensIn: usage.tokensIn,

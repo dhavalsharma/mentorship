@@ -60,6 +60,15 @@ export const EVENT_NAMES = [
   "safeguarding.flagged",
   // operational
   "saga.escalated",
+  /**
+   * Written by the worker's periodic digest sweep (`apps/worker/src/digest.ts`).
+   * There is no notification channel wired for a digest yet — this event is
+   * the durable, queryable "sent" a future one can subscribe to, the same
+   * honest half-measure `risk_findings` was before anything read it. The
+   * payload carries the computed counts, not a rendered message: rendering
+   * belongs to whatever channel eventually reads this.
+   */
+  "digest.computed",
 ] as const;
 
 export type EventName = (typeof EVENT_NAMES)[number];

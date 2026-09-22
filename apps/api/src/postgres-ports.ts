@@ -1,4 +1,5 @@
 import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import type { AiRunSink } from "@mentorship/ai";
 import {
   recordResponse,
   resolveCadence,
@@ -412,7 +413,17 @@ export class PostgresNotesSink implements NotesSink {
  * exists, so that is what is read.
  */
 export class PostgresExtractionResponder implements ExtractionResponder {
-  constructor(private readonly options: PostgresPortOptions) {}
+  constructor(
+    private readonly options: PostgresPortOptions,
+    /**
+     * Optional: when present, a Confirm/Edit tap also becomes that
+     * extraction's `ai_runs.verdict` (invariants 19/20) — the human's answer
+     * doubling as the eval label the other primitives will need. Absent, the
+     * verdict is recorded as a domain event only, exactly as before this
+     * existed.
+     */
+    private readonly runs?: AiRunSink,
+  ) {}
 
   async respond(input: {
     extractionId: string;
@@ -482,6 +493,20 @@ export class PostgresExtractionResponder implements ExtractionResponder {
       },
       role === undefined ? {} : { role },
     );
+
+    // Best-effort and outside the transaction above: the verdict is a label
+    // on the eval record, not the fact itself — that fact is already durable
+    // as the domain event just written, and this must never be the reason a
+    // real Confirm/Edit click fails.
+    try {
+      await this.runs?.setVerdict?.({
+        orgId,
+        subjectId: input.extractionId,
+        verdict: input.kind,
+      });
+    } catch {
+      // Swallowed deliberately — see comment above.
+    }
   }
 }
 

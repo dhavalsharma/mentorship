@@ -17,7 +17,13 @@ import {
   type PairingLocator,
   type SlackModalOpener,
 } from "@mentorship/integrations";
-import { DocumentPolicySchema } from "@mentorship/core";
+import {
+  asOrgId,
+  authorize,
+  DocumentPolicySchema,
+  type Actor,
+  type ResourceType,
+} from "@mentorship/core";
 import {
   requestMagicLink,
   verifyMagicLink,
@@ -43,6 +49,9 @@ const UUID_RE =
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
+const DEFAULT_STUCK_DAYS = 3;
+const MAX_STUCK_DAYS = 90;
+
 /**
  * A query function the server calls without caring which backend answers it.
  * Postgres wires in a real query against `risk_findings`/`nudges`; the
@@ -51,9 +60,38 @@ const MAX_LIMIT = 200;
  */
 export type AdminListQuery = (orgId: string, limit: number) => Promise<unknown[]>;
 
+/**
+ * Same idea as `AdminListQuery`, with the one extra dimension "stuck" needs:
+ * how many days without progress counts as stuck. Kept as a distinct type
+ * rather than overloading `AdminListQuery` so a backend that wires the wrong
+ * query in for the wrong route is a type error, not a runtime surprise.
+ */
+export type StuckSagaQuery = (
+  orgId: string,
+  limit: number,
+  olderThanDays: number,
+) => Promise<unknown[]>;
+
+/**
+ * `runId` is an `ai_runs.id` — a matching round's `PostgresAiRunSink.record`
+ * call is what created it (see `packages/primitives/matching/src/round.ts`),
+ * so there is no separate "round id" concept to resolve, only the id of the
+ * run that produced it. `null` means the id does not resolve to a matching
+ * run for this org — not found, or not a matching primitive's run — which
+ * the route turns into a 404 rather than an empty list.
+ */
+export type MatchingRoundCandidatesQuery = (
+  orgId: string,
+  runId: string,
+) => Promise<unknown | null>;
+
 export interface AdminReadsDeps {
   riskFindings: AdminListQuery;
   nudges: AdminListQuery;
+  /** ROADMAP phase 1's monitoring gap — see `packages/workflows/src/postgres-reads.ts`. */
+  stuckSagas: StuckSagaQuery;
+  deadLetters: AdminListQuery;
+  matchingRoundCandidates: MatchingRoundCandidatesQuery;
 }
 
 /**
@@ -145,6 +183,13 @@ const SESSION_COOKIE = "mentorship_session";
 
 /** A backend that has nothing to say for one of these routes — see `main.ts`. */
 export function notImplementedReads(): AdminListQuery {
+  return async () => {
+    throw new NotImplementedError();
+  };
+}
+
+/** Same idea as `notImplementedReads`, for the differently-shaped matching-rounds query. */
+export function notImplementedMatchingReads(): MatchingRoundCandidatesQuery {
   return async () => {
     throw new NotImplementedError();
   };
@@ -261,7 +306,23 @@ async function route(
   if (req.method === "GET" && req.url) {
     const match = matchAdminRoute(req.url);
     if (match) {
-      await handleAdminList(req, res, deps, match.orgId, match.limit, match.kind);
+      await handleAdminList(
+        req,
+        res,
+        deps,
+        match.orgId,
+        match.limit,
+        match.olderThanDays,
+        match.kind,
+      );
+      return;
+    }
+  }
+
+  if (req.method === "GET" && req.url) {
+    const match = matchMatchingRoundCandidatesRoute(req.url);
+    if (match) {
+      await handleMatchingRoundCandidates(req, res, deps, match.orgId, match.runId);
       return;
     }
   }
@@ -270,15 +331,43 @@ async function route(
   res.end("not found");
 }
 
-/** `/orgs/:orgId/risk-findings` or `/orgs/:orgId/nudges`, with an optional `?limit=`. */
+type AdminListKind = "risk-findings" | "nudges" | "stuck-sagas" | "dead-letters";
+
+const ADMIN_LIST_KINDS: readonly AdminListKind[] = [
+  "risk-findings",
+  "nudges",
+  "stuck-sagas",
+  "dead-letters",
+];
+
+/**
+ * The visibility-matrix resource type each admin-list kind authorizes as.
+ * A `Record` over the full `AdminListKind` union rather than a ternary — a
+ * new kind added to the union without an entry here is a compile error
+ * instead of silently falling through to the wrong resource type (the bug
+ * this replaced: `stuck-sagas`/`dead-letters` were both being checked as
+ * `"nudge"`).
+ */
+const ADMIN_LIST_RESOURCE_TYPE: Record<AdminListKind, ResourceType> = {
+  "risk-findings": "risk-finding",
+  nudges: "nudge",
+  "stuck-sagas": "operational-monitoring",
+  "dead-letters": "operational-monitoring",
+};
+
+/**
+ * `/orgs/:orgId/{risk-findings,nudges,stuck-sagas,dead-letters}`, with an
+ * optional `?limit=` (all four) and `?days=` (`stuck-sagas` only — how many
+ * days without progress counts as stuck).
+ */
 function matchAdminRoute(
   url: string,
-): { orgId: string; limit: number; kind: "risk-findings" | "nudges" } | null {
+): { orgId: string; limit: number; olderThanDays: number; kind: AdminListKind } | null {
   const parsed = new URL(url, "http://internal");
   const segments = parsed.pathname.split("/").filter(Boolean);
   if (segments.length !== 3 || segments[0] !== "orgs") return null;
   const [, orgId, resource] = segments as [string, string, string];
-  if (resource !== "risk-findings" && resource !== "nudges") return null;
+  if (!ADMIN_LIST_KINDS.includes(resource as AdminListKind)) return null;
 
   const rawLimit = parsed.searchParams.get("limit");
   const parsedLimit = rawLimit === null ? undefined : Number(rawLimit);
@@ -287,7 +376,14 @@ function matchAdminRoute(
       ? DEFAULT_LIMIT
       : Math.min(Math.floor(parsedLimit), MAX_LIMIT);
 
-  return { orgId: orgId!, limit, kind: resource };
+  const rawDays = parsed.searchParams.get("days");
+  const parsedDays = rawDays === null ? undefined : Number(rawDays);
+  const olderThanDays =
+    parsedDays === undefined || !Number.isFinite(parsedDays) || parsedDays <= 0
+      ? DEFAULT_STUCK_DAYS
+      : Math.min(Math.floor(parsedDays), MAX_STUCK_DAYS);
+
+  return { orgId: orgId!, limit, olderThanDays, kind: resource as AdminListKind };
 }
 
 async function handleAdminList(
@@ -296,7 +392,8 @@ async function handleAdminList(
   deps: ApiServerDeps,
   orgId: string,
   limit: number,
-  kind: "risk-findings" | "nudges",
+  olderThanDays: number,
+  kind: AdminListKind,
 ): Promise<void> {
   if (!UUID_RE.test(orgId)) {
     writeJson(res, 400, { error: "orgId must be a UUID" });
@@ -310,6 +407,28 @@ async function handleAdminList(
   const authed = await authenticateAdmin(req, res, deps, orgId);
   if (!authed) return; // response already written (401 or 403)
 
+  // Authenticated and org-matched is necessary but no longer sufficient on
+  // its own — invariant 14 (docs/decisions, CLAUDE.md, `packages/core`'s
+  // `authorize`): org membership alone must never be read as "may see
+  // everything about every pairing in the org." These two resources are
+  // activity/attendance data (did a pair meet, how many nudges fired), which
+  // the matrix grants org-chart roles org-wide — unlike an individual's
+  // feedback sentiment, which it never does, for anyone. A session
+  // authenticated through this route is currently the only role apps/api
+  // knows how to establish, so it authorizes as `admin`; a future route that
+  // reads something pair-scoped (feedback sentiment, a per-participant
+  // signal) must resolve the caller's actual pairing membership and role
+  // before calling `authorize`, never assume this shortcut.
+  const actor: Actor = { orgId: asOrgId(orgId), role: "admin", pairingIds: [] };
+  const decision = authorize(actor, {
+    type: ADMIN_LIST_RESOURCE_TYPE[kind],
+    orgId: asOrgId(orgId),
+  });
+  if (!decision.allowed) {
+    writeJson(res, 403, { error: "forbidden" });
+    return;
+  }
+
   if (!deps.admin) {
     writeJson(res, 501, {
       error: "admin reads are not configured on this server",
@@ -317,14 +436,98 @@ async function handleAdminList(
     return;
   }
 
-  const query = kind === "risk-findings" ? deps.admin.riskFindings : deps.admin.nudges;
   try {
-    const rows = await query(orgId, limit);
+    const rows =
+      kind === "risk-findings"
+        ? await deps.admin.riskFindings(orgId, limit)
+        : kind === "nudges"
+          ? await deps.admin.nudges(orgId, limit)
+          : kind === "stuck-sagas"
+            ? await deps.admin.stuckSagas(orgId, limit, olderThanDays)
+            : await deps.admin.deadLetters(orgId, limit);
     writeJson(res, 200, rows);
   } catch (error) {
     if (error instanceof NotImplementedError) {
       writeJson(res, 501, {
         error: `the in-memory backend does not track ${kind}`,
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
+/** `/orgs/:orgId/matching-rounds/:runId/candidates` — the appeal-UI read model. */
+function matchMatchingRoundCandidatesRoute(
+  url: string,
+): { orgId: string; runId: string } | null {
+  const parsed = new URL(url, "http://internal");
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length !== 5) return null;
+  const [orgs, orgId, resource, runId, tail] = segments as [
+    string,
+    string,
+    string,
+    string,
+    string,
+  ];
+  if (orgs !== "orgs" || resource !== "matching-rounds" || tail !== "candidates") {
+    return null;
+  }
+  return { orgId: orgId!, runId: runId! };
+}
+
+async function handleMatchingRoundCandidates(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiServerDeps,
+  orgId: string,
+  runId: string,
+): Promise<void> {
+  if (!UUID_RE.test(orgId) || !UUID_RE.test(runId)) {
+    writeJson(res, 400, { error: "orgId and runId must both be UUIDs" });
+    return;
+  }
+
+  // Same authenticate-then-authorize order as `handleAdminList`, and for the
+  // same reason (invariant 3): a session's own org, never the URL's, is what
+  // decides whether this request may proceed.
+  const authed = await authenticateAdmin(req, res, deps, orgId);
+  if (!authed) return; // response already written (401 or 403)
+
+  // Same visibility-matrix gate `handleAdminList` runs — a matching round's
+  // candidates are org-wide operational/appeal data (`matching-candidates`),
+  // never a named person's sentiment, but authorization is invariant 14's
+  // whole point: no route should skip it just because it happens not to
+  // carry attributable feedback today.
+  const actor: Actor = { orgId: asOrgId(orgId), role: "admin", pairingIds: [] };
+  const decision = authorize(actor, {
+    type: "matching-candidates",
+    orgId: asOrgId(orgId),
+  });
+  if (!decision.allowed) {
+    writeJson(res, 403, { error: "forbidden" });
+    return;
+  }
+
+  if (!deps.admin) {
+    writeJson(res, 501, {
+      error: "admin reads are not configured on this server",
+    });
+    return;
+  }
+
+  try {
+    const result = await deps.admin.matchingRoundCandidates(orgId, runId);
+    if (result === null) {
+      writeJson(res, 404, { error: "no matching round found for that run id" });
+      return;
+    }
+    writeJson(res, 200, result);
+  } catch (error) {
+    if (error instanceof NotImplementedError) {
+      writeJson(res, 501, {
+        error: "the in-memory backend does not track matching rounds",
       });
       return;
     }

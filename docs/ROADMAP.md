@@ -83,8 +83,12 @@ The load-bearing wall. Everything after this assumes it.
       shutdown. Not pg-boss, despite ADR-0008 naming it: its headline
       feature is making sure only one worker runs a job, and this loop does
       not need that, because the relay claims with `SKIP LOCKED` and the
-      engine saves with `WHERE version = $expected`. pg-boss still earns its
-      place for cron-shaped work — the temporal sweep, when that exists.
+      engine saves with `WHERE version = $expected`. The temporal sweep now
+      exists (Phase 5) and still did not need pg-boss: `apps/worker/src/
+      scheduler.ts`'s `Scheduler` is ordinary interval polling, gated
+      in-process, on the same reasoning — every sweep underneath is itself
+      idempotent, so two workers ticking it redundantly is merely wasteful,
+      not unsafe.
 - [ ] A relay that serves every tenant. Today's is scoped to one org because
       its resolvers are; a multi-tenant one has to build resolvers per event.
 - [x] **Postgres `SagaResolvers`** — `pairContext`, `freeBusy`, `agreement`,
@@ -115,11 +119,19 @@ The load-bearing wall. Everything after this assumes it.
       Both are blocked only on credentials now: `docs/live-tenant-testing.md`
       has the isolation plan, and `SandboxGuard` refuses any recipient not on
       an allowlist so a stray row cannot reach a colleague.
-- [ ] Monitoring: saga instances not advanced in N days; dead-letter review
+- [x] Monitoring: saga instances not advanced in N days; dead-letter review —
+      `listStuckSagaInstances`/`listDeadLetteredEvents`
+      (`packages/workflows/src/postgres-reads.ts`, org-scoped, run inside
+      `withTenant`), `GET /orgs/:orgId/{stuck-sagas,dead-letters}` on
+      `apps/api` (same `authenticateAdmin` 401/403 gating as risk-findings/
+      nudges, `stuck-sagas` taking an optional `?days=`, default 3), and
+      `apps/web`'s `/dashboard/{stuck-sagas,dead-letters}` pages. No
+      acknowledgement/replay action yet — read-only, same as risk-findings.
 - [x] Nudge rate limits, dedupe keys, quiet hours — build before the first real
       notification, because retrofitting does not un-spam anyone.
       `packages/primitives/nudge` — the full gate chain, deterministic and
-      model-proof. Not yet wired to send a real reminder.
+      model-proof. Now wired to a real reminder: `apps/worker`'s scheduled
+      nudge sweep (see Phase 5) calls it on an interval.
 
 ## Phase 2 — Session intelligence
 
@@ -134,11 +146,33 @@ repair retry, and the eval harness.
       bug this exposed: `run_extraction` never carried the note body through,
       so every notes-path extraction ran on empty text.
 - [x] Keep the evidence spans — they are what makes a claim checkable
-- [ ] Pending-then-confirm UI; confirmations become eval labels
-- [ ] Risk-flag routing, including the `safeguarding` out-of-band path. **Do not
-      ship the flag without the routing.**
-- [ ] Document pinning and echo suppression (ADR-0005) before enabling real
-      document writes
+- [x] Pending-then-confirm UI — the Confirm/Edit buttons on a Slack extraction
+      message (`confirm_extraction:<id>` / `edit_extraction:<id>`), the same
+      write-the-fact-then-let-the-relay-advance-the-saga path as an agreement
+      click (invariant 19: prose is never read as a verdict).
+- [x] Confirmations become eval labels — `ai_runs` gained a `subjectId`
+      column (migration `0012`) so a run can be found again by an
+      extraction id; `runPrimitive`/`createPrimitiveSessionIntel` stamp it on
+      write, and `PostgresExtractionResponder.respond` calls the new
+      `AiRunSink.setVerdict` right after recording `extraction.confirmed` /
+      `extraction.edited`, best-effort and outside that transaction so a
+      label write can never fail the click itself.
+- [x] Risk-flag routing for `safeguarding` — the effect runner's
+      `run_extraction` now reads the primitive's `gate`, and the saga's
+      `extracting` state branches on it *before* stage `render`: a
+      safeguarding flag skips `render_document`/`request_confirmation`
+      entirely (those post into the pair's own thread — exactly where a
+      disclosure must not surface) and instead runs a new
+      `notify_safeguarding` effect that DMs the org's configured
+      `policy.safeguarding.contactMemberRef`, plus emits `safeguarding.flagged`
+      for the durable record. An unconfigured contact warns loudly rather
+      than silently dropping the disclosure — there is nowhere left to queue
+      or batch it (invariant 16).
+- [x] Document pinning and echo suppression (ADR-0005) before enabling real
+      document writes — `resolveManagedRegionWrite`
+      (`packages/core/src/document-projection.ts`), consumed by both
+      `GoogleDriveDocumentAdapter` (Drive revision authorship via
+      `isEchoRevision`) and `FakeDocument`
 - [x] Golden fixtures; field-level precision/recall in CI — `eval.ts` +
       six hand-labelled cases in `golden-fixtures.ts`, scored against the
       deterministic fallback path on every `pnpm test` run. Measured:
@@ -164,11 +198,27 @@ risk, and it is the only one that *generates* the labelled data the others need.
       mentee forty gets nobody while mentors sit under capacity.
 - [x] LLM adjudication on the shortlist only, returning rationale and risk
       flags within bounds
-- [ ] Persist every candidate with its features and explanation, for appeals —
-      the shape exists (`CandidateRecord`, every pair, winners and losers) and
-      round-trips through `ai_runs`; no dedicated read model or appeal UI yet
-- [ ] Constraint-satisfaction and coverage assertions in CI — covered by
-      `pipeline.test.ts` today; not yet a named CI gate
+- [x] Persist every candidate with its features and explanation — every pair
+      the pipeline looked at (`CandidateRecord`, winners and losers) rides
+      inside `MatchingOutput` and genuinely round-trips through
+      `PostgresAiRunSink` into `ai_runs`, not just an in-memory shape.
+- [x] A read model and appeal UI over those persisted candidates —
+      `getMatchingRoundCandidates` (`apps/api/src/postgres-reads.ts`) reads a
+      round's full candidate set (winners and losers, features, explanation,
+      `won`) straight back out of `ai_runs` by run id, behind
+      `GET /orgs/:orgId/matching-rounds/:runId/candidates`
+      (`authenticateAdmin`-gated, same as `risk-findings`/`nudges`).
+      `/dashboard/matching-rounds` renders it as a table. No list of past
+      rounds exists yet — it is a lookup by run id, not a browsable index —
+      since nothing yet writes a round-to-cohort index a listing could read.
+- [x] Constraint-satisfaction and coverage assertions in CI — named,
+      standalone suite at
+      `packages/primitives/matching/src/__tests__/invariants.test.ts`,
+      asserting zero constraint violations, capacity never exceeded, and
+      coverage at least matching a greedy baseline across 40 randomized,
+      seeded cohorts. Runs as part of the default `pnpm test` (also runnable
+      alone via `pnpm test:matching-invariants`); still no CI workflow file
+      in this repo for it to be wired into.
 - [x] Commit a round into real pairings — `runMatchingRound`/
       `commitMatchingRound` (`round.ts`) turn assignments into `pair.activated`
       through the same sink shape `RosterSink` already uses; `World` satisfies
@@ -191,18 +241,38 @@ blocked while this waits.
       `requiresHuman` flag, and now a home: `runProgressSweep` +
       `PostgresRiskFindingsSink` persist every finding to a new
       `risk_findings` table (migration `0006`/`0007`, RLS included). It is a
-      durable log, not a queue — nothing schedules the sweep yet and there is
-      still no admin view to read the table from.
+      durable log, not a queue, and there is still no admin view to read the
+      table from — but something now schedules the sweep: see Phase 5.
 - [ ] Structured goals; model-drafted, human-edited SMART framing
-- [ ] Read models for the dashboard; the same model serves the scheduled digest.
+- [x] Read models for the dashboard; the same model serves the scheduled digest.
       A first slice exists end to end: `GET /orgs/:orgId/risk-findings` and
       `GET /orgs/:orgId/nudges` in `apps/api` (`postgres-reads.ts`, now
       session-authenticated), rendered by `apps/web`'s
       `/dashboard/{risk-findings,nudges}` pages. No "pending matches" read
       model, since an approve-gated round has nowhere queryable to read from
-      (Phase 3's own gap, not this one's).
-- [ ] Authorization layer implementing the visibility matrix, **with tests** —
-      including that individual feedback is never attributed outside the pair
+      (Phase 3's own gap, not this one's). The scheduled digest itself is
+      `apps/worker/src/digest.ts`'s `runDigestSweep`: it queries exactly these
+      two tables over a trailing window (default 24h) and persists a computed
+      summary as a `digest.computed` domain event — there is still no real
+      notification channel (no email, no Slack summary) to render it for a
+      human, so today "digest" honestly means *compute-and-persist*, not
+      *send*. A future channel is a subscriber away.
+- [x] Authorization layer implementing the visibility matrix, **with tests** —
+      `packages/core/src/authorization.ts`'s `authorize(actor, resource)`: pure,
+      deterministic, no admin/program_lead exception on `feedback.sentiment`
+      or a participant-attributed `signal` (invariant 14), org-chart roles and
+      pair members both see `pairing.activity`/`risk-finding`/`nudge`,
+      cross-org always denied first. 26 tests in
+      `packages/core/src/__tests__/authorization.test.ts`, including the
+      invariant-14 case CLAUDE.md flagged as missing. Wired into
+      `apps/api/src/server.ts`'s `handleAdminList` — `GET
+      /orgs/:orgId/risk-findings` and `/nudges` now call `authorize` after
+      `authenticateAdmin`, org membership no longer being read as "sees
+      everything." Not yet wired to a route that reads anything pair-scoped
+      (feedback sentiment, a per-participant `signal`), because none exists
+      yet — there is no session-to-participant/pairing-membership resolution
+      built in `apps/api` at all. That resolution, and the route it would
+      gate, is the next real test of this module.
 - [ ] Fit the health weights against completed-cohort outcomes (ADR-0007)
 
 ## Phase 5 — Nudge planner and the open-source launch
@@ -211,10 +281,36 @@ blocked while this waits.
       templates — now that there is outcome history to learn from.
       `packages/primitives/nudge` (`createNudgePlanner`, `ThompsonBandit`).
       `runNudgeSweep` runs it per deficit, dispatches on `gate === "auto"`,
-      and records every outcome to the existing `nudges` table. Still nothing
-      calls the sweep — no scheduler exists yet.
-- [ ] Two or three presets (university, corporate career, founder network) as
-      pure policy data. The real test of ADR-0001.
+      and records every outcome to the existing `nudges` table. Something now
+      calls the sweep: `apps/worker`'s `Scheduler` (`scheduler.ts`) adds a
+      periodic, interval-gated tick alongside the existing relay-drain/timer
+      pass — `pnpm serve:worker`'s loop calls `worker.sweep()` every
+      iteration, and each configured job (`nudge`, `progress`, `digest`) only
+      actually runs once its own interval has elapsed, org-scoped to the one
+      `ORG_ID` that worker process serves (matching the fix already made for
+      `SagaStore.findDue`). `createNudgeSweepRunner`/`createProgressSweepRunner`
+      (`apps/worker/src/sweeps.ts`) assemble the real Postgres-backed
+      `NudgeReader`/`ProgressReader` and dispatch through the bound `dm`
+      adapter — with three honest, documented schema gaps: no
+      per-participant mute/snooze/quiet-hours columns yet (every recipient
+      reads as unmuted, on the program-wide default quiet hours), no
+      `template_id`/`tone` column on `nudges` yet (so the bandit always runs
+      on a uniform prior rather than learning from outcomes), and no survey
+      table yet (`survey.unanswered` never fires). None of these are silent —
+      each is called out in `packages/primitives/nudge/src/postgres.ts`.
+      Not pg-boss, for the same reason the relay/timer loop already isn't
+      (ADR-0008): nothing here needs a single-runner guarantee strongly
+      enough to be worth a distributed lock, since every sweep underneath is
+      itself idempotent.
+- [x] Two or three presets (university, corporate career, founder network) as
+      pure policy data. The real test of ADR-0001. `packages/core/src/presets.ts`
+      (`PROGRAM_POLICY_PRESETS`), tested in `presets.test.ts`. Held up, with
+      two real schema gaps found and closed as data, not branches:
+      `ProgramPolicySchema` had no shape for what a goal is (`goals`, new) and
+      no field for matching weights at all (`matching`, an untyped
+      passthrough — core still cannot import `MatchingPolicySchema`, see the
+      field comment in `policy.ts` and `readMatchingPolicy` in
+      `packages/primitives/matching/src/policy.ts`).
 - [ ] Public API and webhooks
 - [ ] Docs site
 - [x] `dependency-cruiser` enforcing the boundary rule — `.dependency-cruiser.cjs`

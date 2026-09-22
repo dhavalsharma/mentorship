@@ -369,8 +369,18 @@ export const aiRuns = pgTable(
     /** The human's answer — your best eval label. */
     verdict: text("verdict"),
     error: text("error"),
+    /**
+     * A caller-chosen correlation id — an extraction id for session-intel, a
+     * round id for matching, and so on — so a later human verdict (a Slack
+     * Confirm/Edit click) can find its way back to the run that produced it
+     * without every primitive inventing its own join.
+     */
+    subjectId: text("subject_id"),
   },
-  (t) => [index("ai_runs_primitive_idx").on(t.orgId, t.primitive, t.createdAt)],
+  (t) => [
+    index("ai_runs_primitive_idx").on(t.orgId, t.primitive, t.createdAt),
+    index("ai_runs_subject_idx").on(t.orgId, t.subjectId),
+  ],
 );
 
 /**
