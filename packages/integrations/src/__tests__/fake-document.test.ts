@@ -65,3 +65,119 @@ describe("FakeDocument", () => {
     expect(new FakeDocument(new Recorder()).sharedWith("nope")).toEqual([]);
   });
 });
+
+/**
+ * ADR-0005's two safeguards: echo suppression (a revision that is our own
+ * prior write reappearing must never be mistaken for a human edit) and
+ * pinning (a genuine human edit inside the managed region is preserved, not
+ * clobbered, on the next render).
+ */
+describe("FakeDocument echo suppression and pinning", () => {
+  it("re-renders normally when nobody has touched the region", async () => {
+    const doc = new FakeDocument(new Recorder());
+
+    const first = await doc.renderManagedRegion({
+      docRef: null,
+      title: "t",
+      markdown: "## Session 1",
+      collaborators: PAIR,
+      idempotencyKey: "k1",
+    });
+    expect(first.pinned).toBe(false);
+
+    const second = await doc.renderManagedRegion({
+      docRef: first.docRef,
+      title: "t",
+      markdown: "## Session 2",
+      collaborators: PAIR,
+      idempotencyKey: "k2",
+    });
+
+    expect(second.pinned).toBe(false);
+    expect(doc.read(first.docRef)).toBe(wrapManaged("## Session 2"));
+  });
+
+  it("does not pin when the divergence is our own echo, not a human edit", async () => {
+    const doc = new FakeDocument(new Recorder());
+
+    const { docRef } = await doc.renderManagedRegion({
+      docRef: null,
+      title: "t",
+      markdown: "## Session 1",
+      collaborators: PAIR,
+      idempotencyKey: "k1",
+    });
+
+    // Stand-in for the vendor reformatting our own write (e.g. whitespace
+    // normalization on save) — the bytes differ from what we rendered, but
+    // the revision is still authored by us.
+    doc.simulateServiceEcho(docRef, "## Session 1 (reformatted)");
+
+    const rerender = await doc.renderManagedRegion({
+      docRef,
+      title: "t",
+      markdown: "## Session 2",
+      collaborators: PAIR,
+      idempotencyKey: "k2",
+    });
+
+    expect(rerender.pinned).toBe(false);
+    expect(doc.read(docRef)).toBe(wrapManaged("## Session 2"));
+  });
+
+  it("pins a genuine human edit and preserves it on the next render", async () => {
+    const doc = new FakeDocument(new Recorder());
+
+    const { docRef } = await doc.renderManagedRegion({
+      docRef: null,
+      title: "t",
+      markdown: "## Session 1",
+      collaborators: PAIR,
+      idempotencyKey: "k1",
+    });
+
+    doc.humanEdit(docRef, "## Session 1\n\nArjun: adding my own note here.");
+
+    const rerender = await doc.renderManagedRegion({
+      docRef,
+      title: "t",
+      markdown: "## Session 2",
+      collaborators: PAIR,
+      idempotencyKey: "k2",
+    });
+
+    expect(rerender.pinned).toBe(true);
+    // The human's own text survives, byte for byte — the render is skipped
+    // entirely rather than partially applied.
+    expect(doc.read(docRef)).toBe(
+      wrapManaged("## Session 1\n\nArjun: adding my own note here."),
+    );
+    expect(doc.read(docRef)).not.toContain("## Session 2");
+  });
+
+  it("stays pinned across repeated renders until the divergence is resolved", async () => {
+    const doc = new FakeDocument(new Recorder());
+
+    const { docRef } = await doc.renderManagedRegion({
+      docRef: null,
+      title: "t",
+      markdown: "## Session 1",
+      collaborators: PAIR,
+      idempotencyKey: "k1",
+    });
+    doc.humanEdit(docRef, "human override");
+
+    for (const markdown of ["## Session 2", "## Session 3"]) {
+      const result = await doc.renderManagedRegion({
+        docRef,
+        title: "t",
+        markdown,
+        collaborators: PAIR,
+        idempotencyKey: markdown,
+      });
+      expect(result.pinned).toBe(true);
+    }
+
+    expect(doc.read(docRef)).toBe(wrapManaged("human override"));
+  });
+});

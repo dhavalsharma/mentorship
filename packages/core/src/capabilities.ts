@@ -171,5 +171,17 @@ export interface DocumentAdapter extends Adapter {
      */
     collaborators: { email: string }[];
     idempotencyKey: string;
-  }): Promise<{ docRef: string; url: string; revisionId: string }>;
+  }): Promise<{
+    docRef: string;
+    url: string;
+    revisionId: string;
+    /**
+     * True when this render found a human edit inside the managed region
+     * (one not authored by our own service account) and preserved it instead
+     * of overwriting it — see `resolveManagedRegionWrite` and ADR-0005. An
+     * adapter that cannot tell revisions apart (no `anchoredDocEdits`,
+     * effectively) always reports `false`.
+     */
+    pinned: boolean;
+  }>;
 }

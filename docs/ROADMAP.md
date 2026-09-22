@@ -160,8 +160,11 @@ repair retry, and the eval harness.
       for the durable record. An unconfigured contact warns loudly rather
       than silently dropping the disclosure — there is nowhere left to queue
       or batch it (invariant 16).
-- [ ] Document pinning and echo suppression (ADR-0005) before enabling real
-      document writes
+- [x] Document pinning and echo suppression (ADR-0005) before enabling real
+      document writes — `resolveManagedRegionWrite`
+      (`packages/core/src/document-projection.ts`), consumed by both
+      `GoogleDriveDocumentAdapter` (Drive revision authorship via
+      `isEchoRevision`) and `FakeDocument`
 - [x] Golden fixtures; field-level precision/recall in CI — `eval.ts` +
       six hand-labelled cases in `golden-fixtures.ts`, scored against the
       deterministic fallback path on every `pnpm test` run. Measured:
