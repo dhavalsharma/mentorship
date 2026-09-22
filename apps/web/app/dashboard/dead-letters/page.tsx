@@ -3,6 +3,7 @@ import { adminResultMessage } from "@/lib/admin-result-message";
 import type { DeadLetteredEvent } from "@/lib/types";
 import { formatTimestamp } from "@/lib/format";
 import { ToneBadge } from "@/components/tone-badge";
+import { EmptyState } from "@/components/empty-state";
 import {
   Table,
   TableBody,
@@ -65,13 +66,5 @@ export default async function DeadLettersPage() {
         </Table>
       )}
     </div>
-  );
-}
-
-function EmptyState({ message }: { message: string }) {
-  return (
-    <p className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">
-      {message}
-    </p>
   );
 }

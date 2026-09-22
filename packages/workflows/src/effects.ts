@@ -414,6 +414,19 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
  *
  * Replace with a schema-bound model call — and keep the evidence spans, which
  * are what make an extracted claim checkable rather than believable.
+ *
+ * It emits **no risk flags, ever, including `safeguarding`** — deliberately,
+ * the same call `packages/primitives/session-intel/src/fallback.ts` makes
+ * for the model-degraded path (see that file's doc comment for the full
+ * argument): a cue-phrase regex cannot tell a disclosure from someone
+ * quoting one, and `safeguarding` wakes a named human out of band
+ * (invariant 16) — a regex does not get to make that call. This is why the
+ * `extracting` saga state still routes every extraction through
+ * render/confirm when this path is used: the degraded write-up lands in
+ * front of a human either way, which is the actual safety net here, not
+ * keyword matching. Any tenant that needs real safeguarding *detection* —
+ * not just eventual human visibility — must configure an `llm` (see
+ * `createWorker`/`bootstrap()`); this stub is a floor, not a substitute.
  */
 export function heuristicSessionIntel(ids: IdFactory = uuidIds): SessionIntel {
   const CUES = [

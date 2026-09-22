@@ -3,6 +3,7 @@ import { adminResultMessage } from "@/lib/admin-result-message";
 import type { MatchingRoundCandidates } from "@/lib/types";
 import { formatTimestamp } from "@/lib/format";
 import { ToneBadge } from "@/components/tone-badge";
+import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -145,12 +146,4 @@ function explanationFor(candidate: MatchingRoundCandidates["candidates"][number]
   if (candidate.rationale) return candidate.rationale;
   const [firstExplanation] = Object.values(candidate.explanations);
   return firstExplanation ?? "—";
-}
-
-function EmptyState({ message }: { message: string }) {
-  return (
-    <p className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">
-      {message}
-    </p>
-  );
 }

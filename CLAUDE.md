@@ -154,6 +154,14 @@ ones that do not are marked.
     (both would post into the pair's own thread), and instead runs
     `notify_safeguarding`, DMing `policy.safeguarding.contactMemberRef`. An
     unconfigured contact warns loudly rather than dropping the disclosure.
+    This routing only *fires* on a detected flag — detection itself is a
+    model call (invariant 8): `heuristicSessionIntel` and the primitive's own
+    deterministic `fallback` both deliberately emit no risk flags, ever (see
+    `packages/primitives/session-intel/src/fallback.ts`), because a
+    cue-phrase regex cannot tell a disclosure from someone quoting one. A
+    tenant running with no `llm` configured gets *no automated safeguarding
+    detection*, only the ordinary human-confirmation step every extraction
+    already goes through — not a substitute for detection, a floor under it.
 
 ### Model discipline
 

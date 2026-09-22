@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 /**
  * The comparison logic behind ADR-0005's two safeguards — echo suppression
  * and pinning — lives here rather than in any adapter, because it is exactly
@@ -15,40 +17,48 @@
  * Nothing here, or in `DocumentAdapter`, ever learns the word "Drive".
  */
 
-export interface ManagedRegionWrite {
+export const ManagedRegionWriteSchema = z.object({
   /** What should end up in the managed region after this render. */
-  text: string;
+  text: z.string(),
   /**
    * True when a human edit inside the region was detected and preserved
    * instead of being overwritten — the caller must not write `markdown`,
    * only `text` (which is the preserved human content), and should treat the
    * block as pinned until some later render sees the baseline restored.
    */
-  pinned: boolean;
-}
+  pinned: z.boolean(),
+});
+export type ManagedRegionWrite = z.infer<typeof ManagedRegionWriteSchema>;
 
-export function resolveManagedRegionWrite(input: {
+export const ResolveManagedRegionWriteInputSchema = z.object({
   /** What we would render this time, from current DB state. */
-  markdown: string;
+  markdown: z.string(),
   /**
    * The managed region's current content in the document, or `null` when the
    * region does not exist yet (a fresh document, or markers not yet seeded).
    */
-  currentRegionText: string | null;
+  currentRegionText: z.string().nullable(),
   /**
    * What we ourselves last rendered into this region, or `null` if this is
    * the first render we know of (nothing to compare against, so there is
    * nothing to protect yet).
    */
-  lastRendered: string | null;
+  lastRendered: z.string().nullable(),
   /**
    * Whether the document's current revision was authored by our own service
    * account. When true, any divergence from `lastRendered` is our own write
    * reappearing as a "change" (a re-fetch, a formatting round-trip, ...),
    * never a human edit, and must not trigger pinning.
    */
-  isEcho: boolean;
-}): ManagedRegionWrite {
+  isEcho: z.boolean(),
+});
+export type ResolveManagedRegionWriteInput = z.infer<
+  typeof ResolveManagedRegionWriteInputSchema
+>;
+
+export function resolveManagedRegionWrite(
+  input: ResolveManagedRegionWriteInput,
+): ManagedRegionWrite {
   // Nothing to compare against yet: render normally. This also covers the
   // very first render of a brand new document.
   if (input.currentRegionText === null || input.lastRendered === null) {

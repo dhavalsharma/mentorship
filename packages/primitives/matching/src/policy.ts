@@ -101,10 +101,14 @@ export function readMatchingPolicy(
   const parsed = MatchingPolicySchema.parse(raw);
   // Weights merge rather than replace: a program that wants to re-weight one
   // feature should not have to restate the other four, and silently zeroing a
-  // feature by omission is exactly the bug nobody notices.
+  // feature by omission is exactly the bug nobody notices. Merges from
+  // `parsed.weights` (already validated by the `.parse()` above, `z.record(
+  // z.number().min(0))`) rather than re-reading the unvalidated `raw.weights`
+  // — reusing the checked value is both the safer default and the only one
+  // that stays correct if the schema ever starts coercing this field.
   return {
     ...parsed,
-    weights: { ...DEFAULT_MATCHING_WEIGHTS, ...(raw.weights as Record<string, number> | undefined) },
+    weights: { ...DEFAULT_MATCHING_WEIGHTS, ...parsed.weights },
   };
 }
 

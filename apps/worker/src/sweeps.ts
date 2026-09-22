@@ -96,15 +96,11 @@ export function createProgressSweepRunner(deps: SweepDeps): () => Promise<Progre
  * nudge is skipped rather than guessed at, because misdelivering into the
  * wrong person's DM is worse than a quiet drop.
  *
- * The idempotency key is derived from the message itself (recipient +
- * channel + body) rather than the sweep's own `dedupeKey`: `NudgeDispatchSink`
- * (declared in the nudge package to keep the dependency direction one-way)
- * does not carry it through to `send()`. That is a real, if narrow, gap
- * against invariant 6 — a retried dispatch for the exact same body is still
- * deduped by the adapter, but a dispatch that regenerates slightly different
- * copy for the same decision would not be. Worth closing by threading
- * `dedupeKey` through the interface in a follow-up; noted rather than
- * silently worked around.
+ * The idempotency key is the sweep's own `dedupeKey` (invariant 6) rather
+ * than a hash of the message itself — a retried dispatch for the same
+ * underlying decision must dedupe even when the drafted body text varies
+ * slightly between attempts (a bandit-selected template, model-drafted
+ * copy), which a content hash would not catch.
  */
 export class RegistryNudgeDispatchSink implements NudgeDispatchSink {
   constructor(
@@ -114,7 +110,12 @@ export class RegistryNudgeDispatchSink implements NudgeDispatchSink {
     private readonly options: { role?: string } = {},
   ) {}
 
-  async send(input: { channel: string; recipientParticipantId: string; body: string }): Promise<void> {
+  async send(input: {
+    channel: string;
+    recipientParticipantId: string;
+    body: string;
+    dedupeKey: string;
+  }): Promise<void> {
     const dm = this.registry.get<DmAdapter>("dm");
     if (!dm) return; // No dm slot bound for this tenant: recorded by the sweep as dispatched=false.
 
@@ -148,7 +149,7 @@ export class RegistryNudgeDispatchSink implements NudgeDispatchSink {
     if (!memberRef) return; // No verified chat link: dropped, not guessed.
 
     const idempotencyKey = createHash("sha256")
-      .update(`${input.recipientParticipantId}:${input.channel}:${input.body}`)
+      .update(input.dedupeKey)
       .digest("hex")
       .slice(0, 32);
 

@@ -352,13 +352,32 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
    * `resolveManagedRegionWrite` cannot know on its own.
    */
   private async isEchoRevision(documentId: string): Promise<boolean> {
-    const res = await this.call("drive", `/files/${documentId}/revisions`, {
-      method: "GET",
-      query: { fields: "revisions(lastModifyingUser(me))", pageSize: "1000" },
-    });
-    const revisions =
-      (res["revisions"] as { lastModifyingUser?: { me?: boolean } }[] | undefined) ?? [];
-    const last = revisions[revisions.length - 1];
+    // Drive returns revisions oldest-first with no reverse-order option, so
+    // the true latest revision is the last entry of the *last* page, not the
+    // last entry of the first page — a doc with more than one page of
+    // history (1000 revisions, plausible over a long-lived pairing) would
+    // otherwise have this answer a stale question. Walking every page only
+    // to keep the final entry is the API's own cost, not an avoidable one:
+    // each page's `lastModifyingUser` payload is discarded once the next
+    // page arrives, so memory stays bounded to one page at a time.
+    let last: { lastModifyingUser?: { me?: boolean } } | undefined;
+    let pageToken: string | undefined;
+    do {
+      const res = await this.call("drive", `/files/${documentId}/revisions`, {
+        method: "GET",
+        query: {
+          fields: "nextPageToken, revisions(lastModifyingUser(me))",
+          pageSize: "1000",
+          ...(pageToken ? { pageToken } : {}),
+        },
+      });
+      const revisions =
+        (res["revisions"] as { lastModifyingUser?: { me?: boolean } }[] | undefined) ?? [];
+      if (revisions.length > 0) {
+        last = revisions[revisions.length - 1];
+      }
+      pageToken = typeof res["nextPageToken"] === "string" ? res["nextPageToken"] : undefined;
+    } while (pageToken);
     return last?.lastModifyingUser?.me === true;
   }
 }

@@ -17,7 +17,13 @@ import {
   type PairingLocator,
   type SlackModalOpener,
 } from "@mentorship/integrations";
-import { asOrgId, authorize, DocumentPolicySchema, type Actor } from "@mentorship/core";
+import {
+  asOrgId,
+  authorize,
+  DocumentPolicySchema,
+  type Actor,
+  type ResourceType,
+} from "@mentorship/core";
 import {
   requestMagicLink,
   verifyMagicLink,
@@ -335,6 +341,21 @@ const ADMIN_LIST_KINDS: readonly AdminListKind[] = [
 ];
 
 /**
+ * The visibility-matrix resource type each admin-list kind authorizes as.
+ * A `Record` over the full `AdminListKind` union rather than a ternary — a
+ * new kind added to the union without an entry here is a compile error
+ * instead of silently falling through to the wrong resource type (the bug
+ * this replaced: `stuck-sagas`/`dead-letters` were both being checked as
+ * `"nudge"`).
+ */
+const ADMIN_LIST_RESOURCE_TYPE: Record<AdminListKind, ResourceType> = {
+  "risk-findings": "risk-finding",
+  nudges: "nudge",
+  "stuck-sagas": "operational-monitoring",
+  "dead-letters": "operational-monitoring",
+};
+
+/**
  * `/orgs/:orgId/{risk-findings,nudges,stuck-sagas,dead-letters}`, with an
  * optional `?limit=` (all four) and `?days=` (`stuck-sagas` only — how many
  * days without progress counts as stuck).
@@ -400,7 +421,7 @@ async function handleAdminList(
   // before calling `authorize`, never assume this shortcut.
   const actor: Actor = { orgId: asOrgId(orgId), role: "admin", pairingIds: [] };
   const decision = authorize(actor, {
-    type: kind === "risk-findings" ? "risk-finding" : "nudge",
+    type: ADMIN_LIST_RESOURCE_TYPE[kind],
     orgId: asOrgId(orgId),
   });
   if (!decision.allowed) {
@@ -473,6 +494,21 @@ async function handleMatchingRoundCandidates(
   // decides whether this request may proceed.
   const authed = await authenticateAdmin(req, res, deps, orgId);
   if (!authed) return; // response already written (401 or 403)
+
+  // Same visibility-matrix gate `handleAdminList` runs — a matching round's
+  // candidates are org-wide operational/appeal data (`matching-candidates`),
+  // never a named person's sentiment, but authorization is invariant 14's
+  // whole point: no route should skip it just because it happens not to
+  // carry attributable feedback today.
+  const actor: Actor = { orgId: asOrgId(orgId), role: "admin", pairingIds: [] };
+  const decision = authorize(actor, {
+    type: "matching-candidates",
+    orgId: asOrgId(orgId),
+  });
+  if (!decision.allowed) {
+    writeJson(res, 403, { error: "forbidden" });
+    return;
+  }
 
   if (!deps.admin) {
     writeJson(res, 501, {

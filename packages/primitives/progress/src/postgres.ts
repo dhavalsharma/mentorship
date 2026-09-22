@@ -98,23 +98,33 @@ export async function listActivePairingsByCohort(
         byCohort.set(row.cohortId, list);
       }
 
+      // One batched query for every cohort's policy rather than one round
+      // trip per cohort inside the loop below — this runs on every scheduled
+      // sweep tick, so an org with many cohorts otherwise pays N sequential
+      // queries per tick for data a single `inArray` fetches at once.
+      const cohortIds = [...byCohort.keys()];
+      const policyRows =
+        cohortIds.length === 0
+          ? []
+          : await tx
+              .select({ cohortId: cohorts.id, policy: programs.policy })
+              .from(cohorts)
+              .innerJoin(
+                programs,
+                and(eq(programs.orgId, cohorts.orgId), eq(programs.id, cohorts.programId)),
+              )
+              .where(and(eq(cohorts.orgId, orgId), inArray(cohorts.id, cohortIds)));
+      const policyByCohort = new Map(policyRows.map((r) => [r.cohortId, r.policy]));
+
       const groups: CohortPairingGroup[] = [];
       for (const [cohortId, pairingIds] of byCohort) {
-        const [policyRow] = await tx
-          .select({ policy: programs.policy })
-          .from(cohorts)
-          .innerJoin(
-            programs,
-            and(eq(programs.orgId, cohorts.orgId), eq(programs.id, cohorts.programId)),
-          )
-          .where(and(eq(cohorts.orgId, orgId), eq(cohorts.id, cohortId)))
-          .limit(1);
-        if (!policyRow) {
+        const rawPolicy = policyByCohort.get(cohortId);
+        if (rawPolicy === undefined) {
           onWarn?.("cohort has no program/policy — skipped from this sweep", { cohortId });
           continue;
         }
         try {
-          const policy = StoredProgramPolicySchema.parse(policyRow.policy);
+          const policy = StoredProgramPolicySchema.parse(rawPolicy);
           groups.push({ cohortId, policy, pairingIds });
         } catch (err) {
           onWarn?.("cohort policy is malformed — skipped from this sweep", {

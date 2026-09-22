@@ -23,6 +23,16 @@ export interface NudgeDispatchSink {
     channel: string;
     recipientParticipantId: string;
     body: string;
+    /**
+     * The sweep's own dedupe key for this decision (invariant 6: effects are
+     * idempotent by key). A dispatch sink should derive its transport-level
+     * idempotency key from this, not from the message content — content can
+     * legitimately vary between two dispatch attempts for the exact same
+     * underlying decision (a retried sweep after a transient failure, a
+     * bandit-drafted body that differs slightly run to run), and hashing the
+     * content instead would let two attempts at the same decision both send.
+     */
+    dedupeKey: string;
   }): Promise<void>;
 }
 
@@ -126,6 +136,7 @@ export async function runNudgeSweep(options: NudgeSweepOptions): Promise<NudgeSw
             channel: decision.plan.channel,
             recipientParticipantId: decision.plan.recipientParticipantId,
             body: decision.plan.body,
+            dedupeKey: decision.dedupeKey,
           });
           dispatched = true;
         } catch (caught) {

@@ -49,19 +49,31 @@ export type ActorRole = z.infer<typeof ActorRoleSchema>;
 /** Org-chart roles. Everyone else is treated as a pair-role actor. */
 const ORG_CHART_ROLES: ReadonlySet<ActorRole> = new Set(["admin", "program_lead"]);
 
-export interface Actor {
-  orgId: OrgId;
-  role: ActorRole;
+/**
+ * `orgId`/`participantId`/`pairingId` are branded strings, not the zod-schema
+ * primitives they wrap (see `ids.ts`) — validating them here would mean this
+ * module either re-derives their brands or imports the id schemas and
+ * couples to their exact validation, so the object shape is asserted with
+ * `z.custom` against the branded type instead of re-typed by hand.
+ */
+const OrgIdSchema = z.custom<OrgId>((v) => typeof v === "string");
+const ParticipantIdSchema = z.custom<ParticipantId>((v) => typeof v === "string");
+const PairingIdSchema = z.custom<PairingId>((v) => typeof v === "string");
+
+export const ActorSchema = z.object({
+  orgId: OrgIdSchema,
+  role: ActorRoleSchema,
   /** Absent for a pure org-chart actor with no participant record of their own. */
-  participantId?: ParticipantId;
+  participantId: ParticipantIdSchema.optional(),
   /**
    * Every pairing this actor is currently a party to (mentor or mentee of).
    * The caller resolves this — from `participants` joined to whatever holds
    * pairing membership — and is trusted to resolve it honestly. This module
    * checks membership; it does not discover it.
    */
-  pairingIds: readonly PairingId[];
-}
+  pairingIds: z.array(PairingIdSchema),
+});
+export type Actor = z.infer<typeof ActorSchema>;
 
 /**
  * What is being read. `pairingId` absent means "an org-wide list" (the admin
@@ -82,13 +94,17 @@ export const ResourceTypeSchema = z.enum([
    * so a caller reading it must say which one this row is.
    */
   "signal",
+  /** Saga-instance/relay operational health — never per-participant. */
+  "operational-monitoring",
+  /** A matching round's candidate pairs, features and scores — appeal data. */
+  "matching-candidates",
 ]);
 export type ResourceType = z.infer<typeof ResourceTypeSchema>;
 
-export interface Resource {
-  type: ResourceType;
-  orgId: OrgId;
-  pairingId?: PairingId;
+export const ResourceSchema = z.object({
+  type: ResourceTypeSchema,
+  orgId: OrgIdSchema,
+  pairingId: PairingIdSchema.optional(),
   /**
    * Only meaningful for `type: "signal"`. `"pairing"` is an aggregate over
    * the whole pair (cadence adherence, a composite health score) and is
@@ -99,15 +115,17 @@ export interface Resource {
    * schema, always an aggregate: individually-attributed signals must say so
    * explicitly rather than relying on a default to protect them.
    */
-  attribution?: "pairing" | "participant";
-}
+  attribution: z.enum(["pairing", "participant"]).optional(),
+});
+export type Resource = z.infer<typeof ResourceSchema>;
 
-export interface AuthorizationDecision {
-  allowed: boolean;
+export const AuthorizationDecisionSchema = z.object({
+  allowed: z.boolean(),
   /** Always present, allow or deny — the reason a request was let through is
    * as useful to log as the reason it was refused. */
-  reason: string;
-}
+  reason: z.string(),
+});
+export type AuthorizationDecision = z.infer<typeof AuthorizationDecisionSchema>;
 
 function allow(reason: string): AuthorizationDecision {
   return { allowed: true, reason };
@@ -167,10 +185,16 @@ export function authorize(actor: Actor, resource: Resource): AuthorizationDecisi
 
     case "pairing.activity":
     case "risk-finding":
-    case "nudge": {
+    case "nudge":
+    case "operational-monitoring":
+    case "matching-candidates": {
       // Activity is attributable (CLAUDE.md invariant 14's second sentence):
       // an admin or program lead may see it org-wide, and a pair member may
-      // always see their own pairing's.
+      // always see their own pairing's. `operational-monitoring` (stuck
+      // sagas, dead letters) and `matching-candidates` (a round's scored
+      // pairs) are org-wide operational/administrative data, never a named
+      // person's sentiment, so they get the same rule rather than being
+      // coerced into "nudge" or left unauthorized.
       if (isOrgChart || isPairMember) {
         return allow("activity/attendance data is visible to org-chart staff and pair members");
       }
