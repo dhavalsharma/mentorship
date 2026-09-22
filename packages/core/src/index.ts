@@ -1,4 +1,5 @@
 export * from "./ids.js";
+export * from "./authorization.js";
 export * from "./capabilities.js";
 export * from "./policy.js";
 export * from "./events.js";

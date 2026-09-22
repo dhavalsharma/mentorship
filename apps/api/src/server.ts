@@ -17,7 +17,7 @@ import {
   type PairingLocator,
   type SlackModalOpener,
 } from "@mentorship/integrations";
-import { DocumentPolicySchema } from "@mentorship/core";
+import { asOrgId, authorize, DocumentPolicySchema, type Actor } from "@mentorship/core";
 import {
   requestMagicLink,
   verifyMagicLink,
@@ -309,6 +309,28 @@ async function handleAdminList(
   // non-negotiable even when the orgId in the URL is a real, guessable UUID.
   const authed = await authenticateAdmin(req, res, deps, orgId);
   if (!authed) return; // response already written (401 or 403)
+
+  // Authenticated and org-matched is necessary but no longer sufficient on
+  // its own — invariant 14 (docs/decisions, CLAUDE.md, `packages/core`'s
+  // `authorize`): org membership alone must never be read as "may see
+  // everything about every pairing in the org." These two resources are
+  // activity/attendance data (did a pair meet, how many nudges fired), which
+  // the matrix grants org-chart roles org-wide — unlike an individual's
+  // feedback sentiment, which it never does, for anyone. A session
+  // authenticated through this route is currently the only role apps/api
+  // knows how to establish, so it authorizes as `admin`; a future route that
+  // reads something pair-scoped (feedback sentiment, a per-participant
+  // signal) must resolve the caller's actual pairing membership and role
+  // before calling `authorize`, never assume this shortcut.
+  const actor: Actor = { orgId: asOrgId(orgId), role: "admin", pairingIds: [] };
+  const decision = authorize(actor, {
+    type: kind === "risk-findings" ? "risk-finding" : "nudge",
+    orgId: asOrgId(orgId),
+  });
+  if (!decision.allowed) {
+    writeJson(res, 403, { error: "forbidden" });
+    return;
+  }
 
   if (!deps.admin) {
     writeJson(res, 501, {

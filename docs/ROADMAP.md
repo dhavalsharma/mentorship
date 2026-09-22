@@ -228,8 +228,22 @@ blocked while this waits.
       to read from (Phase 3's own gap, not this one's).
 - [ ] The same read model serving a scheduled digest — the query exists, but
       nothing calls it on a schedule yet; that's Wave 2's scheduler work.
-- [ ] Authorization layer implementing the visibility matrix, **with tests** —
-      including that individual feedback is never attributed outside the pair
+- [x] Authorization layer implementing the visibility matrix, **with tests** —
+      `packages/core/src/authorization.ts`'s `authorize(actor, resource)`: pure,
+      deterministic, no admin/program_lead exception on `feedback.sentiment`
+      or a participant-attributed `signal` (invariant 14), org-chart roles and
+      pair members both see `pairing.activity`/`risk-finding`/`nudge`,
+      cross-org always denied first. 26 tests in
+      `packages/core/src/__tests__/authorization.test.ts`, including the
+      invariant-14 case CLAUDE.md flagged as missing. Wired into
+      `apps/api/src/server.ts`'s `handleAdminList` — `GET
+      /orgs/:orgId/risk-findings` and `/nudges` now call `authorize` after
+      `authenticateAdmin`, org membership no longer being read as "sees
+      everything." Not yet wired to a route that reads anything pair-scoped
+      (feedback sentiment, a per-participant `signal`), because none exists
+      yet — there is no session-to-participant/pairing-membership resolution
+      built in `apps/api` at all. That resolution, and the route it would
+      gate, is the next real test of this module.
 - [ ] Fit the health weights against completed-cohort outcomes (ADR-0007)
 
 ## Phase 5 — Nudge planner and the open-source launch
