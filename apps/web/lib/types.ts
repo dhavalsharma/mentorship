@@ -37,6 +37,43 @@ export interface Nudge {
   sentAt: string | null;
 }
 
+/**
+ * Mirrors `saga_instances` (`packages/db/src/schema.ts`) — the ROADMAP
+ * phase 1 monitoring gap's "stuck" half. Only ever `running` rows are
+ * returned by the API (a `done`/`failed` instance can't be stuck), but the
+ * column itself is free text, same reasoning as `Nudge.state` above.
+ */
+export interface StuckSagaInstance {
+  id: string;
+  orgId: string;
+  createdAt: string;
+  updatedAt: string;
+  sagaName: string;
+  subjectRef: string;
+  state: Record<string, unknown>;
+  status: string;
+  stepIndex: number;
+  version: number;
+  timeoutAt: string | null;
+}
+
+/**
+ * Mirrors `events` (`packages/db/src/schema.ts`) — the dead-letter half of
+ * the same gap. Only rows with `deadLetteredAt` set are ever returned.
+ */
+export interface DeadLetteredEvent {
+  id: string;
+  orgId: string;
+  createdAt: string;
+  updatedAt: string;
+  name: string;
+  subjectRef: string;
+  occurredAt: string;
+  attempts: number;
+  lastError: string | null;
+  deadLetteredAt: string | null;
+}
+
 export type VerifyFailureReason = "not_found" | "expired" | "already_used";
 
 /** The body `/orgs/:orgId/settings/document` returns and accepts. */

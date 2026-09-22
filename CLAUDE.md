@@ -22,13 +22,13 @@ program, on different tooling, without touching `packages/core`.
 
 ```bash
 pnpm install
-pnpm test        # 545 tests, ~3s, no database and no model
+pnpm test        # 572 tests, ~3s, no database and no model
 pnpm demo        # the full session cycle printed as a trace
 pnpm serve:api   # the Slack + auth endpoints, live, seeded against testkit
 pnpm dev:web     # the admin dashboard at :3000, proxying to apps/api at :8787
 pnpm typecheck
 
-# the database-backed tests — 70 more, skipped above rather than failing
+# the database-backed tests — 77 more, skipped above rather than failing
 docker compose up -d db && pnpm db:migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
 
@@ -245,7 +245,7 @@ Keep this table honest as you go; it is the first thing a contributor reads.
 | Integration registry, capability negotiation, degradation | Working, tested |
 | Fake adapters | Working — used by tests and the demo |
 | Postgres schema, RLS, `withTenant` | Working, tested. Migrations applied; the cross-tenant leak test proves the policy bites (`packages/db/src/__tests__/rls.test.ts`). |
-| Outbox relay (`relayOnce` / `relayLoop`) | Working, tested — claim with `SKIP LOCKED`, at-least-once, backoff and dead-lettering. |
+| Outbox relay (`relayOnce` / `relayLoop`) | Working, tested — claim with `SKIP LOCKED`, at-least-once, backoff and dead-lettering. The admin-facing gap ROADMAP phase 1 named ("saga instances not advanced in N days; dead-letter review") is now closed: `listStuckSagaInstances`/`listDeadLetteredEvents` (`packages/workflows/src/postgres-reads.ts`, org-scoped, run inside `withTenant`) back `GET /orgs/:orgId/{stuck-sagas,dead-letters}` on `apps/api` — same `authenticateAdmin` 401/403 gating as risk-findings/nudges, `stuck-sagas` taking an optional `?days=` (default 3) — rendered by `apps/web`'s `/dashboard/{stuck-sagas,dead-letters}` pages. Read-only: no acknowledge/replay action yet, same as risk-findings. |
 | `PostgresSagaResolvers`, `PostgresEventSink`, `PostgresProjector` | Working, tested — the counterparts to testkit's `World`, including the projections that make read models appear. |
 | `createWorker` + `pnpm serve:worker` | Working, tested end to end and run by hand: a `pair.activated` row becomes a proposed, agreed and booked session on Postgres, driven by two real signed Slack clicks. Bound to the fake adapters, because Slack and Google have still never run live. |
 | `PostgresSagaStore` | Working, tested — round-trip, optimistic concurrency under a real race, and parity with `MemorySagaStore`. Imported from `@mentorship/workflows/postgres` so the default entry stays driver-free. |
@@ -260,7 +260,7 @@ Keep this table honest as you go; it is the first thing a contributor reads.
 | Progress & risk | `packages/primitives/progress`. Working, tested — health is a policy-weighted composite over present signals only (ADR-0007); risk is four named, evidence-carrying rules, not a classifier. `runProgressSweep` assesses a given list of pairings and writes every finding to a `RiskFindingsSink`; `PostgresRiskFindingsSink` (`./postgres`) persists to the new `risk_findings` table (migration `0006`/`0007`, RLS included). Not yet scheduled by anything, and there is no admin view over the table yet — it is a durable log, not a queue. |
 | Auth | `packages/auth` — magic-link only (SAML explicitly deferred: it needs a real external IdP this repo has no way to build or verify against, kept off the roadmap rather than half-built). Token/session logic against a `MagicLinkStore` port, `PostgresMagicLinkStore` backing it via `magic_links`/`auth_sessions` tables. Enumeration-safe by design; consuming a link is race-safe (an atomic `UPDATE ... WHERE consumed_at IS NULL`, not a check-then-write). Wired into real routes: `POST /auth/request-link` / `POST /auth/verify` on `apps/api`, which also now guard the admin read routes with a session + tenancy check (401/403) — previously unauthenticated. |
 | Enrolment | `packages/enrollment` — `planInvite`/`commitInvite` (invite one person to a cohort+role, deduped) and `acceptInvite` (the identity-verification-at-enrolment item: records a verified identity link, flips a participant to `enrolled`). No schema change — built entirely on tables that already existed. First writer for the previously-unused `audit_log` table, via an optional `AuditSink`. Not wired into any HTTP route yet — nothing yet lets an admin actually send an invite. |
-| Web app, dashboards | `apps/web` — Next.js App Router, Tailwind, shadcn/ui. The first frontend in this repo. `/login` + `/verify` drive `packages/auth`'s magic-link flow through real `apps/api` routes, preserving its enumeration-safety property on the client too (identical message on every outcome). `/dashboard/{risk-findings,nudges}` render the real tables, and `/dashboard/settings/document` writes the `document` slot's folder/guideline/naming-template through a PUT route gated by the same `authenticateAdmin` (401/403) the read routes use. No `/auth/me` endpoint exists, so the dashboard layout answers "am I logged in" with a cheap probe request to a protected route. `/api/:path*` is proxied to `apps/api` (`next.config.ts`) so the browser only ever talks to one origin — no CORS configuration anywhere. |
+| Web app, dashboards | `apps/web` — Next.js App Router, Tailwind, shadcn/ui. The first frontend in this repo. `/login` + `/verify` drive `packages/auth`'s magic-link flow through real `apps/api` routes, preserving its enumeration-safety property on the client too (identical message on every outcome). `/dashboard/{risk-findings,nudges,stuck-sagas,dead-letters}` render the real tables, and `/dashboard/settings/document` writes the `document` slot's folder/guideline/naming-template through a PUT route gated by the same `authenticateAdmin` (401/403) the read routes use. No `/auth/me` endpoint exists, so the dashboard layout answers "am I logged in" with a cheap probe request to a protected route. `/api/:path*` is proxied to `apps/api` (`next.config.ts`) so the browser only ever talks to one origin — no CORS configuration anywhere. |
 
 The `testkit` package is an in-memory stand-in for `db` + `api`. Every method
 has a direct Postgres equivalent: reads become queries inside `withTenant`,

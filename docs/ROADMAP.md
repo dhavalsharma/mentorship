@@ -115,7 +115,14 @@ The load-bearing wall. Everything after this assumes it.
       Both are blocked only on credentials now: `docs/live-tenant-testing.md`
       has the isolation plan, and `SandboxGuard` refuses any recipient not on
       an allowlist so a stray row cannot reach a colleague.
-- [ ] Monitoring: saga instances not advanced in N days; dead-letter review
+- [x] Monitoring: saga instances not advanced in N days; dead-letter review —
+      `listStuckSagaInstances`/`listDeadLetteredEvents`
+      (`packages/workflows/src/postgres-reads.ts`, org-scoped, run inside
+      `withTenant`), `GET /orgs/:orgId/{stuck-sagas,dead-letters}` on
+      `apps/api` (same `authenticateAdmin` 401/403 gating as risk-findings/
+      nudges, `stuck-sagas` taking an optional `?days=`, default 3), and
+      `apps/web`'s `/dashboard/{stuck-sagas,dead-letters}` pages. No
+      acknowledgement/replay action yet — read-only, same as risk-findings.
 - [x] Nudge rate limits, dedupe keys, quiet hours — build before the first real
       notification, because retrofitting does not un-spam anyone.
       `packages/primitives/nudge` — the full gate chain, deterministic and
