@@ -1,6 +1,7 @@
 export * from "./ids.js";
 export * from "./capabilities.js";
 export * from "./policy.js";
+export * from "./presets.js";
 export * from "./events.js";
 export * from "./pairing.js";
 export * from "./agreement.js";
