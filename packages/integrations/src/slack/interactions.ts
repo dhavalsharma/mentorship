@@ -1,6 +1,7 @@
 import {
   describeCadence,
   formatSlotLabel,
+  PAIR_PREFERENCES_DISABLED_MESSAGE,
   resolvePairPreferences,
   wallClockToUtc,
   type PairPreferences,
@@ -210,8 +211,14 @@ export interface ExtractionResponder {
  * `update` writes the pair-level cadence override *and* its
  * `pair.preferences_updated` event in one transaction, the same outbox
  * discipline as `AgreementResponder`; it returns what the pair now has, for
- * the confirmation the modal shows.
+ * the confirmation the modal shows. A refusal says *why*: the program can
+ * turn choice off between the modal opening and Save, and telling that
+ * person "you're not part of this pair" would be false.
  */
+export type PairPreferencesUpdateResult =
+  | { ok: true; sessionMinutes: number; everyDays: number }
+  | { ok: false; reason: "not_member" | "disabled" };
+
 export interface PairPreferencesStore {
   context(input: {
     pairingId: string;
@@ -221,8 +228,9 @@ export interface PairPreferencesStore {
     pairingId: string;
     participantId: string;
     preferences: PairPreferences;
-  }): Promise<{ sessionMinutes: number; everyDays: number } | null>;
+  }): Promise<PairPreferencesUpdateResult>;
 }
+
 
 export interface SlackWebhookRequest {
   rawBody: string;
@@ -365,6 +373,15 @@ export async function handleSlackInteraction(
       });
       if (!context) {
         deps.onUnhandled?.("preferences_not_pair_member", {
+          pairingId: action.pairingId,
+          participantId,
+        });
+        return { status: 200 };
+      }
+      // A button on a proposal posted before the program turned choice off.
+      // Opening a full menu only to refuse it at Save is worse than nothing.
+      if (!context.policy.enabled) {
+        deps.onUnhandled?.("preferences_disabled", {
           pairingId: action.pairingId,
           participantId,
         });
@@ -617,7 +634,7 @@ async function handlePreferencesSubmission(
     return modalError(PREFERENCE_BLOCKS[resolved.field], resolved.message);
   }
 
-  let saved: { sessionMinutes: number; everyDays: number } | null;
+  let saved: PairPreferencesUpdateResult;
   try {
     saved = await deps.preferences.store.update({
       pairingId: submission.pairingId,
@@ -632,8 +649,13 @@ async function handlePreferencesSubmission(
     });
     return modalError(PREF_SESSION_BLOCK, "We couldn't save that. Try again.");
   }
-  if (!saved) {
-    return modalError(PREF_SESSION_BLOCK, "You're not part of this pair.");
+  if (!saved.ok) {
+    return modalError(
+      PREF_SESSION_BLOCK,
+      saved.reason === "disabled"
+        ? PAIR_PREFERENCES_DISABLED_MESSAGE
+        : "You're not part of this pair.",
+    );
   }
 
   return {

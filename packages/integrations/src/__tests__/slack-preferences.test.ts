@@ -8,6 +8,7 @@ import {
   parseSlackInteractionPayload,
   SlackConversationAdapter,
   type PairPreferencesStore,
+  type PairPreferencesUpdateResult,
   type PreferencesModalContext,
   type SlackInteractionDeps,
 } from "@mentorship/integrations";
@@ -92,10 +93,15 @@ function deps(store?: Partial<PairPreferencesStore>): SlackInteractionDeps & {
   update: ReturnType<typeof vi.fn>;
 } {
   const opened = vi.fn(async () => {});
-  const update = vi.fn(async (input: { preferences: { sessionMinutes?: number; everyDays?: number } }) => ({
-    sessionMinutes: input.preferences.sessionMinutes ?? 45,
-    everyDays: input.preferences.everyDays ?? 14,
-  }));
+  const update = vi.fn(
+    async (input: {
+      preferences: { sessionMinutes?: number; everyDays?: number };
+    }): Promise<PairPreferencesUpdateResult> => ({
+      ok: true,
+      sessionMinutes: input.preferences.sessionMinutes ?? 45,
+      everyDays: input.preferences.everyDays ?? 14,
+    }),
+  );
   return {
     signingSecret: SECRET,
     identity: {
@@ -187,6 +193,24 @@ describe("opening the modal", () => {
       "preferences_not_pair_member",
       expect.anything(),
     );
+  });
+
+  it("does not open the menu at all once the program has turned choice off", async () => {
+    const unhandled = vi.fn();
+    const d = deps({
+      context: vi.fn(async () => ({
+        ...CONTEXT,
+        policy: PairPreferencesPolicySchema.parse({ enabled: false }),
+      })),
+    });
+    const body = clickBody();
+    const res = await handleSlackInteraction(
+      { rawBody: body, headers: headers(body) },
+      { ...d, onUnhandled: unhandled },
+    );
+    expect(res.status).toBe(200);
+    expect(d.opened).not.toHaveBeenCalled();
+    expect(unhandled).toHaveBeenCalledWith("preferences_disabled", expect.anything());
   });
 
   it("acks and records it when preferences are not wired", async () => {
@@ -314,6 +338,32 @@ describe("submitting the modal", () => {
     const res = await handleSlackInteraction({ rawBody: body, headers: headers(body) }, d);
     expect(JSON.parse(res.body!).response_action).toBe("errors");
     expect(d.update).not.toHaveBeenCalled();
+  });
+
+  it("says the program turned choice off — not 'not your pair' — when that happens mid-modal", async () => {
+    const d = deps({
+      update: vi.fn(
+        async (): Promise<PairPreferencesUpdateResult> => ({
+          ok: false,
+          reason: "disabled",
+        }),
+      ),
+    });
+    const body = submissionBody({ session: "30", cadence: "14" });
+    const res = await handleSlackInteraction({ rawBody: body, headers: headers(body) }, d);
+    expect(JSON.parse(res.body!)).toEqual({
+      response_action: "errors",
+      errors: {
+        pref_session: "This program sets session length and rhythm for every pair.",
+      },
+    });
+  });
+
+  it("does not promise a thread announcement it cannot always make", () => {
+    const view = buildPreferencesModalView({ pairingId: "pai_001", context: CONTEXT });
+    const intro = JSON.stringify((view["blocks"] as unknown[])[0]);
+    expect(intro).not.toContain("the thread is told when it changes");
+    expect(intro).toContain("Between sessions");
   });
 
   it("still routes a counter-proposal submission to the counter handler", async () => {

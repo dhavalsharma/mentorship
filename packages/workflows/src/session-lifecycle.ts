@@ -179,6 +179,7 @@ function proposalBody(
   options: ProposalOption[],
   degraded: boolean,
   round: number,
+  offerPreferences: boolean,
 ): string {
   const who = pair.participants.map((p) => p.displayName).join(" and ");
   const lead =
@@ -190,11 +191,28 @@ function proposalBody(
     ? "\n\n(Calendar availability isn't connected, so these are working-hours guesses.)"
     : "";
   // Say what is being booked whenever the pair can change it — a length they
-  // cannot see is a length they cannot know to change.
-  const rhythm = pair.policy.pairPreferences.enabled
+  // cannot see is a length they cannot know to change. Only when the control
+  // will actually be there: pointing at a button that was never rendered is
+  // worse than not mentioning it.
+  const rhythm = offerPreferences
     ? `\n\nEach slot is ${pair.cadence.sessionMinutes} minutes. Change length or rhythm with Session preferences.`
     : "";
   return `${lead}\n\nPick one, or suggest another:\n${lines.join("\n")}${caveat}${rhythm}`;
+}
+
+/**
+ * Whether this proposal can carry the Session preferences control. Mirrors the
+ * effect runner's own condition for rendering it: the program must allow it,
+ * and the conversation adapter must do buttons. No conversation adapter at all
+ * means the proposal degrades to plain DMs, and `capabilities` is null.
+ */
+async function canOfferPreferences(
+  pair: PairContext,
+  ctx: SagaContext,
+): Promise<boolean> {
+  if (!pair.policy.pairPreferences.enabled) return false;
+  const caps = await ctx.resolve.capabilities("conversation");
+  return Boolean(caps?.interactiveApproval);
 }
 
 /**
@@ -991,9 +1009,10 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
       };
     }
 
+    const offerPreferences = await canOfferPreferences(pair, ctx);
     const body = withPlaybook(
       (preamble ? `${preamble}\n\n` : "") +
-        proposalBody(pair, options, degraded, round),
+        proposalBody(pair, options, degraded, round, offerPreferences),
       pair,
     );
 
@@ -1018,9 +1037,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
           agreementId,
           options,
           body,
-          ...(pair.policy.pairPreferences.enabled
-            ? { preferencesPairingId: pair.pairingId }
-            : {}),
+          ...(offerPreferences ? { preferencesPairingId: pair.pairingId } : {}),
         },
         {
           type: "emit",

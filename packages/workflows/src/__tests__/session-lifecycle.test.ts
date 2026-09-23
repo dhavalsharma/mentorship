@@ -942,6 +942,14 @@ describe("pair-chosen length and rhythm", () => {
     expect(String(proposal!.detail["body"])).not.toContain("Session preferences");
   });
 
+  it("neither names nor offers the control when proposals degrade to plain DMs", async () => {
+    const ctx = await setup({ omitSlots: ["conversation"] });
+    expect(ctx.h.recorder.of("thread.proposal")).toHaveLength(0);
+    const dms = ctx.h.recorder.of("dm.sent").map((c) => String(c.detail["body"]));
+    expect(dms.some((b) => b.startsWith("Time for your"))).toBe(true);
+    for (const body of dms) expect(body).not.toContain("Session preferences");
+  });
+
   it("books the next session at the length the pair chose", async () => {
     const ctx = await setup({ transcriptAvailableAfter: 1 });
     expect(minutesOf(ctx.h.world.latestAgreementFor(ctx.pairingId)!.options[0]!)).toBe(45);
@@ -1006,7 +1014,7 @@ describe("pair-chosen length and rhythm", () => {
         participantId: "prt_stranger",
         preferences: { everyDays: 7 },
       }),
-    ).toBeNull();
+    ).toEqual({ ok: false, reason: "not_member" });
     expect(
       ctx.h.log.all().filter((e) => e.name === "pair.preferences_updated"),
     ).toHaveLength(0);

@@ -283,8 +283,9 @@ export function buildPreferencesModalView(input: {
         type: "mrkdwn",
         text:
           `Right now: *${describeCadence({ sessionMinutes, everyDays })}*.\n` +
-          "Either of you can change this. It applies from your next proposal, " +
-          "and the thread is told when it changes.",
+          "Either of you can change this. It applies from your next proposal. " +
+          "Between sessions, your thread is told straight away; otherwise the " +
+          "next proposal shows the new length and rhythm.",
       },
     },
     {

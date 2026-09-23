@@ -46,8 +46,13 @@ structured control, and the change lands on `pairings.cadence_override`.**
   recomputes its wake time from the same `lastSessionAt`, and posts one line
   to the pair's thread naming who changed what. Every other state simply reads
   the new cadence the next time it builds a proposal.
-- Every proposal states the slot length when choice is enabled, so the thing a
-  pair can change is visible where they'd want to change it.
+- Every proposal states the slot length when choice is enabled *and* the
+  conversation adapter can render the button, so the thing a pair can change
+  is visible where they'd want to change it — and a proposal degraded to plain
+  DMs never points at a control that isn't there.
+- Sagas already in `cooling` when this shipped were given the same wait by a
+  one-off data migration (`0013_cooling_preferences_wait.sql`), so no pair
+  has to wait out a full cycle on the old rhythm.
 
 Roster import gained a `duration` column (aliases `session_minutes`,
 `session_length`, `meeting_length`, `meeting_duration`, `length`) and learned
@@ -111,7 +116,8 @@ fair to a pair that deliberately meets every four weeks.
   moment; it shows up in the next proposal's wording. Listening in every state
   was rejected as noise in each state's `waitFor` — and `proposing` waits on
   the agreement's subject, not the pairing's, so it cannot listen without a
-  second pattern.
+  second pattern. The modal says so in as many words rather than promising an
+  announcement it cannot always make.
 - An ad-hoc pair (`everyDays: 0`) finishes its saga after each session, so
   choosing a rhythm afterwards is stored but does not restart a saga. The menu
   never offers 0, and the program-level `adhoc` convention is unchanged.

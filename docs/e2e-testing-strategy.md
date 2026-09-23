@@ -1,6 +1,6 @@
 # End-to-end testing strategy
 
-820 tests pass. None of them is an end-to-end test.
+827 tests pass. None of them is an end-to-end test.
 
 That is not a criticism of the suite — it is very good at what it does, and
 what it does is prove each piece in isolation against a seam. But every bug
@@ -94,7 +94,7 @@ bug to fix.**
 | Tier | What it is | Count | Runs in |
 | --- | --- | --- | --- |
 | 0 | Unit and contract tests, no infrastructure | 690 | ~5s |
-| 1 | Postgres-backed component tests (RLS, store, relay, projector, resolvers, API routes over real sockets) | 92 | ~5s with `DATABASE_URL` |
+| 1 | Postgres-backed component tests (RLS, store, relay, projector, resolvers, API routes over real sockets) | 95 | ~5s with `DATABASE_URL` |
 | 2 | **Journey tests — full stack, two processes, real Postgres** | 0 | — |
 | 3 | **Browser journeys against `apps/web`** | 0 | — |
 | 4 | **Vendor contract fixtures** | 0 | — |
@@ -348,7 +348,7 @@ a single journey.
 pnpm typecheck
 pnpm deps:check                     # invariants 1 and 2, currently unenforced
 pnpm db:migrate                     # migrations apply from scratch
-pnpm test                           # 820, with DATABASE_URL set
+pnpm test                           # 827, with DATABASE_URL set
 pnpm test:e2e                       # tier 2 journeys + P1, P3, P4, P5
 pnpm --filter @mentorship/web build
 ```
@@ -366,7 +366,7 @@ Two gate rules worth writing down now rather than discovering later:
   hundred for reasons unrelated to the diff, it belongs in nightly.
 - **A skipped test is a failure in CI.** `DATABASE_URL` being unset locally is
   a convenience (`describe.skipIf`), and it is the correct default for `pnpm
-  test` on a laptop. In CI it would silently drop 92 tests including the
+  test` on a laptop. In CI it would silently drop 95 tests including the
   cross-tenant leak test. The workflow sets `DATABASE_URL` and asserts the
   skipped count is zero.
 
@@ -399,7 +399,7 @@ Worth stating, so the suite's green is read correctly:
 Ordered by bugs-caught per hour, not by tier number:
 
 1. **`.github/workflows/ci.yml`** with the PR gate above, running the existing
-   820 plus `deps:check`. Nothing new to write; it makes three already-built
+   827 plus `deps:check`. Nothing new to write; it makes three already-built
    guards actually guard something.
 2. **`tests/e2e/stage.ts`** plus the `happy-path` journey. One file of harness,
    one journey. This is the first test in the repo that runs two processes.

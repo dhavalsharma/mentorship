@@ -14,6 +14,9 @@ import type { Cadence, PairPreferencesPolicy } from "./policy.js";
 
 export const CUSTOM_CHOICE = "custom";
 
+export const PAIR_PREFERENCES_DISABLED_MESSAGE =
+  "This program sets session length and rhythm for every pair.";
+
 export const PairPreferencesSchema = z
   .object({
     sessionMinutes: z.number().int().min(15).max(240).optional(),
@@ -59,7 +62,7 @@ export function resolvePairPreferences(
     return {
       ok: false,
       field: "sessionChoice",
-      message: "This program sets session length and rhythm for every pair.",
+      message: PAIR_PREFERENCES_DISABLED_MESSAGE,
     };
   }
 

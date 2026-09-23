@@ -33,6 +33,7 @@ import type {
   NotesSink,
   PairingLocator,
   PairPreferencesStore,
+  PairPreferencesUpdateResult,
   PreferencesModalContext,
 } from "@mentorship/integrations";
 
@@ -582,7 +583,7 @@ export class PostgresPairPreferencesStore implements PairPreferencesStore {
     pairingId: string;
     participantId: string;
     preferences: PairPreferences;
-  }): Promise<{ sessionMinutes: number; everyDays: number } | null> {
+  }): Promise<PairPreferencesUpdateResult> {
     const { db, orgId, role } = this.options;
     const at = (this.options.now?.() ?? new Date()).toISOString();
     return withTenant(
@@ -592,7 +593,12 @@ export class PostgresPairPreferencesStore implements PairPreferencesStore {
         // FOR UPDATE: both members pressing Save at once must merge, not have
         // the second write drop whichever half the first one changed.
         const loaded = await this.load(tx, input, true);
-        if (!loaded || !loaded.policy.pairPreferences.enabled) return null;
+        if (!loaded) return { ok: false, reason: "not_member" } as const;
+        // Re-checked under the lock: the program may have turned choice off
+        // while the modal sat open.
+        if (!loaded.policy.pairPreferences.enabled) {
+          return { ok: false, reason: "disabled" } as const;
+        }
 
         const override = applyPairPreferences(
           loaded.pairOverride,
@@ -627,9 +633,10 @@ export class PostgresPairPreferencesStore implements PairPreferencesStore {
           },
         });
         return {
+          ok: true,
           sessionMinutes: cadence.sessionMinutes,
           everyDays: cadence.everyDays,
-        };
+        } as const;
       },
       role === undefined ? {} : { role },
     );

@@ -155,7 +155,7 @@ describe.skipIf(!DATABASE_URL)("pair session preferences on Postgres", () => {
         participantId: strangerParticipantId,
         preferences: { everyDays: 7 },
       }),
-    ).toBeNull();
+    ).toEqual({ ok: false, reason: "not_member" });
   });
 
   it("opens the modal off a real click, pre-selecting Custom for the imported monthly rhythm", async () => {
@@ -196,7 +196,7 @@ describe.skipIf(!DATABASE_URL)("pair session preferences on Postgres", () => {
       participantId: mentorParticipantId,
       preferences: { sessionMinutes: 30 },
     });
-    expect(saved).toEqual({ sessionMinutes: 30, everyDays: 30 });
+    expect(saved).toEqual({ ok: true, sessionMinutes: 30, everyDays: 30 });
 
     const [row] = await handle.db
       .select({ cadenceOverride: pairings.cadenceOverride })
@@ -270,5 +270,35 @@ describe.skipIf(!DATABASE_URL)("pair session preferences on Postgres", () => {
       label: "every 10 days",
       sessionMinutes: 15,
     });
+  });
+
+  it("refuses with reason 'disabled' — and writes nothing — once the program turns choice off", async () => {
+    const before = await handle.db
+      .select({ cadenceOverride: pairings.cadenceOverride })
+      .from(pairings)
+      .where(eq(pairings.id, pairingId));
+    await handle.db
+      .update(programs)
+      .set({ policy: defaultPolicy({ pairPreferences: { enabled: false } }) })
+      .where(eq(programs.id, programId));
+    try {
+      expect(
+        await store().update({
+          pairingId,
+          participantId: mentorParticipantId,
+          preferences: { everyDays: 7 },
+        }),
+      ).toEqual({ ok: false, reason: "disabled" });
+      const after = await handle.db
+        .select({ cadenceOverride: pairings.cadenceOverride })
+        .from(pairings)
+        .where(eq(pairings.id, pairingId));
+      expect(after[0]!.cadenceOverride).toEqual(before[0]!.cadenceOverride);
+    } finally {
+      await handle.db
+        .update(programs)
+        .set({ policy: defaultPolicy() })
+        .where(eq(programs.id, programId));
+    }
   });
 });

@@ -414,9 +414,13 @@ export class World implements SagaResolvers, RosterSink {
     pairingId: string;
     participantId: string;
     preferences: PairPreferences;
-  }): Promise<{ sessionMinutes: number; everyDays: number } | null> {
+  }): Promise<
+    | { ok: true; sessionMinutes: number; everyDays: number }
+    | { ok: false; reason: "not_member" | "disabled" }
+  > {
     const pairing = this.preferencePairing(input);
-    if (!pairing || !this.policy.pairPreferences.enabled) return null;
+    if (!pairing) return { ok: false, reason: "not_member" };
+    if (!this.policy.pairPreferences.enabled) return { ok: false, reason: "disabled" };
     pairing.cadenceOverride = applyPairPreferences(
       pairing.cadenceOverride as Partial<Cadence> | null,
       input.preferences,
@@ -434,7 +438,11 @@ export class World implements SagaResolvers, RosterSink {
         changed: input.preferences,
       },
     });
-    return { sessionMinutes: cadence.sessionMinutes, everyDays: cadence.everyDays };
+    return {
+      ok: true,
+      sessionMinutes: cadence.sessionMinutes,
+      everyDays: cadence.everyDays,
+    };
   }
 
   private preferencePairing(input: {
