@@ -148,6 +148,17 @@ export interface SagaHistoryEntry {
   to: string;
   effects: string[];
   note?: string;
+  /**
+   * What the step left the instance waiting on. The instance row only ever
+   * shows the *current* state's wait, so without these a state that was
+   * entered with no `waitFor`, no `timeoutAt` and no `done` — stuck forever,
+   * invariant 7 — leaves no trace once the instance has moved past it or been
+   * stranded in it. Optional because history written before they existed does
+   * not carry them.
+   */
+  waitFor?: string[] | null;
+  timeoutAt?: string | null;
+  done?: boolean;
 }
 
 /** A readable state name for history and debugging. */

@@ -234,6 +234,9 @@ export class SagaEngine {
       from,
       to,
       effects: ran,
+      waitFor: result.waitFor?.names ?? null,
+      timeoutAt: result.timeoutAt ?? null,
+      done: Boolean(result.done),
     };
 
     const updated: SagaInstance = {

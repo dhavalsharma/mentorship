@@ -13,6 +13,8 @@
     "serve:api": "tsx apps/api/src/main.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:e2e:nightly": "E2E_NIGHTLY=1 vitest run --config vitest.e2e.config.ts",
     "test:matching-invariants": "vitest run packages/primitives/matching/src/__tests__/invariants.test.ts",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",

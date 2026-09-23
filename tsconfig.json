@@ -83,7 +83,10 @@
   },
   "include": [
     "packages/**/*.ts",
-    "apps/**/*.ts"
+    "apps/**/*.ts",
+    "tests/**/*.ts",
+    "vitest.config.ts",
+    "vitest.e2e.config.ts"
   ],
   "exclude": [
     "node_modules",
