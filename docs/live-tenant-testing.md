@@ -349,3 +349,14 @@ The fakes cannot be wrong about these, because they are not real:
   per tenant instead of inferring it from "they use Google".
 
 Expect the identity mapping to be the thing that breaks first. It usually is.
+
+## Capture what you see
+
+A live run is the only time the adapters meet the real APIs, so keep the
+evidence. Set `CAPTURE_VENDOR_FIXTURES=1` on `pnpm serve:worker:live` and every
+Slack and Google request/response it makes is written, redacted, to
+`tests/fixtures/vendor/` as `source: "live"` — replacing the hand-written
+fixtures the adapter tests replay. Or run `pnpm test:contracts:live`, which
+exercises every call in one pass with capture forced on. Review the diff before
+committing it, and update the dates in
+[vendor-contracts.md](./vendor-contracts.md).

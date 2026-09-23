@@ -5,33 +5,36 @@ import {
   GoogleDriveDocumentAdapter,
   MANAGED_END,
   MANAGED_START,
-  type GoogleDocsTransport,
+  type ReplayedCall,
 } from "@mentorship/integrations";
+import { openReplay, warnOnStaleFixtures } from "./vendor-replay.js";
 
 /**
- * No network. The transport is a stub over an in-memory document, which is
- * what makes the one property that actually matters testable: a re-render
- * replaces the managed region and leaves everything around it byte-identical
- * (ADR-0005).
+ * No network. The transport replays `tests/fixtures/vendor/google-{drive,docs}`
+ * (tier 4, docs/e2e-testing-strategy.md), with handlers layering an in-memory
+ * document on top of the recorded responses — which is what makes the one
+ * property that actually matters testable: a re-render replaces the managed
+ * region and leaves everything around it byte-identical (ADR-0005). The
+ * replay refuses any request field and any response field no fixture has
+ * recorded, so the in-memory document can only describe the API the fixtures
+ * describe.
  */
 
-interface Call {
-  api: string;
-  path: string;
-  method: string;
-  body?: unknown;
-  query?: Record<string, string>;
-}
+warnOnStaleFixtures("google-document.test.ts");
+
+type Call = ReplayedCall;
 
 /**
- * Builds a Docs `documents.get` response out of a plain string, one text run
- * per line. Document indices start at 1 and advance by the run's length,
- * which is the coordinate system the adapter has to map back into. Every
- * fixture here ends in a newline because a real Docs body always does — that
- * final newline is the one index nothing may be written past, and a fixture
- * without it would describe a document that cannot exist.
+ * Builds a Docs body out of a plain string, one text run per line. Document
+ * indices start at 1 and advance by the run's length, which is the coordinate
+ * system the adapter has to map back into. Every fixture here ends in a
+ * newline because a real Docs body always does — that final newline is the
+ * one index nothing may be written past, and a fixture without it would
+ * describe a document that cannot exist. The leading element is the
+ * `sectionBreak` the recorded `documents.get` starts with, as every real Docs
+ * body does; the hand-written stub this replaced never had one.
  */
-function docFromText(text: string, revisionId = "rev1"): Record<string, unknown> {
+function bodyFromText(text: string, sectionBreak: unknown): { content: unknown[] } {
   const lines = text.split("\n");
   if (lines[lines.length - 1] === "") lines.pop();
   let index = 1;
@@ -40,12 +43,20 @@ function docFromText(text: string, revisionId = "rev1"): Record<string, unknown>
     const startIndex = index;
     index += raw.length;
     return {
+      startIndex,
+      endIndex: index,
       paragraph: {
-        elements: [{ startIndex, endIndex: index, textRun: { content: raw } }],
+        elements: [{ startIndex, endIndex: index, textRun: { content: raw, textStyle: {} } }],
       },
     };
   });
-  return { revisionId, body: { content } };
+  return { content: sectionBreak ? [sectionBreak, ...content] : content };
+}
+
+function recordedSectionBreak(response: Record<string, unknown>): unknown {
+  const first = (response["body"] as { content?: Record<string, unknown>[] } | undefined)
+    ?.content?.[0];
+  return first && "sectionBreak" in first ? first : undefined;
 }
 
 function applyRequests(text: string, requests: unknown[]): string {
@@ -75,77 +86,63 @@ function stubTransport(
     permissions?: { emailAddress: string; role: string }[];
     /** Who authored the current revision before any call is made. */
     revisionAuthor?: "service" | "human";
+    /** Names already present in the folder, for the adopt-don't-duplicate path. */
+    existingFileId?: string;
   } = {},
-): {
-  call: GoogleDocsTransport;
-  calls: Call[];
-  text: () => string;
-  /** Test hook: a human edits the doc directly, out of band from any render. */
-  humanEdit: (newText: string) => void;
-  /**
-   * Test hook: the doc's bytes change (e.g. Drive reformatting on save) but
-   * the revision is still ours — the case echo suppression must not confuse
-   * with a human edit.
-   */
-  serviceEcho: (newText: string) => void;
-} {
-  const calls: Call[] = [];
+) {
+  const replay = openReplay();
   let text = initial.docText ?? "";
   let revisionCounter = 1;
   let revisionAuthor: "service" | "human" = initial.revisionAuthor ?? "service";
   const permissions = [...(initial.permissions ?? [])];
 
-  const call: GoogleDocsTransport = async (api, path, init) => {
-    calls.push({
-      api,
-      path,
-      method: init.method,
-      ...(init.body === undefined ? {} : { body: init.body }),
-      ...(init.query === undefined ? {} : { query: init.query }),
-    });
-
-    if (api === "drive" && path.endsWith("/revisions")) {
-      return {
-        revisions: [
-          { lastModifyingUser: { me: revisionAuthor === "service" } },
-        ],
-      };
-    }
-    if (api === "drive" && path.endsWith("/permissions")) {
-      if (init.method === "GET") return { permissions };
-      const body = init.body as { emailAddress: string; role: string };
+  replay
+    .on("revisions.list", ({ response }) => {
+      // The recorded entry's shape, with `me` set by who wrote last here —
+      // which is exactly the field nobody has confirmed Drive reports.
+      const recorded = response["revisions"] as { lastModifyingUser: { me: boolean } }[];
+      const last = structuredClone(recorded[recorded.length - 1]!);
+      last.lastModifyingUser.me = revisionAuthor === "service";
+      return { ...response, revisions: [last] };
+    })
+    .on("permissions.list", ({ response }) => ({ ...response, permissions: [...permissions] }))
+    .on("permissions.create", ({ request, response }) => {
+      const body = request.body as { emailAddress: string; role: string };
       permissions.push({ emailAddress: body.emailAddress, role: body.role });
-      return { id: `perm_${permissions.length}` };
-    }
-    if (api === "drive" && path === "/files" && init.method === "GET") {
-      return { files: [] };
-    }
-    if (path.endsWith("/copy")) return { id: "copied_doc" };
-    if (api === "docs" && path === "/documents" && init.method === "POST") {
-      return { documentId: "blank_doc" };
-    }
-    if (api === "drive" && init.method === "GET") return { parents: ["root"] };
-    if (api === "drive" && init.method === "PATCH") return { id: "blank_doc" };
-    if (api === "docs" && path.endsWith(":batchUpdate")) {
-      const { requests } = init.body as { requests: unknown[] };
+      return response;
+    })
+    .on("files.list", ({ response }) =>
+      initial.existingFileId ? { ...response, files: [{ id: initial.existingFileId }] } : response,
+    )
+    .on("documents.batchUpdate", ({ request, response }) => {
+      const { requests } = request.body as { requests: unknown[] };
       text = applyRequests(text, requests);
       revisionAuthor = "service";
       revisionCounter++;
-      return { writeControl: { requiredRevisionId: `rev${revisionCounter}` } };
-    }
-    if (api === "docs" && init.method === "GET") return docFromText(text, `rev${revisionCounter}`);
-    return {};
-  };
+      return { ...response, writeControl: { requiredRevisionId: `rev${revisionCounter}` } };
+    })
+    .on("documents.get", ({ response }) => ({
+      ...response,
+      revisionId: `rev${revisionCounter}`,
+      body: bodyFromText(text, recordedSectionBreak(response)),
+    }));
 
   return {
-    call,
-    calls,
+    replay,
+    call: replay.googleDocs(),
+    calls: replay.calls,
     text: () => text,
+    /** Test hook: a human edits the doc directly, out of band from any render. */
     humanEdit: (newText: string) => {
       text = newText;
       revisionAuthor = "human";
       revisionCounter++;
     },
+    /**
+     * Test hook: the doc's bytes change (e.g. Drive reformatting on save) but
+     * the revision is still ours — the case echo suppression must not confuse
+     * with a human edit.
+     */
     serviceEcho: (newText: string) => {
       text = newText;
       revisionAuthor = "service";
@@ -167,7 +164,7 @@ describe("GoogleDriveDocumentAdapter", () => {
   });
 
   it("copies the guideline doc into the folder on first render", async () => {
-    const { call, calls } = stubTransport();
+    const { call, calls, replay } = stubTransport();
     const adapter = new GoogleDriveDocumentAdapter(call, {
       ...CONFIG,
       guidelineDocId: "guideline_1",
@@ -186,13 +183,14 @@ describe("GoogleDriveDocumentAdapter", () => {
       name: "Arjun & Priya — session notes",
       parents: ["folder_1"],
     });
-    expect(result.docRef).toBe("copied_doc");
-    expect(result.url).toBe("https://docs.google.com/document/d/copied_doc/edit");
+    const copiedId = replay.fixture("files.copy").response!["id"];
+    expect(result.docRef).toBe(copiedId);
+    expect(result.url).toBe(`https://docs.google.com/document/d/${copiedId}/edit`);
     expect(result.revisionId).toBe("rev2");
   });
 
   it("creates a blank doc and moves it into the folder when no guideline is configured", async () => {
-    const { call, calls } = stubTransport();
+    const { call, calls, replay } = stubTransport();
     const adapter = new GoogleDriveDocumentAdapter(call, CONFIG);
 
     const result = await adapter.renderManagedRegion({
@@ -207,24 +205,18 @@ describe("GoogleDriveDocumentAdapter", () => {
     expect(calls.find((c) => c.api === "docs" && c.path === "/documents")?.body).toEqual({
       title: "Blank pair",
     });
+    // Whatever parent Drive reported for the new doc is what gets removed.
+    const recordedParents = replay.fixture("files.get", "parents").response!["parents"] as string[];
     const move = calls.find((c) => c.method === "PATCH");
     expect(move?.query).toMatchObject({
       addParents: "folder_1",
-      removeParents: "root",
+      removeParents: recordedParents.join(","),
     });
-    expect(result.docRef).toBe("blank_doc");
+    expect(result.docRef).toBe(replay.fixture("documents.create").response!["documentId"]);
   });
 
   it("adopts an existing doc of the same name rather than creating a second", async () => {
-    const calls: Call[] = [];
-    const call: GoogleDocsTransport = async (api, path, init) => {
-      calls.push({ api, path, method: init.method });
-      if (api === "drive" && path === "/files" && init.method === "GET") {
-        return { files: [{ id: "already_there" }] };
-      }
-      if (api === "docs" && path.endsWith(":batchUpdate")) return {};
-      return docFromText("\n");
-    };
+    const { call, calls } = stubTransport({ docText: "\n", existingFileId: "already_there" });
 
     const result = await new GoogleDriveDocumentAdapter(call, CONFIG).renderManagedRegion({
       docRef: null,
@@ -547,6 +539,94 @@ describe("echo suppression and pinning", () => {
     expect(text()).toBe(
       [MANAGED_START, "human override", MANAGED_END, "kept", ""].join("\n"),
     );
+  });
+});
+
+/**
+ * No state, no handlers for the parts under test: the responses are the
+ * fixtures exactly as recorded. When these fixtures are replaced by live
+ * captures, these are the tests whose meaning changes from "the adapter agrees
+ * with what we wrote down" to "the adapter agrees with Google".
+ */
+describe("against the fixtures as recorded", () => {
+  it("seeds the markers just before the final newline of the recorded body", async () => {
+    const replay = openReplay();
+    await new GoogleDriveDocumentAdapter(replay.googleDocs(), CONFIG).renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "## Session 1",
+      collaborators: [],
+      idempotencyKey: "k1",
+    });
+
+    // The recorded body is a sectionBreak followed by two paragraphs; the
+    // last insertable index is one before the final paragraph's endIndex.
+    const content = (replay.fixture("documents.get").response!["body"] as {
+      content: { endIndex: number }[];
+    }).content;
+    const lastEnd = content[content.length - 1]!.endIndex;
+    const write = replay.calls.find((c) => c.call === "documents.batchUpdate")!;
+    const [insert] = (write.body as { requests: { insertText: { location: { index: number } } }[] })
+      .requests;
+    expect(insert!.insertText.location.index).toBe(lastEnd - 1);
+  });
+
+  it("reads the recorded revisions.list's last entry as the current revision", async () => {
+    // The recorded list's last entry reports `me: true`, so a divergent
+    // region is treated as our own echo and overwritten, not pinned. Whether
+    // Drive really reports `me` this way is the unverified part — which is
+    // why this fixture is the first one the live suite replaces.
+    const replay = openReplay();
+    let text = [MANAGED_START, "one", MANAGED_END, ""].join("\n");
+    replay
+      .on("documents.get", ({ response }) => ({
+        ...response,
+        body: bodyFromText(text, recordedSectionBreak(response)),
+      }))
+      .on("documents.batchUpdate", ({ request, response }) => {
+        text = applyRequests(text, (request.body as { requests: unknown[] }).requests);
+        return response;
+      });
+    const adapter = new GoogleDriveDocumentAdapter(replay.googleDocs(), CONFIG);
+    await adapter.renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "one",
+      collaborators: [],
+      idempotencyKey: "k1",
+    });
+    text = [MANAGED_START, "one, reformatted", MANAGED_END, ""].join("\n");
+
+    const result = await adapter.renderManagedRegion({
+      docRef: "doc_1",
+      title: "t",
+      markdown: "two",
+      collaborators: [],
+      idempotencyKey: "k2",
+    });
+
+    expect(replay.calls.some((c) => c.call === "revisions.list")).toBe(true);
+    expect(result.pinned).toBe(false);
+    expect(text).toContain("two");
+  });
+
+  it("surfaces Drive's recorded refusal of a plus-addressed share rather than swallowing it", async () => {
+    // docs/live-tenant-testing.md: `name+role@domain` gets 400
+    // invalidSharingRequest while the bare address succeeds. The adapter's
+    // local EMAIL check passes a plus address, so the refusal reaches the
+    // caller — and, because access is granted before the write, the render
+    // does not happen. Recorded here as current behaviour, not endorsed.
+    const replay = openReplay().use("permissions.create", "error-plus-addressed");
+    await expect(
+      new GoogleDriveDocumentAdapter(replay.googleDocs(), CONFIG).renderManagedRegion({
+        docRef: "doc_1",
+        title: "t",
+        markdown: "x",
+        collaborators: [{ email: "someone+mentor@example.com" }],
+        idempotencyKey: "k1",
+      }),
+    ).rejects.toThrow(/invalidSharingRequest/);
+    expect(replay.calls.some((c) => c.call === "documents.batchUpdate")).toBe(false);
   });
 });
 

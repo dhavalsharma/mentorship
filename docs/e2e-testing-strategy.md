@@ -7,7 +7,7 @@
 > is the strategy as written before it was built, kept because it is the
 > argument; where the build departed from it, the departure is noted.
 
-827 tests pass. None of them is an end-to-end test.
+874 tests pass. None of them is an end-to-end test.
 
 That is not a criticism of the suite — it is very good at what it does, and
 what it does is prove each piece in isolation against a seam. But every bug
@@ -42,7 +42,7 @@ genuinely distinct axes, each with its own failure mode and its own cost:
 | **Business flow** | Does a pair get from `pair.activated` to a documented, confirmed session and round again? | `pnpm demo` walks it, in memory, and **prints** rather than asserts |
 | **Process** | Do `apps/api` and `apps/worker`, as separate processes sharing only Postgres, produce the right outcome? | **Nothing.** No test runs both |
 | **Interface** | Does a human clicking in Slack or in the dashboard reach the right code? | Slack: yes, over a real socket with a real HMAC. Web: six Playwright journeys (Tier 3) against `next start` + `apps/api` + Postgres |
-| **Vendor** | Do Slack and Google behave the way the stubs say? | Manual, partial, documented in [live-tenant-testing.md](./live-tenant-testing.md) |
+| **Vendor** | Do Slack and Google behave the way the stubs say? | Manual, partial, documented in [live-tenant-testing.md](./live-tenant-testing.md). Adapter tests now replay dated fixtures — all still hand-written ([vendor-contracts.md](./vendor-contracts.md)) |
 
 A fifth thing is often smuggled into an E2E suite and must not be: **does the
 model get the extraction right.** That is an eval. It is nondeterministic, it
@@ -100,13 +100,13 @@ bug to fix.**
 
 | Tier | What it is | Count | Runs in |
 | --- | --- | --- | --- |
-| 0 | Unit and contract tests, no infrastructure | 690 | ~5s |
-| 1 | Postgres-backed component tests (RLS, store, relay, projector, resolvers, API routes over real sockets) | 95 | ~5s with `DATABASE_URL` |
+| 0 | Unit and contract tests, no infrastructure | 777 | ~5s |
+| 1 | Postgres-backed component tests (RLS, store, relay, projector, resolvers, API routes over real sockets) | 97 | ~5s with `DATABASE_URL` |
 | 2 | **Journey tests — full stack, two processes, real Postgres** (`pnpm test:e2e`) | 153 passing, 3 skipped with reasons — 16 journeys, each with P1/P3/P4/P5; 7 of the 153 are `it.fails` pinning a known bug | ~15s |
 | 2n | Nightly: P2 crash-resume across the catalogue (`pnpm test:e2e:nightly`, adds to the above) | 41 — 18 crash sweeps, 18 restart-every-pass runs, 5 `it.fails` known bugs | ~2 min |
 | 3 | Browser journeys against `apps/web` — `pnpm test:browser` (Playwright, `apps/web/e2e/`) | 6 specs, 8 tests | ~15s including `next build`; needs a migrated Postgres |
-| 4 | **Vendor contract fixtures** | 0 | — |
-| 5 | Evals over the AI primitives | partial (10 golden cases in `session-intel`) | ~5s |
+| 4 | Vendor contract fixtures — replayed in the gate; live suite on demand | 28 fixtures, **all hand-written**; 6 test files replay them; `pnpm test:contracts:live` built, **never run** (no credentials yet) | replay: in tier 0 |
+| 5 | Evals over the AI primitives — `pnpm eval`, never in the gate | 6 golden + 8 safeguarding cases, plus `ai_runs` verdicts; run in deterministic mode only | ~2s |
 | — | **CI running any of it** | `.github/workflows/ci.yml` written (tiers 0–1, `deps:check`, migrations, web build); **not yet run on GitHub** | — |
 
 Tier 1 is stronger than the name suggests: `apps/worker/src/__tests__/worker.test.ts`
@@ -338,6 +338,22 @@ while the bare address succeeds — is exactly what tier 4 is for, and it was
 found by hand. A captured fixture would have made it a checked-in fact rather
 than a paragraph.
 
+**Status (2026-09-23): built, not yet fed.** All three mechanisms exist —
+[vendor-contracts.md](./vendor-contracts.md) has the details and the sign-off
+table. The recording transport (`packages/integrations/src/contracts/`) is
+wired into `live-registry.ts` behind `CAPTURE_VENDOR_FIXTURES=1`, off by
+default. The Sheets, Drive-document (including `isEchoRevision`), Slack
+conversation/DM and Calendar adapter tests now replay
+`tests/fixtures/vendor/**`, and the replay refuses any request field no
+fixture recorded and any response field a fixture does not have. But with no
+live credentials available when this was built, every one of the 28 fixtures
+is `source: "hand-written"` — seeded from the stubs they replaced — and every
+replaying test file says so in a warning after it runs. The plus-addressing
+refusal is now a checked-in (hand-written) error fixture, and replaying the
+recorded `documents.get` surfaced one thing the old stub never modelled (the
+leading `sectionBreak`). `pnpm test:contracts:live` has only ever been run to
+confirm it refuses without credentials.
+
 ---
 
 ## Tier 5 — evals, and why they are not in the gate
@@ -368,6 +384,26 @@ Refusal, timeout, and a schema violation surviving one repair must all reach
 `fallback`. That is already tested in `packages/ai`; a journey with a
 deliberately hostile `LlmProvider` proves it end to end.
 
+**Status (2026-09-23): `pnpm eval` exists** (`evals/run.ts`, outside vitest's
+include). It runs every golden case and a new hand-labelled safeguarding set
+(`session-intel/src/__tests__/safeguarding-fixtures.ts`: four gentle,
+non-graphic disclosures and four hard negatives) through the real
+`runPrimitive` + `createSessionIntelPrimitive`, and with `DATABASE_URL` reads
+`ai_runs` verdicts one tenant at a time inside `withTenant`. It reports
+action-item precision/recall, anchored evidence-span validity (invariant 18),
+safeguarding recall/precision, and accepted-as-is rate from Confirm/Edit
+labels, grouped by `prompt_version` and model; `EVAL_REPORT_PATH` writes JSON
+for trending. Without `ANTHROPIC_API_KEY` it scores the deterministic fallback
+and says so up front — which means safeguarding recall is 0/4 by design
+(invariant 16) and is printed as that, not hidden. It exits 0 whatever the
+scores, 1 only on a harness error. Two honest limits: `ai_runs.input` is never
+written, so a stored run's spans can only be checked for shape, not anchored
+to its source; and it has never been run with a real key. The hostile-provider
+gate test is `session-intel/src/__tests__/hostile-provider.test.ts` (refusal,
+timeout error, invalid-twice), at the primitive level rather than in a
+journey, since no journey harness exists yet. It cannot cover a provider that
+never settles: `runPrimitive` has no deadline of its own.
+
 ---
 
 ## CI — the gate
@@ -388,7 +424,7 @@ minutes:
 pnpm typecheck
 pnpm deps:check                     # invariants 1 and 2
 pnpm db:migrate                     # migrations apply from scratch
-node scripts/assert-no-skipped.mjs  # = pnpm test, 827, and fails on any skip
+node scripts/assert-no-skipped.mjs  # = pnpm test, 874, and fails on any skip
 pnpm test:e2e                       # tier 2 journeys + P1, P3, P4, P5
 pnpm --filter @mentorship/web build
 ```
@@ -420,12 +456,12 @@ Two gate rules worth writing down now rather than discovering later:
   hundred for reasons unrelated to the diff, it belongs in nightly.
 - **A skipped test is a failure in CI.** `DATABASE_URL` being unset locally is
   a convenience (`describe.skipIf`), and it is the correct default for `pnpm
-  test` on a laptop. In CI it would silently drop 95 tests including the
+  test` on a laptop. In CI it would silently drop 97 tests including the
   cross-tenant leak test. The workflow sets `DATABASE_URL` and runs the suite
   through `scripts/assert-no-skipped.mjs`, which reads Vitest's JSON report
   and exits non-zero on any skipped or todo test — and, when `CI` is set, on a
   missing `DATABASE_URL` too. Checked locally both ways: with the database,
-  827 run and 0 skipped (exit 0); without it and `CI=true`, 95 skipped
+  874 run and 0 skipped (exit 0); without it and `CI=true`, 97 skipped
   (exit 1). Without `CI` or `DATABASE_URL` it only reports the counts, so on
   a laptop it behaves like `pnpm test`. Vitest has no fail-on-skip option,
   and its console summary is not a contract; the JSON report's per-test
@@ -526,7 +562,7 @@ journey leaves `feedback` by its window closing.
 Ordered by bugs-caught per hour, not by tier number:
 
 1. **`.github/workflows/ci.yml`** with the PR gate above, running the existing
-   827 plus `deps:check`. Nothing new to write; it makes three already-built
+   874 plus `deps:check`. Nothing new to write; it makes three already-built
    guards actually guard something. *Written, with nightly and live-contract
    workflows alongside; awaiting its first run on GitHub.*
 2. (done) **`tests/e2e/stage.ts`** plus the `happy-path` journey. One file of harness,
@@ -541,10 +577,15 @@ Ordered by bugs-caught per hour, not by tier number:
 6. (done) **P1 · idempotency replay**, then **P2 · crash resume** wired into nightly
    (`pnpm test:e2e:nightly`, run by `.github/workflows/nightly.yml`).
 7. **Tier 4 fixture capture**, during the next live run, starting with the
-   three unverified adapters named above.
+   three unverified adapters named above. *The machinery is built* (capture,
+   replay, `pnpm test:contracts:live`); what remains is running it with
+   credentials and committing the `source: "live"` fixtures it writes.
 8. ~~**Tier 3 Playwright**, six specs.~~ Built — see the Tier 3 section.
 9. **`pnpm eval`**, once there are enough Confirm/Edit verdicts in `ai_runs`
-   for the number to mean anything.
+   for the number to mean anything. *Built*; what it lacks is labels — and,
+   if keeping a copy of participants' notes on `ai_runs.input` is judged
+   acceptable (it is a retention decision, not a test one), each run's source,
+   so stored spans can be anchored rather than only shape-checked.
 
 Steps 1 and 2 are most of the value. Everything from 3 onward is leverage on
 the harness step 2 builds.

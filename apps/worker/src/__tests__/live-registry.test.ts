@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CalendarAdapter, ConversationAdapter, DmAdapter } from "@mentorship/core";
 import { SandboxRefusal } from "@mentorship/integrations";
@@ -111,6 +114,52 @@ describe("buildLiveRegistry", () => {
     vi.stubGlobal("fetch", fetchSpy);
     await expect((adapter as { probe(): Promise<unknown> }).probe()).resolves.toBeDefined();
     expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  describe("vendor fixture capture", () => {
+    const dm = async (env: Record<string, string>) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify({ ok: true, ts: "123.456" }), { status: 200 })),
+      );
+      const built = buildLiveRegistry(env);
+      await built.registry.get<DmAdapter>("dm")!.send({
+        memberRef: "U-TEST",
+        body: "hi",
+        idempotencyKey: "k",
+      });
+      return built;
+    };
+
+    it("is off by default: nothing is written", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "capture-off-"));
+      try {
+        const built = await dm({ ...FULL_ENV, VENDOR_FIXTURE_DIR: dir });
+        expect(built.capturedFixtures).toEqual([]);
+        expect(existsSync(join(dir, "slack"))).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("with CAPTURE_VENDOR_FIXTURES=1, writes a redacted live fixture under the guard", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "capture-on-"));
+      try {
+        const built = await dm({ ...FULL_ENV, CAPTURE_VENDOR_FIXTURES: "1", VENDOR_FIXTURE_DIR: dir });
+        expect(built.capturedFixtures).toEqual([join(dir, "slack", "chat.postMessage.json")]);
+        const written = readFileSync(built.capturedFixtures[0]!, "utf8");
+        expect(JSON.parse(written)).toMatchObject({ source: "live", call: "chat.postMessage" });
+        expect(written).not.toContain("xoxb-test");
+
+        // A refused recipient never reaches the transport, so nothing new is recorded.
+        await expect(
+          built.registry.get<DmAdapter>("dm")!.send({ memberRef: "U-NOPE", body: "x", idempotencyKey: "k2" }),
+        ).rejects.toBeInstanceOf(SandboxRefusal);
+        expect(built.capturedFixtures).toHaveLength(1);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("Google refresh-token credentials", () => {

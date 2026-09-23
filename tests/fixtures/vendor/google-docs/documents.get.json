@@ -1,0 +1,87 @@
+{
+  "vendor": "google-docs",
+  "call": "documents.get",
+  "capturedOn": "2026-09-23",
+  "source": "hand-written",
+  "notes": "Hand-written from the stub it replaced and the vendor's published reference. This call has run against a live sandbox (CLAUDE.md status table), but no response was captured and the date of that run was not recorded, so this is still an assumption, not an observation. Replace it with a capture from pnpm test:contracts:live. Note the leading sectionBreak element with no startIndex: every real Docs body starts with one, and the hand-written stub this replaced never had it.",
+  "request": {
+    "api": "docs",
+    "method": "GET",
+    "path": "/documents/{documentId}"
+  },
+  "response": {
+    "documentId": "DOC_ID",
+    "title": "Priya & Sam: session notes",
+    "body": {
+      "content": [
+        {
+          "endIndex": 1,
+          "sectionBreak": {
+            "sectionStyle": {
+              "columnSeparatorStyle": "NONE",
+              "contentDirection": "LEFT_TO_RIGHT",
+              "sectionType": "CONTINUOUS"
+            }
+          }
+        },
+        {
+          "startIndex": 1,
+          "endIndex": 21,
+          "paragraph": {
+            "elements": [
+              {
+                "startIndex": 1,
+                "endIndex": 21,
+                "textRun": {
+                  "content": "How to use this doc\n",
+                  "textStyle": {}
+                }
+              }
+            ],
+            "paragraphStyle": {
+              "namedStyleType": "NORMAL_TEXT",
+              "direction": "LEFT_TO_RIGHT"
+            }
+          }
+        },
+        {
+          "startIndex": 21,
+          "endIndex": 38,
+          "paragraph": {
+            "elements": [
+              {
+                "startIndex": 21,
+                "endIndex": 38,
+                "textRun": {
+                  "content": "Bring an agenda.\n",
+                  "textStyle": {}
+                }
+              }
+            ],
+            "paragraphStyle": {
+              "namedStyleType": "NORMAL_TEXT",
+              "direction": "LEFT_TO_RIGHT"
+            }
+          }
+        }
+      ]
+    },
+    "documentStyle": {
+      "background": {
+        "color": {}
+      },
+      "pageSize": {
+        "height": {
+          "magnitude": 792,
+          "unit": "PT"
+        },
+        "width": {
+          "magnitude": 612,
+          "unit": "PT"
+        }
+      }
+    },
+    "revisionId": "ALm37BVexampleRevision2",
+    "suggestionsViewMode": "SUGGESTIONS_INLINE"
+  }
+}

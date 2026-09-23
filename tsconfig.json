@@ -86,7 +86,8 @@
     "apps/**/*.ts",
     "tests/**/*.ts",
     "vitest.config.ts",
-    "vitest.e2e.config.ts"
+    "vitest.e2e.config.ts",
+    "evals/**/*.ts"
   ],
   "exclude": [
     "node_modules",

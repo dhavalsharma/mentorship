@@ -7,3 +7,4 @@ export * from "./primitive.js";
 export * from "./markdown.js";
 export * from "./adapter.js";
 export * from "./eval.js";
+export * from "./eval-report.js";

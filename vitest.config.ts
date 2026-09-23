@@ -30,7 +30,16 @@ export const aliases: Record<string, string> = {
 export default defineConfig({
   resolve: { alias: aliases },
   test: {
-    include: ["packages/**/*.test.ts", "apps/**/*.test.ts"],
+    // `tests/contracts/live` (real vendors) and `evals/run.ts` (a measurement,
+    // not a test) are deliberately outside this include — they have their own
+    // commands, `pnpm test:contracts:live` and `pnpm eval`, and neither may
+    // ever run in the gate. Only their deterministic harness tests are here.
+    include: [
+      "packages/**/*.test.ts",
+      "apps/**/*.test.ts",
+      "tests/contracts/*.test.ts",
+      "evals/**/*.test.ts",
+    ],
     // The journey suite has its own config and command (`pnpm test:e2e`):
     // it needs Postgres unconditionally, and `pnpm test` must stay runnable
     // on a laptop with none.
