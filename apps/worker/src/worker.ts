@@ -10,6 +10,7 @@ import {
   SagaEngine,
   SESSION_LIFECYCLE,
   type SessionIntel,
+  type TickResult,
   type TraceLine,
 } from "@mentorship/workflows";
 import {
@@ -121,8 +122,13 @@ export interface Worker {
    * warned); a database error does throw, as any other boot failure would.
    */
   probeCapabilities(): Promise<ProbeCapabilitiesResult>;
-  /** One pass: drain the outbox, then fire due timers. */
-  pass(): Promise<{ relay: RelayResult; timers: number }>;
+  /**
+   * One pass: drain the outbox, then fire due timers. `timers` is how many
+   * were due; `tick` breaks that down — a timer step that threw is counted in
+   * `tick.failed` (retried after backoff) or `tick.parked` (given up on, and
+   * listed by `stuck-sagas`), never thrown out of the pass.
+   */
+  pass(): Promise<{ relay: RelayResult; timers: number; tick: TickResult }>;
   /**
    * One scheduler check: any configured sweep that is due runs, scoped to
    * this worker's own org. A no-op when `schedules` was never configured.
@@ -180,6 +186,24 @@ export function createWorker(options: WorkerOptions): Worker {
     // and neither needs to know the other exists.
     starters: [{ on: ["pair.activated"], sagaName: SESSION_LIFECYCLE }],
     ...(options.onTrace ? { onTrace: options.onTrace } : {}),
+    // One throwing instance is recorded and backed off rather than aborting
+    // the pass; this is where an operator hears about it.
+    ...(options.onWarn
+      ? {
+          onStepFailed: (failure) =>
+            options.onWarn?.(
+              failure.parked ? "saga step failed; instance parked" : "saga step failed; will retry",
+              {
+                instanceId: failure.instanceId,
+                subjectRef: failure.subjectRef,
+                state: failure.state,
+                attempts: failure.attempts,
+                retryAt: failure.retryAt,
+                error: failure.error.message,
+              },
+            ),
+        }
+      : {}),
     runEffect: createEffectRunner({
       registry: options.registry,
       log: sink,
@@ -278,8 +302,8 @@ export function createWorker(options: WorkerOptions): Worker {
             }
           : {}),
       });
-      const timers = await engine.tick(options.orgId);
-      return { relay, timers };
+      const tick = await engine.tick(options.orgId);
+      return { relay, timers: tick.fired, tick };
     },
     sweep() {
       return scheduler.tick();

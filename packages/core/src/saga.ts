@@ -159,6 +159,16 @@ export interface SagaHistoryEntry {
   waitFor?: string[] | null;
   timeoutAt?: string | null;
   done?: boolean;
+  /**
+   * Set only on a *failed* attempt at a step: the step threw, the instance
+   * stayed in `from` (so `from === to` and `stepIndex` did not move), and
+   * `timeoutAt` is when the engine will retry it. `attempt` counts consecutive
+   * failures at this `stepIndex`; it is how the engine knows when to park.
+   * Kept in history rather than new columns so a failure is visible exactly
+   * where every other step is, with no migration.
+   */
+  error?: string;
+  attempt?: number;
 }
 
 /** A readable state name for history and debugging. */

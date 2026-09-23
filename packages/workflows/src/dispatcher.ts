@@ -32,7 +32,7 @@ export class Dispatcher {
         await this.engine.deliver(event);
         continue;
       }
-      const fired = await this.engine.tick();
+      const { fired } = await this.engine.tick();
       if (fired === 0) return;
     }
     throw new Error("dispatcher did not settle — probable event/timer loop");

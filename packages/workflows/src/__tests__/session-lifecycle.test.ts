@@ -530,6 +530,48 @@ describe("capability and consent branches", () => {
       ctx.warnings.some((w) => /private message not sent/.test(w)),
     ).toBe(true);
   });
+
+  // e2e bug #4: a dm slot that is bound but *failing* used to wedge the
+  // reminder step forever. Now it is retried once, then degrades — escalated,
+  // never re-routed to the thread — and the session carries on.
+  it("retries a failing dm once, then degrades without the thread and still holds the session", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1 });
+    ctx.h.registry.bind({
+      slot: "dm",
+      id: "down-dm",
+      probe: async () => ({}) as never,
+      send: async () => {
+        throw new Error("dm outage: 503");
+      },
+    } as never);
+    await bothAccept(ctx);
+
+    const threadBefore = ctx.h.recorder.calls.filter((c) => c.kind.startsWith("thread.")).length;
+    await advanceToNextTimer(ctx.h); // the reminder: shared post ok, DMs throw
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "armed" });
+    const [instance] = await ctx.h.engine.instances();
+    expect(instance!.history.at(-1)).toMatchObject({ attempt: 1, error: "dm outage: 503" });
+
+    await advanceToNextTimer(ctx.h); // the retry: DMs degrade, step completes
+    await advanceToNextTimer(ctx.h);
+    expect(ctx.h.log.all().filter((e) => e.name === "session.held")).toHaveLength(1);
+
+    const reminders = ctx.h.recorder.calls.filter(
+      (c) => c.kind.startsWith("thread.") && String(c.detail["body"]).startsWith("Reminder:"),
+    );
+    expect(reminders).toHaveLength(1); // the ledger kept it from being re-posted
+    expect(
+      ctx.h.recorder.calls
+        .filter((c) => c.kind.startsWith("thread."))
+        .slice(threadBefore)
+        .filter((c) => String(c.detail["body"]).startsWith("Heads up:")),
+    ).toEqual([]);
+    const escalations = ctx.h.log
+      .all()
+      .filter((e) => e.name === "saga.escalated" && e.payload["reason"] === "dm_undeliverable");
+    expect(escalations).toHaveLength(2); // one per participant
+    expect(ctx.warnings.some((w) => /dm failed after retry/.test(w))).toBe(true);
+  });
 });
 
 describe("out-of-band changes and terminal conditions", () => {

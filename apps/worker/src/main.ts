@@ -146,12 +146,14 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 let seen = 0;
 while (!controller.signal.aborted) {
   try {
-    const { relay, timers } = await worker.pass();
+    const { relay, timers, tick } = await worker.pass();
     if (relay.delivered > 0 || timers > 0 || relay.failed > 0) {
       console.log(
         `pass: ${relay.delivered} delivered, ${timers} timers` +
           (relay.failed > 0 ? `, ${relay.failed} failed` : "") +
-          (relay.deadLettered > 0 ? `, ${relay.deadLettered} parked` : ""),
+          (relay.deadLettered > 0 ? `, ${relay.deadLettered} parked` : "") +
+          (tick.failed > 0 ? `, ${tick.failed} timer steps failed` : "") +
+          (tick.parked > 0 ? `, ${tick.parked} sagas parked` : ""),
       );
     }
     const { ran } = await worker.sweep();

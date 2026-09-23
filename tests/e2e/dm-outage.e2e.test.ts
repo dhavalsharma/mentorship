@@ -27,17 +27,13 @@ describe("journey: dm-outage", () => {
     expect(s.logs().some((l) => l.includes("dm outage"))).toBe(true);
   });
 
-  // KNOWN BUG — a failing (not absent) DM slot wedges the lifecycle. The
-  // reminder step's per-participant `dm` effects throw, so the step never
-  // saves; `armed` stays due, and every tick re-runs it and throws again —
-  // the pair never reaches `held`, their notes match nothing, no extraction,
-  // no feedback. Worse, `SagaEngine.tick()` has no per-instance failure
-  // handling, so that throw aborts the whole tick: every *other* due timer in
-  // the org is skipped too, every pass, for as long as the DM vendor is down
-  // (`worker.pass()` rejects; `main.ts` logs and loops). The effect runner
-  // degrades an *empty* dm slot (warn, not sent) but lets a *failing* one
-  // propagate. Flip to `it` when a DM failure degrades rather than wedges.
-  it.fails("still holds the session and extracts the notes while DMs are failing", () => {
+  // Was bug #4: a failing (not absent) DM slot wedged the lifecycle at the
+  // reminder, and because `SagaEngine.tick()` had no per-instance failure
+  // handling every pass for the org threw. Now a throwing timer step is
+  // recorded on its own instance and backed off (never aborting the pass),
+  // and a DM that fails again on the retry degrades — escalated, not sent,
+  // never re-routed to the thread — so the session carries on.
+  it("still holds the session and extracts the notes while DMs are failing", () => {
     expect(named(log, "session.held")).toHaveLength(1);
     expect(named(log, "extraction.completed")).toHaveLength(1);
     expect(s.logs().filter((l) => l.includes("pass threw"))).toEqual([]);
