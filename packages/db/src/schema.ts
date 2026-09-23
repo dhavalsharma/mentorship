@@ -334,6 +334,14 @@ export const events = pgTable(
      * block the events behind it, and must never be retried forever either.
      */
     deadLetteredAt: timestamp("dead_lettered_at", { withTimezone: true }),
+    /**
+     * The saga effect key (`saga:{id}:{step}:{index}`, plus the event name)
+     * for an event a saga effect produced; null for everything else. A step
+     * retried after a crash re-runs its effects, and this is what makes the
+     * re-emit a no-op rather than a second `session.scheduled` (migration
+     * 0014, invariant 6).
+     */
+    idempotencyKey: text("idempotency_key"),
   },
   (t) => [
     index("events_subject_idx").on(t.orgId, t.subjectRef, t.occurredAt),
@@ -348,6 +356,13 @@ export const events = pgTable(
     uniqueIndex("events_note_submitted_unique")
       .on(t.orgId, t.subjectRef, sql`(${t.payload} ->> 'noteId')`)
       .where(sql`${t.name} = 'notes.submitted'`),
+    /**
+     * Effect-emit dedupe. Partial because only effect-produced events carry a
+     * key; per org because the key is only unique within one tenant's sagas.
+     */
+    uniqueIndex("events_idempotency_key_unique")
+      .on(t.orgId, t.idempotencyKey)
+      .where(sql`${t.idempotencyKey} IS NOT NULL`),
   ],
 );
 

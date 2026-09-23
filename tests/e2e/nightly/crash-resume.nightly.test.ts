@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   crashResume,
   explain,
+  P2_FIXED_BUGS,
   P2_KNOWN_BUGS,
   restartEveryPass,
   type CrashFinding,
@@ -105,8 +106,12 @@ describe("P2 · crash resume", () => {
     });
   }
 
+  // A fixed bug keeps its signature in `P2_KNOWN_BUGS`, so a regression is
+  // still named in the log rather than showing up as "unexplained" — but its
+  // test is a plain `it`, and goes red if the signature is ever seen again.
   for (const bug of Object.keys(P2_KNOWN_BUGS)) {
-    it.fails(`KNOWN BUG ${bug}: no longer reproduces under any crash`, () => {
+    const test = P2_FIXED_BUGS.has(bug) ? it : it.fails;
+    test(`${P2_FIXED_BUGS.has(bug) ? "FIXED" : "KNOWN"} BUG ${bug}: no longer reproduces under any crash`, () => {
       expect(known.get(bug) ?? []).toEqual([]);
     });
   }

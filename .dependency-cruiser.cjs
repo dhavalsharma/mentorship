@@ -37,7 +37,7 @@ module.exports = {
       from: {
         path: "^packages/workflows/src",
         pathNot:
-          "^packages/workflows/src/(postgres|postgres-store|postgres-resolvers|postgres-sink|postgres-projector|postgres-reads|relay)\\.ts$|^packages/workflows/src/__tests__/(postgres-store|postgres-resolvers|postgres-projector|postgres-reads|relay)\\.test\\.ts$",
+          "^packages/workflows/src/(postgres|postgres-store|postgres-resolvers|postgres-sink|postgres-projector|postgres-reads|relay)\\.ts$|^packages/workflows/src/__tests__/(postgres-store|postgres-resolvers|postgres-sink|postgres-projector|postgres-reads|relay)\\.test\\.ts$",
       },
       to: { path: "^packages/db" },
     },

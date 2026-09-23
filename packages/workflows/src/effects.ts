@@ -120,6 +120,22 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
   return async function runEffect(effect: Effect, ctx: EffectContext) {
     const pairingId = pairingIdOf(ctx);
     const pair = await opts.resolvers.pairContext(pairingId);
+    // Every event an effect produces is keyed by that effect (invariant 6).
+    // The ledger alone cannot make these idempotent: it is saved with the
+    // step, after every effect ran, so a crash between an emit committing and
+    // the step saving re-runs the effect on retry. The adapter calls dedupe on
+    // `ctx.key`; this is the same key for the event log, and the sink turns a
+    // repeat into "here is the event you already appended". The name is part
+    // of the key so an effect may emit more than one kind of event.
+    //
+    // Rejected: writing the step's events in the same transaction as the saga
+    // save (buffer here, flush in `store.save`). It closes the window for
+    // events, but the engine, store and sink are three separate ports today,
+    // the in-memory `Dispatcher` would need the same unit of work, and effects
+    // that read an emitted event's id back (`emit` returns `eventId`) would
+    // need a deferred id. It also would not remove the need for a key: the
+    // adapter call before it is still re-run on retry and still dedupes by
+    // key, so the key is the one mechanism that already covers every effect.
     const emit = (
       name: EmitInput["name"],
       payload?: Record<string, unknown>,
@@ -130,6 +146,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
         name,
         subjectRef: subject ?? ctx.instance.subjectRef,
         payload,
+        idempotencyKey: `${ctx.key}:${name}`,
       });
 
     switch (effect.type) {
@@ -246,7 +263,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
             `Agreed for ${effect.start}. Could one of you send the invite? I'll take it from here.`,
             `${ctx.key}:manual-invite`,
           );
-          await emit("session.scheduled", {
+          const scheduled = await emit("session.scheduled", {
             sessionId,
             calendarEventId: "",
             startsAt: effect.start,
@@ -254,7 +271,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
             transcriptionEnabled: false,
             degraded: true,
           });
-          return { sessionId };
+          return { sessionId: String(scheduled.payload["sessionId"] ?? sessionId) };
         }
 
         const event = await calendar.createEvent({
@@ -267,7 +284,10 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           withTranscription: effect.withTranscription,
           idempotencyKey: ctx.key,
         });
-        await emit("session.scheduled", {
+        // On a retry the sink returns the event the first attempt appended,
+        // whose `sessionId` is the one the saga and the projection already
+        // know — not the fresh one minted above.
+        const scheduled = await emit("session.scheduled", {
           sessionId,
           calendarEventId: event.eventId,
           startsAt: effect.start,
@@ -275,7 +295,10 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           conferenceUrl: event.conferenceUrl ?? null,
           transcriptionEnabled: event.transcriptionEnabled,
         });
-        return { sessionId, calendarEventId: event.eventId };
+        return {
+          sessionId: String(scheduled.payload["sessionId"] ?? sessionId),
+          calendarEventId: event.eventId,
+        };
       }
 
       case "verify_calendar_event": {
@@ -308,14 +331,18 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           text,
           pair,
         });
-        await emit("extraction.completed", {
+        const completed = await emit("extraction.completed", {
           extractionId: result.extractionId,
           markdown: result.markdown,
           actionItems: result.actionItems,
           sourceRef: effect.sourceRef,
           ...(result.safeguarding ? { safeguarding: true } : {}),
         });
-        return { extractionId: result.extractionId };
+        return {
+          extractionId: String(
+            completed.payload["extractionId"] ?? result.extractionId,
+          ),
+        };
       }
 
       case "notify_safeguarding": {
