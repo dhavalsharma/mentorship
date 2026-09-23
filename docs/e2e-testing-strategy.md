@@ -34,7 +34,7 @@ genuinely distinct axes, each with its own failure mode and its own cost:
 | --- | --- | --- |
 | **Business flow** | Does a pair get from `pair.activated` to a documented, confirmed session and round again? | `pnpm demo` walks it, in memory, and **prints** rather than asserts |
 | **Process** | Do `apps/api` and `apps/worker`, as separate processes sharing only Postgres, produce the right outcome? | **Nothing.** No test runs both |
-| **Interface** | Does a human clicking in Slack or in the dashboard reach the right code? | Slack: yes, over a real socket with a real HMAC. Web: nothing above `lib/` |
+| **Interface** | Does a human clicking in Slack or in the dashboard reach the right code? | Slack: yes, over a real socket with a real HMAC. Web: six Playwright journeys (Tier 3) against `next start` + `apps/api` + Postgres |
 | **Vendor** | Do Slack and Google behave the way the stubs say? | Manual, partial, documented in [live-tenant-testing.md](./live-tenant-testing.md) |
 
 A fifth thing is often smuggled into an E2E suite and must not be: **does the
@@ -96,7 +96,7 @@ bug to fix.**
 | 0 | Unit and contract tests, no infrastructure | 690 | ~5s |
 | 1 | Postgres-backed component tests (RLS, store, relay, projector, resolvers, API routes over real sockets) | 95 | ~5s with `DATABASE_URL` |
 | 2 | **Journey tests — full stack, two processes, real Postgres** | 0 | — |
-| 3 | **Browser journeys against `apps/web`** | 0 | — |
+| 3 | Browser journeys against `apps/web` — `pnpm test:browser` (Playwright, `apps/web/e2e/`) | 6 specs, 8 tests | ~15s including `next build`; needs a migrated Postgres |
 | 4 | **Vendor contract fixtures** | 0 | — |
 | 5 | Evals over the AI primitives | partial (10 golden cases in `session-intel`) | ~5s |
 | — | **CI running any of it** | none — no workflow file exists | — |
@@ -236,8 +236,8 @@ the moment the second journey exists.
 
 ## Tier 3 — browser journeys
 
-`apps/web` has 19 tests, all of them over `lib/`. Every page, every fetch,
-every redirect and the whole auth round trip are untested. But the ceiling
+Before this tier, `apps/web` had 19 tests, all of them over `lib/`. Every page, every fetch,
+every redirect and the whole auth round trip were untested. But the ceiling
 here is low and the temptation is to overbuild, so: **six specs, and a rule
 that the count does not grow without a bug to justify it.**
 
@@ -263,6 +263,33 @@ What this tier must *not* do: assert on styling, snapshot the DOM, or test
 slowest and most brittle place to assert anything, so it should only assert
 the things that are true *only* in a browser — that a route is reachable,
 that a session cookie survives, that a form submits.
+
+**Built.** `apps/web/e2e/`, one file per spec above, run by `pnpm test:browser`
+(root, delegating to `apps/web`). `e2e/global-setup.ts` seeds two fresh
+`randomUUID()` orgs — never a truncate, the database is shared — starts
+`apps/api` on Postgres as `mentorship_app` (so RLS is live, not bypassed by a
+superuser connection), runs `next build && next start` against it on ports
+18787/13000, and deletes exactly its own orgs' rows on teardown. Specs are
+`*.spec.ts`, which the root Vitest `*.test.ts` include never matches, so the
+Tier 0/1 count is unchanged by them.
+
+Two things differ from the plan above, both on purpose:
+
+- **The token is not read from the database, because it cannot be.**
+  `magic_links` stores `sha256(token)` only (`hashToken` in
+  `packages/auth/src/magic-link.ts`) — the property that makes a leaked dump
+  useless. Spec 1 reads the raw token where `main.ts` actually prints it (the
+  global setup captures the api's stdout to a file), then asserts the database
+  holds its hash and not the token. No test-only hook was added to the product.
+- **"Org B's URL" is the proxied api route.** `apps/web` has no org in its own
+  paths — it is configured for one org — so spec 6 sends org A's cookie through
+  the same `/api` rewrite the forms use, at org B's read and write routes (both
+  403, org B's binding untouched), and separately opens the dashboard with an
+  org B session (bounced to `/login`).
+
+Spec 1 and spec 6 are two tests each (known/unknown email plus the round
+trip; read/write refusal plus the reverse direction), which is why the count
+is six specs and eight tests. None found a product bug on first run.
 
 ---
 
@@ -413,7 +440,7 @@ Ordered by bugs-caught per hour, not by tier number:
 6. **P1 · idempotency replay**, then **P2 · crash resume** wired into nightly.
 7. **Tier 4 fixture capture**, during the next live run, starting with the
    three unverified adapters named above.
-8. **Tier 3 Playwright**, six specs.
+8. ~~**Tier 3 Playwright**, six specs.~~ Built — see the Tier 3 section.
 9. **`pnpm eval`**, once there are enough Confirm/Edit verdicts in `ai_runs`
    for the number to mean anything.
 
