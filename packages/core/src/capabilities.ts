@@ -80,6 +80,12 @@ export interface ConversationAdapter extends Adapter {
     options: ProposalOption[];
     body: string;
     idempotencyKey: string;
+    /**
+     * When present, the adapter offers a "session preferences" control for
+     * this pairing. Its answer is a structured choice (invariant 9), so an
+     * adapter without `interactiveApproval` simply omits it.
+     */
+    preferencesPairingId?: string;
   }): Promise<{ messageRef: string }>;
   /**
    * A separate method from `postMessage` for the same reason `postProposal` is

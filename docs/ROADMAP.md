@@ -114,6 +114,16 @@ The load-bearing wall. Everything after this assumes it.
       (`apps/api/src/postgres-ports.ts`). The route did not change — that is
       what the ports were for. **Nothing advances the saga on that path yet**,
       because the relay below is not built.
+- [x] Pairs choose their own session length and rhythm (ADR-0009) — a
+      "Session preferences" button on every proposal opens a Slack modal
+      whose menu is `policy.pairPreferences` (default 15/30/45 minutes, every
+      1–4 weeks, each with a custom value). Written to
+      `pairings.cadence_override` with a `pair.preferences_updated` outbox
+      event in one transaction; a cooling saga re-times its next proposal and
+      tells the thread. Roster import gained a `duration` column. Tested
+      in-memory and on Postgres; **not yet run against a live workspace**.
+- [ ] Surface pair preference changes to admins — nothing reads
+      `pair.preferences_updated` outside the saga yet (ADR-0009 action 7).
 - [ ] Google Calendar adapter against a live tenant
 - [ ] Slack adapter against a live workspace
       Both are blocked only on credentials now: `docs/live-tenant-testing.md`

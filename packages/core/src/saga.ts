@@ -26,6 +26,12 @@ export type Effect =
       agreementId: string;
       options: { optionId: string; startsAt: string; endsAt: string; label: string }[];
       body: string;
+      /**
+       * Set when the program lets pairs choose their own length and rhythm:
+       * the adapter adds a control that opens that choice. Carried on the
+       * proposal because it is the one message every pair reliably sees.
+       */
+      preferencesPairingId?: string;
     }
   | { type: "post_message"; body: string }
   /**

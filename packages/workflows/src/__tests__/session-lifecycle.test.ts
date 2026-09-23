@@ -729,7 +729,9 @@ describe("the org's playbook link", () => {
 
   // The regression guard: an org with no guideline doc must get byte-identical
   // text to what it got before the link existed — no trailing blank line, no
-  // "playbook: null". These literals are the pre-change wording.
+  // "playbook: null". These literals are the pre-change wording — plus the
+  // session-length line, which belongs to pair preferences (on by default),
+  // not to the playbook, and is pinned here so it cannot drift either.
   it("changes nothing at all when no playbook is configured", async () => {
     const plain = await messagesFor();
 
@@ -741,6 +743,8 @@ describe("the org's playbook link", () => {
         "  1. Mon 14 Sept 10:30 (UTC+05:30)",
         "  2. Tue 15 Sept 09:00 (UTC+05:30)",
         "  3. Wed 16 Sept 09:00 (UTC+05:30)",
+        "",
+        "Each slot is 45 minutes. Change length or rhythm with Session preferences.",
       ].join("\n"),
     );
     expect(plain.reminder).toBe(
@@ -896,5 +900,115 @@ describe("confirmation-status feedback", () => {
     expect(
       messagesOf(ctx).filter((b) => b.includes("the write-up")),
     ).toHaveLength(1);
+  });
+});
+
+/**
+ * A pair choosing its own session length and rhythm. The choice lands on the
+ * pair-level cadence override, so the saga follows it simply by reading
+ * `pair.cadence` — the one thing it has to do actively is re-time a cooling
+ * pair, whose wake-up was computed from the old rhythm.
+ */
+describe("pair-chosen length and rhythm", () => {
+  async function toCooling(ctx: Ctx): Promise<void> {
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h); // reminder
+    await advanceToNextTimer(ctx.h); // session ends, transcript found
+    const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+    for (const p of agreement.participantIds) {
+      await ctx.h.world.confirmExtraction(ctx.pairingId, p);
+    }
+    await ctx.h.dispatcher.settle();
+    for (const p of agreement.participantIds) {
+      await ctx.h.world.submitFeedback(ctx.pairingId, p, 5);
+    }
+    await ctx.h.dispatcher.settle();
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "cooling" });
+  }
+
+  const minutesOf = (o: { startsAt: string; endsAt: string }) =>
+    (Date.parse(o.endsAt) - Date.parse(o.startsAt)) / 60_000;
+
+  it("offers the Session preferences control on the proposal", async () => {
+    const ctx = await setup();
+    const [proposal] = ctx.h.recorder.of("thread.proposal");
+    expect(proposal!.detail["preferencesPairingId"]).toBe(ctx.pairingId);
+  });
+
+  it("offers neither the control nor the length line when the program sets them", async () => {
+    const ctx = await setup({ policy: { pairPreferences: { enabled: false } } });
+    const [proposal] = ctx.h.recorder.of("thread.proposal");
+    expect(proposal!.detail["preferencesPairingId"]).toBeUndefined();
+    expect(String(proposal!.detail["body"])).not.toContain("Session preferences");
+  });
+
+  it("books the next session at the length the pair chose", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1 });
+    expect(minutesOf(ctx.h.world.latestAgreementFor(ctx.pairingId)!.options[0]!)).toBe(45);
+    await toCooling(ctx);
+
+    const [mentor] = ctx.h.world.latestAgreementFor(ctx.pairingId)!.participantIds;
+    await ctx.h.world.updatePairPreferences({
+      pairingId: ctx.pairingId,
+      participantId: mentor!,
+      preferences: { sessionMinutes: 30 },
+    });
+    await ctx.h.dispatcher.settle();
+    await advanceToNextTimer(ctx.h);
+
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "proposing" });
+    const next = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+    for (const option of next.options) expect(minutesOf(option)).toBe(30);
+    const proposals = ctx.h.recorder.of("thread.proposal");
+    expect(String(proposals.at(-1)!.detail["body"])).toContain(
+      "Each slot is 30 minutes.",
+    );
+  });
+
+  it("re-times a cooling pair to its new rhythm and tells the thread who changed it", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1 });
+    await toCooling(ctx);
+    const fortnightlyWake = await ctx.h.engine.nextTimeout();
+
+    const [mentor] = ctx.h.world.latestAgreementFor(ctx.pairingId)!.participantIds;
+    await ctx.h.world.updatePairPreferences({
+      pairingId: ctx.pairingId,
+      participantId: mentor!,
+      preferences: { everyDays: 7 },
+    });
+    await ctx.h.dispatcher.settle();
+
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "cooling" });
+    const weeklyWake = await ctx.h.engine.nextTimeout();
+    // Same last session, seven fewer days to wait.
+    expect(Date.parse(fortnightlyWake!) - Date.parse(weeklyWake!)).toBe(
+      7 * 24 * 60 * 60_000,
+    );
+    const messages = ctx.h.recorder
+      .of("thread.message")
+      .map((c) => String(c.detail["body"]));
+    expect(messages.at(-1)).toMatch(
+      /^Arjun updated your sessions: 45-minute sessions, every week\. Next proposal around /,
+    );
+
+    await advanceToNextTimer(ctx.h);
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "proposing" });
+    expect(String(ctx.h.recorder.of("thread.proposal").at(-1)!.detail["body"])).toContain(
+      "Time for your weekly session",
+    );
+  });
+
+  it("refuses a change from someone who is not in the pair", async () => {
+    const ctx = await setup();
+    expect(
+      await ctx.h.world.updatePairPreferences({
+        pairingId: ctx.pairingId,
+        participantId: "prt_stranger",
+        preferences: { everyDays: 7 },
+      }),
+    ).toBeNull();
+    expect(
+      ctx.h.log.all().filter((e) => e.name === "pair.preferences_updated"),
+    ).toHaveLength(0);
   });
 });

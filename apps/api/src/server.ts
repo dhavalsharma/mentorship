@@ -16,7 +16,9 @@ import {
   type ExtractionResponder,
   type NotesSink,
   type PairingLocator,
+  type PairPreferencesStore,
   type SlackModalOpener,
+  type SlackPreferencesModalOpener,
 } from "@mentorship/integrations";
 import {
   asOrgId,
@@ -171,6 +173,16 @@ export interface ApiServerDeps {
    */
   counterModal?: { modals: SlackModalOpener; counters: CounterContextResolver };
   /**
+   * "Session preferences": a pair choosing its own length and rhythm. Same
+   * shape and same reason as `counterModal` — the opener runs inside the
+   * click's request — plus the store its submission writes through. Absent,
+   * the click acks and is recorded as unhandled.
+   */
+  preferences?: {
+    modals: SlackPreferencesModalOpener;
+    store: PairPreferencesStore;
+  };
+  /**
    * The Events API side — free-text notes arriving from a pair's own channel.
    * Absent 404s `/slack/events` rather than accepting messages it has nowhere
    * to put; a caller that only exercises interactions need not supply it.
@@ -270,6 +282,7 @@ async function route(
               counters: deps.counterModal.counters,
             }
           : {}),
+        ...(deps.preferences ? { preferences: deps.preferences } : {}),
         onUnhandled: deps.onUnhandled,
         now: deps.now,
       },

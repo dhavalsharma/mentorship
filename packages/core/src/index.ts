@@ -3,6 +3,7 @@ export * from "./authorization.js";
 export * from "./capabilities.js";
 export * from "./document-projection.js";
 export * from "./policy.js";
+export * from "./pair-preferences.js";
 export * from "./presets.js";
 export * from "./events.js";
 export * from "./pairing.js";

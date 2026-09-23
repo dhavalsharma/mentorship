@@ -148,6 +148,34 @@ export const GoalPolicySchema = z.object({
 });
 export type GoalPolicy = z.infer<typeof GoalPolicySchema>;
 
+/**
+ * What a pair may choose for itself. The choices are data, not a hardcoded
+ * menu, for the same reason cadence is: one program offers 15/30/45 minutes
+ * and weekly-to-monthly rhythms, another runs fixed hour-long monthly
+ * sessions and turns this off. Whatever a pair picks lands on
+ * `pairings.cadence_override`, the pair level `resolveCadence` already merges
+ * last — so every reader (the saga, the nudge sweep, cadence adherence)
+ * honours it without knowing it came from the pair.
+ *
+ * `custom` bounds deliberately mirror `CadenceSchema`'s own, so a value this
+ * accepts can never fail the cadence parse downstream.
+ */
+export const PairPreferencesPolicySchema = z.object({
+  enabled: z.boolean().default(true),
+  sessionMinuteChoices: z
+    .array(z.number().int().min(15).max(240))
+    .min(1)
+    .default([15, 30, 45]),
+  /** In days. 7/14/21/28 = every one to four weeks. */
+  cadenceDayChoices: z
+    .array(z.number().int().min(1).max(365))
+    .min(1)
+    .default([7, 14, 21, 28]),
+  allowCustomSessionMinutes: z.boolean().default(true),
+  allowCustomCadenceDays: z.boolean().default(true),
+});
+export type PairPreferencesPolicy = z.infer<typeof PairPreferencesPolicySchema>;
+
 export const ProgramPolicySchema = z.object({
   version: z.literal(1).default(1),
   roles: z.array(z.string()).default(["mentor", "mentee"]),
@@ -161,6 +189,7 @@ export const ProgramPolicySchema = z.object({
     })
     .default({}),
   cadence: CadenceSchema.default({ everyDays: 14 }),
+  pairPreferences: PairPreferencesPolicySchema.default({}),
   goals: GoalPolicySchema.default({}),
   agreement: AgreementPolicySchema.default({}),
   artifact: ArtifactPolicySchema.default({}),

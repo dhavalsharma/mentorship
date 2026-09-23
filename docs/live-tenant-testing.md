@@ -278,6 +278,15 @@ sends), so the manifest is unchanged. Without the token the button acks and
 logs `counter_modal_not_configured`, exactly as it did before the modal
 existed.
 
+The same token opens the **Session preferences** modal (ADR-0009), for the
+same three-second reason; without it that button acks and logs
+`preferences_modal_not_configured`. To check it live: press it on a proposal,
+pick 30 minutes and "Every week", Save — the modal should replace itself with
+"Saved: 30-minute sessions, every week", `pairings.cadence_override` should
+show `{"sessionMinutes":30,"everyDays":7,"label":"weekly"}`, and the next
+proposal should offer 30-minute slots. Try a custom length of `5` to see the
+inline field error. No new scope or manifest change is needed.
+
 The worker's next pass posts a proposal to a group DM with both Slack ids.
 Click a time as one plus-addressed account, then the other — same as any
 Slack user would, no curling required — and the saga should move to `armed`

@@ -6,6 +6,7 @@ import {
   pairKey,
   parseCadence,
   parseDelimited,
+  parseSessionMinutes,
   parseTzOffset,
   planIsCommittable,
   planRosterImport,
@@ -95,10 +96,62 @@ describe("row validation", () => {
 
   it("rejects a cadence it cannot interpret, naming the options", () => {
     const result = plan(
-      `${HEADER}\n${row("a@x.com", "b@x.com", "every 3 weeks")}`,
+      `${HEADER}\n${row("a@x.com", "b@x.com", "when the moon is full")}`,
     );
     expect(result.errors[0]!.message).toMatch(/unrecognised cadence/);
     expect(result.errors[0]!.message).toMatch(/fortnightly/);
+  });
+
+  it("reads a rhythm in weeks, labelled the way pair preferences label it", () => {
+    expect(parseCadence("every 3 weeks")).toEqual({
+      cadence: { everyDays: 21, label: "three-weekly" },
+      ok: true,
+    });
+    expect(parseCadence("4 weeks").cadence).toEqual({
+      everyDays: 28,
+      label: "four-weekly",
+    });
+  });
+
+  it("reads a session-length column into the pair's cadence override", () => {
+    const result = planRosterImport(
+      "mentor_email,mentee_email,cadence,duration\na@x.com,b@x.com,weekly,30 min",
+      { policy: POLICY, existing: emptyExistingState(), defaultTzOffsetMinutes: 330 },
+    );
+    expect(result.errors).toEqual([]);
+    expect(result.creates[0]!.cadenceOverride).toEqual({
+      everyDays: 7,
+      label: "weekly",
+      sessionMinutes: 30,
+    });
+  });
+
+  it("keeps the program's rhythm when only a length is given", () => {
+    const result = planRosterImport(
+      "mentor_email,mentee_email,session_length\na@x.com,b@x.com,1h",
+      { policy: POLICY, existing: emptyExistingState(), defaultTzOffsetMinutes: 330 },
+    );
+    expect(result.creates[0]!.cadenceOverride).toEqual({ sessionMinutes: 60 });
+  });
+
+  it("rejects a session length outside 15–240 minutes, naming the field", () => {
+    const result = planRosterImport(
+      "mentor_email,mentee_email,duration\na@x.com,b@x.com,5",
+      { policy: POLICY, existing: emptyExistingState(), defaultTzOffsetMinutes: 330 },
+    );
+    expect(result.errors[0]!.field).toBe("sessionMinutes");
+    expect(result.creates).toHaveLength(0);
+  });
+
+  it("parses the common ways a spreadsheet writes a length", () => {
+    expect(parseSessionMinutes("45")).toEqual({ sessionMinutes: 45, ok: true });
+    expect(parseSessionMinutes("45m").sessionMinutes).toBe(45);
+    expect(parseSessionMinutes("30 mins").sessionMinutes).toBe(30);
+    expect(parseSessionMinutes("15 minutes").sessionMinutes).toBe(15);
+    expect(parseSessionMinutes("2 hours").sessionMinutes).toBe(120);
+    expect(parseSessionMinutes(undefined)).toEqual({ sessionMinutes: null, ok: true });
+    expect(parseSessionMinutes("half an hour").ok).toBe(false);
+    expect(parseSessionMinutes("300").ok).toBe(false);
   });
 
   it("rejects an unreadable start date", () => {
