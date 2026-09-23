@@ -35,7 +35,6 @@ import {
 import { JourneyClock } from "./clock.js";
 import { seededUuids } from "./ids.js";
 import {
-  bindProbedCapabilities,
   PostgresRosterSink,
   seedOrg,
   type ConsentSeed,
@@ -229,7 +228,6 @@ export async function stage(options: StageOptions = {}): Promise<Stage> {
   // --- seed: the only direct writes a journey gets
   const observer = await connectTestDb();
   const org = await seedOrg(observer.db, { orgId, policy, at: clock.peek() });
-  await bindProbedCapabilities(observer.db, orgId, registry, clock.peek());
 
   const sink = new PostgresRosterSink(observer.db, org, {
     now,
@@ -324,14 +322,23 @@ export async function stage(options: StageOptions = {}): Promise<Stage> {
       onWarn: (message, detail) =>
         logs.push(`worker: ${message}${detail ? ` ${JSON.stringify(detail)}` : ""}`),
     });
-  let worker = buildWorker(workerClient.db);
+  // Boot the way `main.ts` does: probe the bound adapters and cache what they
+  // report on the binding rows, before the first pass reads them. This is the
+  // only thing that writes `integration_bindings.capabilities` in a journey.
+  const boot = async (db: Db): Promise<Worker> => {
+    const booted = buildWorker(db);
+    await booted.probeCapabilities();
+    return booted;
+  };
+  let worker = await boot(workerClient.db);
 
   const restartWorker = async (): Promise<void> => {
     // `timeout: 0` drops the sockets: whatever transaction the dead process
     // held is rolled back by Postgres, and its row locks go with it.
     await workerClient.sqlClient.end({ timeout: 0 });
     workerClient = createClient(DATABASE_URL!);
-    worker = buildWorker(workerClient.db);
+    // A restarted process boots, and booting re-probes.
+    worker = await boot(workerClient.db);
   };
 
   const onePass = async (): Promise<Awaited<ReturnType<Worker["pass"]>> | "crashed"> => {

@@ -17,7 +17,9 @@ import {
   PostgresProjector,
   PostgresSagaResolvers,
   PostgresSagaStore,
+  probeAndCacheCapabilities,
   relayOnce,
+  type ProbeCapabilitiesResult,
   type DocumentConfigFallback,
   type RelayResult,
 } from "@mentorship/workflows/postgres";
@@ -90,6 +92,14 @@ export interface WorkerOptions {
      * configured" shape every other sweep here has.
      */
     reportSync?: { intervalMs: number; spreadsheetTitle?: string };
+    /**
+     * Re-probe every bound adapter and refresh `integration_bindings
+     * .capabilities` (ADR-0006: "cached capabilities go stale silently").
+     * Complements the boot probe — `probeCapabilities()` — rather than
+     * replacing it: the first scheduler tick comes after the first pass, and
+     * a pass run on an empty cache degrades every proposal it makes.
+     */
+    capabilityProbe?: { intervalMs: number };
   };
   /**
    * Env-only fallback for the `sheet` destination, read only when no
@@ -102,6 +112,15 @@ export interface WorkerOptions {
 
 export interface Worker {
   engine: SagaEngine;
+  /**
+   * Probe every adapter bound in `registry` and cache the result on this
+   * org's `integration_bindings` rows — the only place the Postgres resolvers
+   * read capabilities from. Call once at boot, before the first `pass()`:
+   * this process's adapters are fixed at construction, so boot is ADR-0006's
+   * "connect time". Never throws for a failing probe (it is recorded and
+   * warned); a database error does throw, as any other boot failure would.
+   */
+  probeCapabilities(): Promise<ProbeCapabilitiesResult>;
   /** One pass: drain the outbox, then fire due timers. */
   pass(): Promise<{ relay: RelayResult; timers: number }>;
   /**
@@ -137,7 +156,17 @@ export function createWorker(options: WorkerOptions): Worker {
     ...(options.documentConfigFallback
       ? { documentConfigFallback: options.documentConfigFallback }
       : {}),
+    ...(options.onWarn ? { onWarn: options.onWarn } : {}),
   });
+  const probeCapabilities = (): Promise<ProbeCapabilitiesResult> =>
+    probeAndCacheCapabilities({
+      db: options.db,
+      orgId: options.orgId,
+      registry: options.registry,
+      ...scoped,
+      now,
+      ...(options.onWarn ? { onWarn: options.onWarn } : {}),
+    });
   const sink = new PostgresEventSink(options.db, { ...scoped, now });
   const projector = new PostgresProjector(options.db, scoped);
   const store = new PostgresSagaStore(options.db);
@@ -217,6 +246,13 @@ export function createWorker(options: WorkerOptions): Worker {
       run: (): Promise<SyncReportsResult | null> => run(),
     });
   }
+  if (options.schedules?.capabilityProbe) {
+    jobs.push({
+      name: "capability-probe",
+      intervalMs: options.schedules.capabilityProbe.intervalMs,
+      run: probeCapabilities,
+    });
+  }
   const scheduler = new Scheduler({
     jobs,
     now,
@@ -225,6 +261,7 @@ export function createWorker(options: WorkerOptions): Worker {
 
   return {
     engine,
+    probeCapabilities,
     async pass() {
       const relay = await relayOnce(options.db, engine, {
         // Scoped: this worker's resolvers belong to one tenant.

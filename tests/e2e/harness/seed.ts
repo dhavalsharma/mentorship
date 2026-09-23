@@ -10,7 +10,6 @@ import {
   cohorts,
   consents,
   identityLinks,
-  integrationBindings,
   organizations,
   pairings,
   participants,
@@ -18,7 +17,6 @@ import {
   users,
   type Db,
 } from "@mentorship/db";
-import type { IntegrationRegistry } from "@mentorship/integrations";
 import type { PlannedPerson, RosterSink } from "@mentorship/roster";
 import { PostgresEventSink } from "@mentorship/workflows/postgres";
 
@@ -26,7 +24,7 @@ import { PostgresEventSink } from "@mentorship/workflows/postgres";
  * Everything a journey is allowed to write directly — and only before the
  * journey starts. After seeding, the only doors are HTTP and the clock.
  *
- * Three things here stand in for doors that do not exist yet, and each is a
+ * Two things here stand in for doors that do not exist yet, and each is a
  * real gap rather than a test convenience:
  *
  *   - **No shipped Postgres `RosterSink`.** `commitRosterImport` is real and
@@ -34,17 +32,16 @@ import { PostgresEventSink } from "@mentorship/workflows/postgres";
  *     in-memory `World`; importing a roster on Postgres has no product path.
  *     `PostgresRosterSink` below is the one hand-written part of the seed, and
  *     it writes exactly the rows `PostgresSagaResolvers` reads back.
- *   - **No connect flow persists probed capabilities.** ADR-0006 says
- *     capabilities are probed once at connect time and cached on the binding
- *     — and `PostgresSagaResolvers.capabilities()` reads *only* that cache —
- *     but nothing in the repo writes `integration_bindings.capabilities`.
- *     Without `bindProbedCapabilities` a Postgres tenant reads every slot as
- *     `null`: proposals always degrade, no buttons are ever assumed, and a
- *     transcript is never polled for. See the report in
- *     `docs/e2e-testing-strategy.md`.
  *   - **Identity verification.** Roster chat refs are recorded as verified
  *     links, standing in for `acceptInvite` (`packages/enrollment`), which has
  *     no HTTP route to drive.
+ *
+ * Capabilities are *not* seeded. They used to be — nothing in the product
+ * wrote `integration_bindings.capabilities` (bug #10 in
+ * `docs/e2e-testing-strategy.md`) — and now the worker's own boot probe
+ * (`Worker.probeCapabilities`, run by `stage()` exactly as `main.ts` runs
+ * it) is the only writer. A journey that needs a capability profile gets it
+ * by binding adapters whose `probe()` reports it.
  */
 
 export interface SeedOrgInput {
@@ -80,29 +77,6 @@ export async function seedOrg(db: Db, input: SeedOrgInput): Promise<SeededOrg> {
     })
     .returning({ id: cohorts.id });
   return { orgId, programId: program!.id, cohortId: cohort!.id };
-}
-
-/**
- * What a connect flow would do: probe each bound adapter and cache the answer
- * on its binding row — the only place the Postgres resolvers look.
- */
-export async function bindProbedCapabilities(
-  db: Db,
-  orgId: string,
-  registry: IntegrationRegistry,
-  at: Date,
-): Promise<void> {
-  for (const slot of registry.boundSlots()) {
-    const adapter = registry.require(slot);
-    const capabilities = await adapter.probe();
-    await db.insert(integrationBindings).values({
-      orgId,
-      slot,
-      adapterId: adapter.id,
-      capabilities,
-      probedAt: at,
-    });
-  }
 }
 
 export interface ConsentSeed {

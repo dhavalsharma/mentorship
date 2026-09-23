@@ -25,6 +25,13 @@ describe("journey: happy-path", () => {
     await s?.close();
   });
 
+  // Bug #10: capabilities reach the resolver only through the worker's boot
+  // probe now — the seed no longer writes them. A miss on a bound slot is
+  // logged, so a clean log is the proof the probe path wrote every slot.
+  it("reads every bound slot's capabilities from the boot probe, with no cache miss", () => {
+    expect(s.logs().filter((l) => l.includes("capabilit"))).toEqual([]);
+  });
+
   it("walks the whole loop, in order, and ends proposing the next session", () => {
     const milestones = names(log).filter((n) =>
       [
