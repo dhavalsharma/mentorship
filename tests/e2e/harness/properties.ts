@@ -138,6 +138,23 @@ export async function redeliverEverything(s: Stage): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
+ * Product bugs the properties have found, named once so every journey that
+ * trips one points at the same explanation.
+ */
+export const KNOWN_BUGS = {
+  /**
+   * `SagaEngine.start()` dedupes only against a *running* instance
+   * (`existing.status === "running"`). A saga that has paused is `done`, so a
+   * redelivered `pair.activated` — the same event, same id, which
+   * at-least-once delivery is allowed to hand over again — starts a second
+   * SessionLifecycle for a pair a human was asked to look at, and it proposes
+   * times into their thread. Any journey that ends paused shows it.
+   */
+  redeliveredActivationRestartsPausedSaga:
+    "SagaEngine.start() restarts a paused (done) saga when pair.activated is redelivered",
+} as const;
+
+/**
  * Registers the gate properties for a journey. `known` marks a property that
  * currently fails because of a named product bug — asserted as `it.fails` so
  * the suite goes red the day the bug is fixed and the marker is stale.
