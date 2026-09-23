@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runJourney } from "./harness/journey.js";
+import { describeProperties } from "./harness/properties.js";
 import {
   agreementsOpened,
   escalations,
@@ -117,3 +118,5 @@ describe("journey: happy-path", () => {
     expect(k.indexOf("document.rendered")).toBeLessThan(k.indexOf("thread.confirmation"));
   });
 });
+
+describeProperties(happyPath);

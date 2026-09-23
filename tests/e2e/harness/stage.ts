@@ -400,7 +400,7 @@ export async function stage(options: StageOptions = {}): Promise<Stage> {
       form({
         type: "block_actions",
         user: { id: who.slackUserId },
-        trigger_id: extra.trigger_id ?? `trg-${orgId.slice(0, 8)}-${++triggerSeq}`,
+        trigger_id: extra.trigger_id ?? `trg-${++triggerSeq}`,
         actions: [{ action_id: action.action_id, value: JSON.stringify(action.value) }],
       }),
       "application/x-www-form-urlencoded",
