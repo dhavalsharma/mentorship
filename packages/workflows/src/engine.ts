@@ -17,6 +17,13 @@ export interface EffectContext {
   /** Stable per (instance, step, index) — this is what makes a retry a no-op. */
   key: string;
   now: Date;
+  /**
+   * How many times this step has already failed and been retried by the
+   * timer tick (0 on the first try). Lets the runner decide that an effect
+   * which keeps failing should degrade rather than wedge the whole step —
+   * see the `dm` case in `createEffectRunner`.
+   */
+  attempt: number;
 }
 
 export type EffectRunner = (
@@ -42,6 +49,39 @@ export interface EngineOptions {
    */
   starters?: { on: EventName[]; sagaName: string }[];
   onTrace?: (line: TraceLine) => void;
+  /**
+   * A timer-driven step that throws is retried with backoff, then parked
+   * (`status: "failed"`) after this many consecutive failures. Mirrors the
+   * relay's `maxAttempts`/dead-letter for the same reason: one poisonous
+   * instance must never stop the ones behind it, and must never hot-loop.
+   */
+  maxStepAttempts?: number;
+  /** Backoff before retry n (1-based), in milliseconds. */
+  stepBackoffMs?: (attempt: number) => number;
+  /** Fired for every failed timer step, parked or not. */
+  onStepFailed?: (failure: StepFailure) => void;
+}
+
+export interface StepFailure {
+  instanceId: string;
+  orgId: string;
+  subjectRef: string;
+  state: string;
+  error: Error;
+  /** Consecutive failures at this step, including this one. */
+  attempts: number;
+  parked: boolean;
+  retryAt: string | null;
+}
+
+export interface TickResult {
+  /** Due instances found — advanced, failed or parked. */
+  fired: number;
+  advanced: number;
+  /** Threw, recorded, and will be retried after backoff. */
+  failed: number;
+  /** Threw for the `maxStepAttempts`-th time and stopped being scheduled. */
+  parked: number;
 }
 
 export interface TraceLine {
@@ -56,6 +96,32 @@ export interface TraceLine {
 
 const DEFAULT_TERMINAL: EventName[] = ["pair.ended"];
 
+const DEFAULT_MAX_STEP_ATTEMPTS = 5;
+
+/** Same curve as the relay's: 4s, 16s, 64s, 256s… capped at 15 minutes. */
+const defaultStepBackoff = (attempt: number): number =>
+  Math.min(4 ** attempt * 1000, 15 * 60 * 1000);
+
+/**
+ * A step threw partway through its effects. Carries the ledger as it stood,
+ * so the recorded failure keeps the effects that *did* complete and the retry
+ * skips them (invariant 6) — without this, retrying a reminder step whose DM
+ * failed would re-post the shared reminder into the thread on every attempt.
+ * The message is the cause's, so the relay's `lastError` reads the same.
+ */
+class StepEffectsError extends Error {
+  constructor(
+    readonly original: unknown,
+    readonly completed: Record<string, unknown>,
+    readonly ran: string[],
+  ) {
+    super(original instanceof Error ? original.message : String(original), {
+      cause: original,
+    });
+    this.name = original instanceof Error ? original.name : "Error";
+  }
+}
+
 export class SagaEngine {
   private readonly sagas = new Map<string, Saga<unknown>>();
   private readonly store: SagaStore;
@@ -66,6 +132,9 @@ export class SagaEngine {
   private readonly terminalEvents: EventName[];
   private readonly starters: { on: EventName[]; sagaName: string }[];
   private readonly onTrace?: (line: TraceLine) => void;
+  private readonly maxStepAttempts: number;
+  private readonly stepBackoff: (attempt: number) => number;
+  private readonly onStepFailed?: (failure: StepFailure) => void;
 
   constructor(opts: EngineOptions) {
     this.store = opts.store;
@@ -76,6 +145,9 @@ export class SagaEngine {
     this.terminalEvents = opts.terminalEvents ?? DEFAULT_TERMINAL;
     this.starters = opts.starters ?? [];
     this.onTrace = opts.onTrace;
+    this.maxStepAttempts = opts.maxStepAttempts ?? DEFAULT_MAX_STEP_ATTEMPTS;
+    this.stepBackoff = opts.stepBackoffMs ?? defaultStepBackoff;
+    this.onStepFailed = opts.onStepFailed;
   }
 
   register<S>(saga: Saga<S>): void {
@@ -118,8 +190,19 @@ export class SagaEngine {
     return this.advance(created, { kind: "start", payload: input.payload });
   }
 
-  /** Returns how many instances advanced. */
-  async deliver(event: DomainEvent): Promise<number> {
+  /**
+   * Returns how many instances advanced.
+   *
+   * `attempt` is how many times the relay has already failed to deliver this
+   * event (its `events.attempts`), passed through to the effect runner the
+   * same way a timer retry passes its own count — so an effect that degrades
+   * after a retry (a failing DM) degrades on the event path too, rather than
+   * throwing until the relay dead-letters the event and strands the saga.
+   */
+  async deliver(
+    event: DomainEvent,
+    options: { attempt?: number } = {},
+  ): Promise<number> {
     let advanced = 0;
 
     if (this.terminalEvents.includes(event.name)) {
@@ -147,7 +230,7 @@ export class SagaEngine {
     }
 
     for (const instance of await this.store.findAwaiting(event)) {
-      await this.advance(instance, { kind: "event", event });
+      await this.advance(instance, { kind: "event", event }, options.attempt ?? 0);
       advanced++;
     }
     return advanced;
@@ -170,16 +253,47 @@ export class SagaEngine {
    * ticks every running instance. Without this a worker built for one org can
    * pick up another org's due instance, fail resolving it against its own
    * org-scoped resolvers, and abort the whole pass ahead of its own timers.
+   *
+   * Failures are isolated per instance, for the same reason one level down: a
+   * step that throws (a vendor outage, a resolver that cannot find its row) is
+   * recorded on *that* instance — a history entry carrying the error, its
+   * ledger as far as it got, and a backed-off `timeoutAt` — and the loop moves
+   * on. Before this, one throwing instance rejected the whole tick, so every
+   * other due timer in the org was skipped on every pass for as long as the
+   * cause lasted. After `maxStepAttempts` consecutive failures the instance is
+   * parked (`status: "failed"`), which is what `listStuckSagaInstances`
+   * surfaces, rather than retried forever. Only a failure to *record* the
+   * failure (the store itself is down) still propagates — at that point
+   * nothing else in the pass can succeed either.
+   *
+   * Event-driven steps (`deliver`) are deliberately not wrapped: a throw there
+   * propagates to the relay, which already has its own attempts, backoff and
+   * dead-letter for the event.
    */
-  async tick(orgId?: string): Promise<number> {
+  async tick(orgId?: string): Promise<TickResult> {
     const due = await this.store.findDue(this.now(), orgId);
+    const result: TickResult = {
+      fired: due.length,
+      advanced: 0,
+      failed: 0,
+      parked: 0,
+    };
     for (const instance of due) {
-      await this.advance(instance, {
-        kind: "timeout",
-        at: instance.timeoutAt ?? this.now().toISOString(),
-      });
+      const attempt = consecutiveFailures(instance);
+      try {
+        await this.advance(
+          instance,
+          { kind: "timeout", at: instance.timeoutAt ?? this.now().toISOString() },
+          attempt,
+        );
+        result.advanced++;
+      } catch (caught) {
+        const parked = await this.recordFailure(instance, caught, attempt + 1);
+        if (parked) result.parked++;
+        else result.failed++;
+      }
     }
-    return due.length;
+    return result;
   }
 
   async instances(): Promise<SagaInstance[]> {
@@ -195,6 +309,7 @@ export class SagaEngine {
   private async advance(
     instance: SagaInstance,
     input: SagaInput,
+    attempt = 0,
   ): Promise<SagaInstance> {
     const saga = this.mustGet(instance.sagaName);
     const now = this.now();
@@ -221,7 +336,12 @@ export class SagaEngine {
         // difference between a retry and a second calendar invite.
         continue;
       }
-      const value = await this.runEffect(effect, { instance, key, now });
+      let value: unknown;
+      try {
+        value = await this.runEffect(effect, { instance, key, now, attempt });
+      } catch (error) {
+        throw new StepEffectsError(error, completed, ran);
+      }
       completed[key] = value ?? null;
       ran.push(effect.type);
     }
@@ -274,6 +394,115 @@ export class SagaEngine {
     }
   }
 
+  /**
+   * Records a failed timer step on the instance itself and returns whether it
+   * was parked. The instance keeps its state, its `stepIndex` (so effect keys
+   * stay stable across retries) and its `awaitingEvent` (an event can still
+   * move it on — a cancelled session should not wait out a DM outage).
+   */
+  private async recordFailure(
+    instance: SagaInstance,
+    caught: unknown,
+    attempts: number,
+  ): Promise<boolean> {
+    const partial = caught instanceof StepEffectsError ? caught : null;
+    const original = partial ? partial.original : caught;
+    const error = original instanceof Error ? original : new Error(String(original));
+    const now = this.now();
+    const at = now.toISOString();
+    const parked = attempts >= this.maxStepAttempts;
+    const retryAt = parked
+      ? null
+      : new Date(now.getTime() + this.stepBackoff(attempts)).toISOString();
+    const state = stateName(instance.state);
+    const ran = partial ? partial.ran : [];
+    const note = parked
+      ? `parked after ${attempts} failed attempts`
+      : `step failed (attempt ${attempts}); retrying at ${retryAt}`;
+
+    const updated: SagaInstance = {
+      ...instance,
+      awaitingEvent: parked ? null : instance.awaitingEvent,
+      timeoutAt: retryAt,
+      version: instance.version + 1,
+      completedEffects: partial ? partial.completed : instance.completedEffects,
+      history: [
+        ...instance.history,
+        {
+          at,
+          stepIndex: instance.stepIndex,
+          input: "timeout",
+          from: state,
+          to: state,
+          effects: ran,
+          waitFor: parked ? null : (instance.awaitingEvent?.names ?? null),
+          timeoutAt: retryAt,
+          // Parked means "no longer scheduled": `done` in the bookkeeping
+          // sense invariant 7 checks, while `status: "failed"` says why.
+          done: parked,
+          note,
+          error: error.message.slice(0, 2000),
+          attempt: attempts,
+        },
+      ],
+      status: parked ? "failed" : "running",
+      updatedAt: at,
+    };
+
+    try {
+      await this.store.save(updated, instance.version);
+    } catch (saveError) {
+      // Another writer advanced the instance while this step was failing —
+      // theirs is the live row now, and there is nothing of ours to record.
+      if (!(saveError instanceof SagaConflictError)) throw saveError;
+    }
+
+    this.onTrace?.({
+      at,
+      instanceId: instance.id,
+      input: "timeout",
+      from: state,
+      to: parked ? "failed" : state,
+      effects: ran,
+      note: `${note}: ${error.message}`,
+    });
+    this.onStepFailed?.({
+      instanceId: instance.id,
+      orgId: instance.orgId,
+      subjectRef: instance.subjectRef,
+      state,
+      error,
+      attempts,
+      parked,
+      retryAt,
+    });
+
+    if (parked) {
+      // Best effort: tell a human, through the same `escalate` effect a saga
+      // would use. The cause may well make this fail too (a resolver that
+      // cannot find the pairing), and the parked row is the durable record
+      // either way — it is what `stuck-sagas` lists.
+      try {
+        await this.runEffect(
+          {
+            type: "escalate",
+            reason: "saga_step_failed",
+            detail: `${state}: ${error.message}`.slice(0, 500),
+          },
+          {
+            instance: updated,
+            key: `${instance.id}:${instance.stepIndex}:parked`,
+            now,
+            attempt: attempts,
+          },
+        );
+      } catch {
+        // Already recorded; see above.
+      }
+    }
+    return parked;
+  }
+
   private async terminate(
     instance: SagaInstance,
     note: string,
@@ -312,6 +541,21 @@ export class SagaEngine {
       note,
     });
   }
+}
+
+/**
+ * Consecutive failed attempts at the instance's current step, read back from
+ * history — failures are recorded without advancing `stepIndex`, so they are
+ * exactly the trailing entries at that index that carry an `error`.
+ */
+function consecutiveFailures(instance: SagaInstance): number {
+  let count = 0;
+  for (let i = instance.history.length - 1; i >= 0; i--) {
+    const entry = instance.history[i]!;
+    if (entry.stepIndex !== instance.stepIndex || entry.error === undefined) break;
+    count++;
+  }
+  return count;
 }
 
 function describeInput(input: SagaInput): string {

@@ -3,10 +3,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { DomainEvent, SagaInstance } from "@mentorship/core";
+import { bareUuidIds, type DomainEvent, type SagaInstance } from "@mentorship/core";
 import { MIGRATIONS_DIR, organizations, sagaInstances } from "@mentorship/db";
 import { connectTestDb, DATABASE_URL, type TestDb } from "@mentorship/db/testing";
-import { MemorySagaStore, SagaConflictError, type SagaStore } from "@mentorship/workflows";
+import { MemorySagaStore, SagaConflictError, SagaEngine, type SagaStore } from "@mentorship/workflows";
 import { PostgresSagaStore } from "@mentorship/workflows/postgres";
 
 /**
@@ -290,6 +290,76 @@ describe.skipIf(!DATABASE_URL)("memory and Postgres stores agree", () => {
       );
       expect(missed.map((i) => i.id).includes(id), name).toBe(false);
     }
+  });
+
+  // e2e bug #4: the engine records a failed timer step, and later parks it,
+  // entirely through `save`/`findDue` — no new column. Both stores must
+  // round-trip that bookkeeping identically, or the attempt count read back
+  // from history (and so the park decision) would differ between them.
+  it("agree on an isolated, backed-off and finally parked timer step", async () => {
+    const outcomes: Record<string, unknown> = {};
+    for (const [name, store] of await bothStores()) {
+      let now = new Date("2026-09-12T06:00:00.000Z");
+      const engine = new SagaEngine({
+        store,
+        resolvers: {} as never,
+        ids: bareUuidIds,
+        now: () => now,
+        maxStepAttempts: 2,
+        runEffect: async (effect, ctx) => {
+          if (effect.type === "dm" && ctx.instance.subjectRef.startsWith("pairing:bad")) {
+            throw new Error("dm outage: 503");
+          }
+          return null;
+        },
+      });
+      engine.register({
+        name: "Parity",
+        initial: () => ({ name: "start" }),
+        step: (state: { name: string }) =>
+          state.name === "start"
+            ? { next: { name: "waiting" }, timeoutAt: "2026-09-12T06:00:00.000Z" }
+            : {
+                next: { name: "finished" },
+                done: true,
+                effects: [
+                  { type: "post_message", body: "shared" },
+                  { type: "dm", participantId: "p", body: "private" },
+                ],
+              },
+      });
+      const bad = await engine.start({ sagaName: "Parity", orgId, subjectRef: `pairing:bad-${randomUUID()}` });
+      const good = await engine.start({ sagaName: "Parity", orgId, subjectRef: `pairing:good-${randomUUID()}` });
+      ids.push(bad.id, good.id);
+
+      const first = await engine.tick(orgId);
+      now = new Date("2026-09-12T07:00:00.000Z");
+      const second = await engine.tick(orgId);
+
+      const parked = (await store.get(bad.id))!;
+      const done = (await store.get(good.id))!;
+      outcomes[name] = {
+        first,
+        second,
+        parked: {
+          status: parked.status,
+          timeoutAt: parked.timeoutAt,
+          stepIndex: parked.stepIndex,
+          ledger: Object.keys(parked.completedEffects).length,
+          failures: parked.history
+            .filter((h) => h.error !== undefined)
+            .map((h) => ({ attempt: h.attempt, error: h.error, done: h.done, timeoutAt: h.timeoutAt })),
+        },
+        good: done.status,
+      };
+    }
+    expect(outcomes["postgres"]).toEqual(outcomes["memory"]);
+    expect(outcomes["memory"]).toMatchObject({
+      first: { fired: 2, advanced: 1, failed: 1, parked: 0 },
+      second: { fired: 1, advanced: 0, failed: 0, parked: 1 },
+      parked: { status: "failed", timeoutAt: null },
+      good: "done",
+    });
   });
 });
 

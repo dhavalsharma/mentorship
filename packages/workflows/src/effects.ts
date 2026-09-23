@@ -36,6 +36,13 @@ export interface SessionIntel {
   }>;
 }
 
+/**
+ * Step retries a failing DM gets before it degrades to "not sent, escalated".
+ * One, in the spirit of invariant 11 — see `sendPrivate` below. Must stay
+ * below the engine's `maxStepAttempts`, or the saga parks before it degrades.
+ */
+export const DM_RETRIES = 1;
+
 export interface EffectRunnerOptions {
   registry: IntegrationRegistry;
   log: EventSink;
@@ -114,6 +121,69 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
         body,
         idempotencyKey: `${key}:${i}`,
       });
+    }
+  }
+
+  /**
+   * A private message to one participant, through a bound `dm` slot that may
+   * be *failing* rather than absent.
+   *
+   * What a persistently failing DM does to the flow, deliberately:
+   *
+   *   1. The first failure propagates. The engine records it on the instance
+   *      (keeping the ledger, so the step's shared post is not repeated),
+   *      backs the timer off and retries the step — a blip is a blip.
+   *   2. From the retry on (`ctx.attempt >= DM_RETRIES`), a failure degrades:
+   *      the message is not sent, an operator is warned, and a human is told
+   *      via `saga.escalated` that a private message could not be delivered.
+   *      The step then completes and the session carries on.
+   *
+   * Why degrade rather than keep retrying until the engine parks the saga:
+   * every private message in the lifecycle rides a step that also moves the
+   * pair on (the reminder step is also what arms `held`; the feedback request
+   * rides the confirming step). Parking the whole pairing because a courtesy
+   * DM cannot be delivered starves the session of everything that *can* still
+   * happen — the thread, the notes, the extraction — and a "heads up, your
+   * session is soon" delivered after the session is worse than none. It is
+   * "renudge once, then escalate" (invariant 11) applied to a vendor.
+   *
+   * What it never does, at any attempt: fall back to the joint thread
+   * (invariant 13). A private message that lands in front of the other
+   * participant is worse than one that is not sent.
+   */
+  async function sendPrivate(
+    dm: DmAdapter,
+    participant: PairContext["participants"][number],
+    body: string,
+    ctx: EffectContext,
+    emit: (
+      name: EmitInput["name"],
+      payload?: Record<string, unknown>,
+    ) => Promise<unknown>,
+    purpose: "dm" | "request_feedback",
+  ): Promise<unknown> {
+    try {
+      return await dm.send({
+        memberRef: participant.memberRef,
+        body,
+        idempotencyKey: ctx.key,
+      });
+    } catch (error) {
+      if (ctx.attempt < DM_RETRIES) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      warn("dm failed after retry; private message not sent", {
+        purpose,
+        participantId: participant.participantId,
+        attempt: ctx.attempt,
+        error: message,
+      });
+      await emit("saga.escalated", {
+        reason: "dm_undeliverable",
+        detail: `${purpose} to participant ${participant.participantId}: ${message}`.slice(0, 500),
+        pairingId: pairingIdOf(ctx),
+        participantId: participant.participantId,
+      });
+      return { delivered: false, error: message };
     }
   }
 
@@ -228,11 +298,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           });
           return null;
         }
-        return dm.send({
-          memberRef: participant.memberRef,
-          body: effect.body,
-          idempotencyKey: ctx.key,
-        });
+        return sendPrivate(dm, participant, effect.body, ctx, emit, "dm");
       }
 
       case "create_calendar_event": {
@@ -378,11 +444,14 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           });
           return null;
         }
-        return dm.send({
-          memberRef: participant.memberRef,
-          body: effect.question,
-          idempotencyKey: ctx.key,
-        });
+        return sendPrivate(
+          dm,
+          participant,
+          effect.question,
+          ctx,
+          emit,
+          "request_feedback",
+        );
       }
 
       case "emit": {

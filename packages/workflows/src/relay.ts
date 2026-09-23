@@ -57,7 +57,7 @@ export interface RelayResult {
 
 /** What the relay needs from the engine — `SagaEngine.deliver` satisfies it. */
 export interface EventDeliverer {
-  deliver(event: DomainEvent): Promise<number>;
+  deliver(event: DomainEvent, options?: { attempt?: number }): Promise<number>;
 }
 
 const DEFAULT_MAX_ATTEMPTS = 5;
@@ -113,7 +113,7 @@ export async function relayOnce(
 
       try {
         await options.project?.(event);
-        const advanced = await engine.deliver(event);
+        const advanced = await engine.deliver(event, { attempt: row.attempts });
         await tx
           .update(events)
           .set({ relayedAt: at, lastError: null })
