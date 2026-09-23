@@ -1,15 +1,18 @@
 import {
+  applyPairPreferences,
   recordResponse,
   resolveCadence,
   sequentialIds,
   subjectRef,
   type Agreement,
   type AgreementResponse,
+  type Cadence,
   type CalendarAdapter,
   type IdFactory,
   type Interval,
   type PairContext,
   type PairParticipant,
+  type PairPreferences,
   type PairingOrigin,
   type PairingState,
   type ProposalOption,
@@ -383,6 +386,81 @@ export class World implements SagaResolvers, RosterSink {
   // -------------------------------------------------------------------------
   // Simulated humans — what the API layer does when a real person clicks
   // -------------------------------------------------------------------------
+
+  /**
+   * The in-memory `PairPreferencesStore`: what `PostgresPairPreferencesStore`
+   * does, against the maps. Null for a stranger or a finished pairing, so the
+   * same membership rule is exercised without a database.
+   */
+  async pairPreferencesContext(input: {
+    pairingId: string;
+    participantId: string;
+  }): Promise<{
+    sessionMinutes: number;
+    everyDays: number;
+    policy: ProgramPolicy["pairPreferences"];
+  } | null> {
+    const pairing = this.preferencePairing(input);
+    if (!pairing) return null;
+    const cadence = resolveCadence(this.policy.cadence, null, pairing.cadenceOverride);
+    return {
+      sessionMinutes: cadence.sessionMinutes,
+      everyDays: cadence.everyDays,
+      policy: this.policy.pairPreferences,
+    };
+  }
+
+  async updatePairPreferences(input: {
+    pairingId: string;
+    participantId: string;
+    preferences: PairPreferences;
+  }): Promise<
+    | { ok: true; sessionMinutes: number; everyDays: number }
+    | { ok: false; reason: "not_member" | "disabled" }
+  > {
+    const pairing = this.preferencePairing(input);
+    if (!pairing) return { ok: false, reason: "not_member" };
+    if (!this.policy.pairPreferences.enabled) return { ok: false, reason: "disabled" };
+    pairing.cadenceOverride = applyPairPreferences(
+      pairing.cadenceOverride as Partial<Cadence> | null,
+      input.preferences,
+    );
+    const cadence = resolveCadence(this.policy.cadence, null, pairing.cadenceOverride);
+    await this.log.emit({
+      orgId: this.orgId,
+      name: "pair.preferences_updated",
+      subjectRef: subjectRef("pairing", input.pairingId),
+      payload: {
+        pairingId: input.pairingId,
+        participantId: input.participantId,
+        sessionMinutes: cadence.sessionMinutes,
+        everyDays: cadence.everyDays,
+        changed: input.preferences,
+      },
+    });
+    return {
+      ok: true,
+      sessionMinutes: cadence.sessionMinutes,
+      everyDays: cadence.everyDays,
+    };
+  }
+
+  private preferencePairing(input: {
+    pairingId: string;
+    participantId: string;
+  }): StoredPairing | null {
+    const pairing = this.pairings.get(input.pairingId);
+    if (!pairing) return null;
+    if (
+      pairing.mentorParticipantId !== input.participantId &&
+      pairing.menteeParticipantId !== input.participantId
+    ) {
+      return null;
+    }
+    return ["offered", "accepted", "active", "paused"].includes(pairing.state)
+      ? pairing
+      : null;
+  }
 
   async respond(
     agreementId: string,

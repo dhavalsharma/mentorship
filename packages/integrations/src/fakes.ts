@@ -95,6 +95,7 @@ export class FakeConversation implements ConversationAdapter {
     options: ProposalOption[];
     body: string;
     idempotencyKey: string;
+    preferencesPairingId?: string;
   }): Promise<{ messageRef: string }> {
     if (this.seen.has(input.idempotencyKey)) {
       return { messageRef: `dup:${input.idempotencyKey}` };
@@ -105,6 +106,9 @@ export class FakeConversation implements ConversationAdapter {
       agreementId: input.agreementId,
       options: input.options.map((o) => o.label),
       body: input.body,
+      ...(input.preferencesPairingId
+        ? { preferencesPairingId: input.preferencesPairingId }
+        : {}),
     });
     return { messageRef: `msg_${this.seen.size}` };
   }

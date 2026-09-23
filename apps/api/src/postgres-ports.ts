@@ -1,6 +1,7 @@
 import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type { AiRunSink } from "@mentorship/ai";
 import {
+  applyPairPreferences,
   recordResponse,
   resolveCadence,
   StoredProgramPolicySchema,
@@ -8,6 +9,7 @@ import {
   type Agreement,
   type AgreementResponse,
   type Cadence,
+  type PairPreferences,
   type ProposalOption,
   type ResponseKind,
 } from "@mentorship/core";
@@ -30,6 +32,9 @@ import type {
   ExtractionResponder,
   NotesSink,
   PairingLocator,
+  PairPreferencesStore,
+  PairPreferencesUpdateResult,
+  PreferencesModalContext,
 } from "@mentorship/integrations";
 
 /**
@@ -533,4 +538,159 @@ export async function pendingOutbox(
       .orderBy(events.occurredAt)
       .limit(limit),
   );
+}
+
+/**
+ * A pairing a member may still re-time. `completed`/`ended_early` are over,
+ * and `proposed` has not been agreed yet — nobody is meeting on a cadence.
+ */
+const PREFERENCE_STATES = new Set(["offered", "accepted", "active", "paused"]);
+
+/**
+ * The pair's own length and rhythm, on `pairings.cadence_override` — the
+ * column `resolveCadence` already reads last, so the saga, the nudge sweep
+ * and cadence adherence all follow the change with no code of their own.
+ *
+ * Reads go through the same pairing -> cohort -> program chain as
+ * `PostgresCounterContextResolver`, so "what does this pair have now" has one
+ * answer, not two.
+ */
+export class PostgresPairPreferencesStore implements PairPreferencesStore {
+  constructor(private readonly options: PostgresPortOptions) {}
+
+  async context(input: {
+    pairingId: string;
+    participantId: string;
+  }): Promise<PreferencesModalContext | null> {
+    const { db, orgId, role } = this.options;
+    return withTenant(
+      db,
+      orgId,
+      async (tx) => {
+        const loaded = await this.load(tx, input, false);
+        if (!loaded) return null;
+        return {
+          sessionMinutes: loaded.cadence.sessionMinutes,
+          everyDays: loaded.cadence.everyDays,
+          policy: loaded.policy.pairPreferences,
+        };
+      },
+      role === undefined ? {} : { role },
+    );
+  }
+
+  async update(input: {
+    pairingId: string;
+    participantId: string;
+    preferences: PairPreferences;
+  }): Promise<PairPreferencesUpdateResult> {
+    const { db, orgId, role } = this.options;
+    const at = (this.options.now?.() ?? new Date()).toISOString();
+    return withTenant(
+      db,
+      orgId,
+      async (tx) => {
+        // FOR UPDATE: both members pressing Save at once must merge, not have
+        // the second write drop whichever half the first one changed.
+        const loaded = await this.load(tx, input, true);
+        if (!loaded) return { ok: false, reason: "not_member" } as const;
+        // Re-checked under the lock: the program may have turned choice off
+        // while the modal sat open.
+        if (!loaded.policy.pairPreferences.enabled) {
+          return { ok: false, reason: "disabled" } as const;
+        }
+
+        const override = applyPairPreferences(
+          loaded.pairOverride,
+          input.preferences,
+        );
+        await tx
+          .update(pairings)
+          .set({ cadenceOverride: override, updatedAt: new Date(at) })
+          .where(
+            and(eq(pairings.orgId, orgId), eq(pairings.id, input.pairingId)),
+          );
+
+        const cadence = resolveCadence(
+          loaded.policy.cadence,
+          loaded.cohortOverride,
+          override,
+        );
+
+        // Same transaction as the change: the outbox. A cooling saga waits on
+        // this to re-time its next proposal and tell the thread.
+        await tx.insert(events).values({
+          orgId,
+          name: "pair.preferences_updated",
+          subjectRef: subjectRef("pairing", input.pairingId),
+          occurredAt: new Date(at),
+          payload: {
+            pairingId: input.pairingId,
+            participantId: input.participantId,
+            sessionMinutes: cadence.sessionMinutes,
+            everyDays: cadence.everyDays,
+            changed: input.preferences,
+          },
+        });
+        return {
+          ok: true,
+          sessionMinutes: cadence.sessionMinutes,
+          everyDays: cadence.everyDays,
+        } as const;
+      },
+      role === undefined ? {} : { role },
+    );
+  }
+
+  private async load(
+    tx: Db,
+    input: { pairingId: string; participantId: string },
+    lock: boolean,
+  ) {
+    const { orgId } = this.options;
+    const query = tx
+      .select({
+        cohortId: pairings.cohortId,
+        state: pairings.state,
+        mentorParticipantId: pairings.mentorParticipantId,
+        menteeParticipantId: pairings.menteeParticipantId,
+        cadenceOverride: pairings.cadenceOverride,
+      })
+      .from(pairings)
+      .where(and(eq(pairings.orgId, orgId), eq(pairings.id, input.pairingId)))
+      .limit(1);
+    const [pairing] = lock ? await query.for("update") : await query;
+    if (!pairing) return null;
+    if (
+      pairing.mentorParticipantId !== input.participantId &&
+      pairing.menteeParticipantId !== input.participantId
+    ) {
+      return null;
+    }
+    if (!PREFERENCE_STATES.has(pairing.state)) return null;
+
+    const [program] = await tx
+      .select({
+        policy: programs.policy,
+        cadenceOverride: cohorts.cadenceOverride,
+      })
+      .from(cohorts)
+      .innerJoin(
+        programs,
+        and(eq(programs.orgId, cohorts.orgId), eq(programs.id, cohorts.programId)),
+      )
+      .where(and(eq(cohorts.orgId, orgId), eq(cohorts.id, pairing.cohortId)))
+      .limit(1);
+    if (!program) return null;
+
+    const policy = StoredProgramPolicySchema.parse(program.policy);
+    const cohortOverride = program.cadenceOverride as Partial<Cadence> | null;
+    const pairOverride = pairing.cadenceOverride as Partial<Cadence> | null;
+    return {
+      policy,
+      cohortOverride,
+      pairOverride,
+      cadence: resolveCadence(policy.cadence, cohortOverride, pairOverride),
+    };
+  }
 }

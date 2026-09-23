@@ -78,6 +78,7 @@ export class SlackConversationAdapter implements ConversationAdapter {
     options: ProposalOption[];
     body: string;
     idempotencyKey: string;
+    preferencesPairingId?: string;
   }): Promise<{ messageRef: string }> {
     const res = await this.call("chat.postMessage", {
       channel: input.thread.channelId,
@@ -109,6 +110,22 @@ export class SlackConversationAdapter implements ConversationAdapter {
                 kind: "counter",
               }),
             },
+            // Keyed on the pairing, not the agreement: a pair's length and
+            // rhythm outlive any one proposal, and the modal it opens must
+            // still work after this agreement has closed.
+            ...(input.preferencesPairingId
+              ? [
+                  {
+                    type: "button",
+                    text: { type: "plain_text", text: "Session preferences" },
+                    action_id: `preferences:${input.preferencesPairingId}`,
+                    value: JSON.stringify({
+                      pairingId: input.preferencesPairingId,
+                      kind: "preferences",
+                    }),
+                  },
+                ]
+              : []),
           ],
         },
       ],

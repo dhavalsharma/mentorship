@@ -15,6 +15,7 @@ import {
   PostgresExtractionResponder,
   PostgresNotesSink,
   PostgresPairingLocator,
+  PostgresPairPreferencesStore,
 } from "./postgres-ports.js";
 import {
   getMatchingRoundCandidates,
@@ -137,14 +138,21 @@ function postgresDeps(url: string): ApiServerDeps {
       ),
     ),
     ...(SLACK_BOT_TOKEN
-      ? {
-          counterModal: {
-            modals: new SlackWebApiModalOpener(
-              httpSlackTransport(SLACK_BOT_TOKEN),
-            ),
-            counters: new PostgresCounterContextResolver(options),
-          },
-        }
+      ? (() => {
+          const modals = new SlackWebApiModalOpener(
+            httpSlackTransport(SLACK_BOT_TOKEN),
+          );
+          return {
+            counterModal: {
+              modals,
+              counters: new PostgresCounterContextResolver(options),
+            },
+            preferences: {
+              modals,
+              store: new PostgresPairPreferencesStore(options),
+            },
+          };
+        })()
       : {}),
     slackEvents: {
       locator: new PostgresPairingLocator(options),
@@ -274,6 +282,25 @@ async function memoryDeps(): Promise<ApiServerDeps> {
     extractions: {
       respond: (input) => harness.world.respondToExtraction(input),
     },
+    ...(SLACK_BOT_TOKEN
+      ? {
+          preferences: {
+            modals: new SlackWebApiModalOpener(
+              httpSlackTransport(SLACK_BOT_TOKEN),
+            ),
+            store: {
+              context: async (input) =>
+                harness.world.pairPreferencesContext(input),
+              update: async (input) => {
+                const saved = await harness.world.updatePairPreferences(input);
+                // No outbox here — the dispatcher is the relay.
+                await harness.dispatcher.settle();
+                return saved;
+              },
+            },
+          },
+        }
+      : {}),
     slackEvents: {
       locator: {
         resolveByChannel: async (channelId) =>

@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DomainEvent, SagaInstance } from "@mentorship/core";
-import { organizations, sagaInstances } from "@mentorship/db";
+import { MIGRATIONS_DIR, organizations, sagaInstances } from "@mentorship/db";
 import { connectTestDb, DATABASE_URL, type TestDb } from "@mentorship/db/testing";
 import { MemorySagaStore, SagaConflictError, type SagaStore } from "@mentorship/workflows";
 import { PostgresSagaStore } from "@mentorship/workflows/postgres";
@@ -302,3 +304,103 @@ function event(orgId: string, name: string, subjectRef: string): DomainEvent {
     payload: {},
   };
 }
+
+/**
+ * `0013_cooling_preferences_wait.sql`: a saga already sleeping in `cooling`
+ * when ADR-0009 shipped was saved with no `awaiting_event`, so a rhythm the
+ * pair changed would never reach it. The backfill gives it the same pattern a
+ * freshly-entered `cooling` gets — and nothing else.
+ *
+ * `connectTestDb` has already applied the migration by the time these rows
+ * exist, so the test re-runs the file's SQL against them; it is idempotent by
+ * construction, which the last case checks.
+ *
+ * Skipped without DATABASE_URL — see packages/db/src/testing.ts.
+ */
+
+describe.skipIf(!DATABASE_URL)("the cooling preferences backfill", () => {
+  let handle: TestDb;
+  let store: PostgresSagaStore;
+  let migrationSql: string;
+  const orgId = randomUUID();
+  const created: string[] = [];
+
+  beforeAll(async () => {
+    handle = await connectTestDb();
+    store = new PostgresSagaStore(handle.db);
+    migrationSql = await readFile(
+      join(MIGRATIONS_DIR, "0013_cooling_preferences_wait.sql"),
+      "utf8",
+    );
+    await handle.db
+      .insert(organizations)
+      .values({ id: orgId, name: "Backfill", slug: `backfill-${orgId.slice(0, 8)}` });
+  });
+
+  afterAll(async () => {
+    if (!handle) return;
+    if (created.length > 0) {
+      await handle.db.delete(sagaInstances).where(inArray(sagaInstances.id, created));
+    }
+    await handle.db.delete(organizations).where(inArray(organizations.id, [orgId]));
+    await handle.close();
+  });
+
+  async function seed(over: Partial<SagaInstance>): Promise<SagaInstance> {
+    const id = randomUUID();
+    created.push(id);
+    const at = "2026-09-01T00:00:00.000Z";
+    return store.create({
+      id,
+      orgId,
+      sagaName: "SessionLifecycle",
+      subjectRef: `pairing:${randomUUID()}`,
+      state: { name: "cooling", lastSessionAt: at },
+      awaitingEvent: null,
+      timeoutAt: "2026-09-24T00:00:00.000Z",
+      version: 3,
+      stepIndex: 3,
+      completedEffects: {},
+      history: [],
+      status: "running",
+      createdAt: at,
+      updatedAt: at,
+      ...over,
+    });
+  }
+
+  it("gives a pre-existing cooling saga the pattern, and leaves everything else alone", async () => {
+    const cooling = await seed({});
+    const armed = await seed({
+      state: { name: "armed" },
+      awaitingEvent: { names: ["session.cancelled"], subjectRef: "pairing:x" },
+    });
+    const finished = await seed({ status: "done" });
+
+    await handle.sql.unsafe(migrationSql);
+
+    const after = await store.get(cooling.id);
+    expect(after!.awaitingEvent).toEqual({
+      names: ["pair.preferences_updated"],
+      subjectRef: cooling.subjectRef,
+    });
+    // Not advanced: the stuck-saga view must not read this as progress, and a
+    // worker holding the old version must still be able to save.
+    expect(after!.version).toBe(3);
+    expect(after!.updatedAt).toBe(cooling.updatedAt);
+    expect(after!.timeoutAt).toBe(cooling.timeoutAt);
+
+    expect((await store.get(armed.id))!.awaitingEvent).toEqual(armed.awaitingEvent);
+    expect((await store.get(finished.id))!.awaitingEvent).toBeNull();
+  });
+
+  it("is idempotent", async () => {
+    const cooling = await seed({});
+    await handle.sql.unsafe(migrationSql);
+    await handle.sql.unsafe(migrationSql);
+    expect((await store.get(cooling.id))!.awaitingEvent).toEqual({
+      names: ["pair.preferences_updated"],
+      subjectRef: cooling.subjectRef,
+    });
+  });
+});

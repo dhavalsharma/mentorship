@@ -1,16 +1,31 @@
 import {
+  describeCadence,
   formatSlotLabel,
+  PAIR_PREFERENCES_DISABLED_MESSAGE,
+  resolvePairPreferences,
   wallClockToUtc,
+  type PairPreferences,
+  type PreferenceField,
   type ProposalOption,
   type ResponseKind,
 } from "@mentorship/core";
 import { verifySlackSignature } from "./verify.js";
 import {
+  buildPreferencesSavedView,
   COUNTER_DATE_BLOCK,
   COUNTER_TIME_BLOCK,
+  parsePreferencesSubmission,
   parseSlackViewSubmission,
+  PREF_CADENCE_BLOCK,
+  PREF_CADENCE_CUSTOM_BLOCK,
+  PREF_SESSION_BLOCK,
+  PREF_SESSION_CUSTOM_BLOCK,
+  PREFERENCES_CALLBACK_ID,
   slackInteractionType,
+  slackViewCallbackId,
+  type PreferencesModalContext,
   type SlackModalOpener,
+  type SlackPreferencesModalOpener,
 } from "./modal.js";
 
 /**
@@ -49,6 +64,14 @@ export type ParsedSlackAction =
       actionId: string;
       extractionId: string;
       kind: "confirm" | "edit";
+    }
+  | {
+      target: "preferences";
+      slackUserId: string;
+      actionId: string;
+      pairingId: string;
+      kind: "preferences";
+      triggerId?: string;
     };
 
 /**
@@ -103,12 +126,26 @@ export function parseSlackInteractionPayload(
     };
   }
 
+  const triggerId = p["trigger_id"];
+
+  const pairingId = v["pairingId"];
+  if (typeof pairingId === "string") {
+    if (kind !== "preferences") return null;
+    return {
+      target: "preferences",
+      slackUserId,
+      actionId,
+      pairingId,
+      kind,
+      triggerId: typeof triggerId === "string" ? triggerId : undefined,
+    };
+  }
+
   const agreementId = v["agreementId"];
   if (typeof agreementId !== "string") return null;
   if (kind !== "accept" && kind !== "counter") return null;
 
   const optionId = v["optionId"];
-  const triggerId = p["trigger_id"];
   return {
     target: "agreement",
     slackUserId,
@@ -166,6 +203,35 @@ export interface ExtractionResponder {
   }): Promise<void>;
 }
 
+/**
+ * A pair's own length and rhythm. Both methods refuse (null) a participant who
+ * is not a party to the pairing — a forged pairing id in a button value must
+ * not let a stranger re-time somebody else's mentoring.
+ *
+ * `update` writes the pair-level cadence override *and* its
+ * `pair.preferences_updated` event in one transaction, the same outbox
+ * discipline as `AgreementResponder`; it returns what the pair now has, for
+ * the confirmation the modal shows. A refusal says *why*: the program can
+ * turn choice off between the modal opening and Save, and telling that
+ * person "you're not part of this pair" would be false.
+ */
+export type PairPreferencesUpdateResult =
+  | { ok: true; sessionMinutes: number; everyDays: number }
+  | { ok: false; reason: "not_member" | "disabled" };
+
+export interface PairPreferencesStore {
+  context(input: {
+    pairingId: string;
+    participantId: string;
+  }): Promise<PreferencesModalContext | null>;
+  update(input: {
+    pairingId: string;
+    participantId: string;
+    preferences: PairPreferences;
+  }): Promise<PairPreferencesUpdateResult>;
+}
+
+
 export interface SlackWebhookRequest {
   rawBody: string;
   headers: Record<string, string | undefined>;
@@ -197,6 +263,14 @@ export interface SlackInteractionDeps {
   modals?: SlackModalOpener;
   /** Reads needed to turn a submitted date+time into a `ProposalOption`. */
   counters?: CounterContextResolver;
+  /**
+   * "Session preferences". Absent, the click acks and is recorded as
+   * unhandled — the same honest no-op as a counter with no modal opener.
+   */
+  preferences?: {
+    modals: SlackPreferencesModalOpener;
+    store: PairPreferencesStore;
+  };
   /** Observability seam for the paths that ack but do nothing — not an error. */
   onUnhandled?: (reason: string, detail: Record<string, unknown>) => void;
   now?: () => Date;
@@ -228,6 +302,13 @@ export async function handleSlackInteraction(
   // block_actions-specific parsing, which a view_submission would otherwise
   // fail as "unrecognised".
   if (slackInteractionType(req.rawBody) === "view_submission") {
+    // Routed on `callback_id`. Anything that is not the preferences modal
+    // goes to the counter handler, which is what every submission meant
+    // before there were two — so a counter modal already open in someone's
+    // client when this shipped still lands where it always did.
+    if (slackViewCallbackId(req.rawBody) === PREFERENCES_CALLBACK_ID) {
+      return handlePreferencesSubmission(req.rawBody, deps);
+    }
     return handleCounterSubmission(req.rawBody, deps);
   }
 
@@ -269,6 +350,54 @@ export async function handleSlackInteraction(
         error: error instanceof Error ? error.message : String(error),
       });
       return { status: 500, body: "failed to record confirmation" };
+    }
+    return { status: 200 };
+  }
+
+  if (action.target === "preferences") {
+    if (!deps.preferences || !action.triggerId) {
+      deps.onUnhandled?.("preferences_modal_not_configured", {
+        pairingId: action.pairingId,
+        participantId,
+        hasTriggerId: Boolean(action.triggerId),
+      });
+      return { status: 200 };
+    }
+    try {
+      // One indexed read before `views.open`, inside the trigger's ~3s life.
+      // Worth it: the modal pre-selects what the pair has now, and the read is
+      // also the membership check — a stranger never sees the menu at all.
+      const context = await deps.preferences.store.context({
+        pairingId: action.pairingId,
+        participantId,
+      });
+      if (!context) {
+        deps.onUnhandled?.("preferences_not_pair_member", {
+          pairingId: action.pairingId,
+          participantId,
+        });
+        return { status: 200 };
+      }
+      // A button on a proposal posted before the program turned choice off.
+      // Opening a full menu only to refuse it at Save is worse than nothing.
+      if (!context.policy.enabled) {
+        deps.onUnhandled?.("preferences_disabled", {
+          pairingId: action.pairingId,
+          participantId,
+        });
+        return { status: 200 };
+      }
+      await deps.preferences.modals.openPreferencesModal({
+        triggerId: action.triggerId,
+        pairingId: action.pairingId,
+        context,
+      });
+    } catch (error) {
+      deps.onUnhandled?.("preferences_modal_open_failed", {
+        pairingId: action.pairingId,
+        participantId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     return { status: 200 };
   }
@@ -454,4 +583,87 @@ async function handleCounterSubmission(
   // Empty 200 closes the modal. The saga moves when the relay drains the
   // `agreement.responded` this wrote — same discipline as every other click.
   return { status: 200 };
+}
+
+const PREFERENCE_BLOCKS: Record<PreferenceField, string> = {
+  sessionChoice: PREF_SESSION_BLOCK,
+  sessionCustom: PREF_SESSION_CUSTOM_BLOCK,
+  cadenceChoice: PREF_CADENCE_BLOCK,
+  cadenceCustom: PREF_CADENCE_CUSTOM_BLOCK,
+};
+
+async function handlePreferencesSubmission(
+  rawBody: string,
+  deps: SlackInteractionDeps,
+): Promise<SlackWebhookResponse> {
+  const submission = parsePreferencesSubmission(rawBody);
+  if (!submission) return { status: 400, body: "unrecognised view submission" };
+
+  const participantId = await deps.identity.resolveParticipantId(
+    submission.slackUserId,
+  );
+  if (!participantId) {
+    deps.onUnhandled?.("unmapped_identity", {
+      slackUserId: submission.slackUserId,
+    });
+    return modalError(
+      PREF_SESSION_BLOCK,
+      "We couldn't match your Slack account to this program.",
+    );
+  }
+  if (!deps.preferences) {
+    deps.onUnhandled?.("preferences_store_not_configured", {
+      pairingId: submission.pairingId,
+      participantId,
+    });
+    return modalError(PREF_SESSION_BLOCK, "Changing preferences isn't available here yet.");
+  }
+
+  // Re-read rather than trusting what the modal was opened with: the program
+  // may have changed its menu, or turned choice off, while the modal sat open.
+  const context = await deps.preferences.store.context({
+    pairingId: submission.pairingId,
+    participantId,
+  });
+  if (!context) {
+    return modalError(PREF_SESSION_BLOCK, "You're not part of this pair.");
+  }
+
+  const resolved = resolvePairPreferences(submission, context.policy);
+  if (!resolved.ok) {
+    return modalError(PREFERENCE_BLOCKS[resolved.field], resolved.message);
+  }
+
+  let saved: PairPreferencesUpdateResult;
+  try {
+    saved = await deps.preferences.store.update({
+      pairingId: submission.pairingId,
+      participantId,
+      preferences: resolved.preferences,
+    });
+  } catch (error) {
+    deps.onUnhandled?.("preferences_update_failed", {
+      pairingId: submission.pairingId,
+      participantId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return modalError(PREF_SESSION_BLOCK, "We couldn't save that. Try again.");
+  }
+  if (!saved.ok) {
+    return modalError(
+      PREF_SESSION_BLOCK,
+      saved.reason === "disabled"
+        ? PAIR_PREFERENCES_DISABLED_MESSAGE
+        : "You're not part of this pair.",
+    );
+  }
+
+  return {
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      response_action: "update",
+      view: buildPreferencesSavedView(describeCadence(saved)),
+    }),
+  };
 }

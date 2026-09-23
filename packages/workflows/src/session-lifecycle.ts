@@ -1,5 +1,6 @@
 import {
   addDays,
+  describeCadence,
   addHours,
   addMinutes,
   hoursBetween,
@@ -178,6 +179,7 @@ function proposalBody(
   options: ProposalOption[],
   degraded: boolean,
   round: number,
+  offerPreferences: boolean,
 ): string {
   const who = pair.participants.map((p) => p.displayName).join(" and ");
   const lead =
@@ -188,7 +190,29 @@ function proposalBody(
   const caveat = degraded
     ? "\n\n(Calendar availability isn't connected, so these are working-hours guesses.)"
     : "";
-  return `${lead}\n\nPick one, or suggest another:\n${lines.join("\n")}${caveat}`;
+  // Say what is being booked whenever the pair can change it — a length they
+  // cannot see is a length they cannot know to change. Only when the control
+  // will actually be there: pointing at a button that was never rendered is
+  // worse than not mentioning it.
+  const rhythm = offerPreferences
+    ? `\n\nEach slot is ${pair.cadence.sessionMinutes} minutes. Change length or rhythm with Session preferences.`
+    : "";
+  return `${lead}\n\nPick one, or suggest another:\n${lines.join("\n")}${caveat}${rhythm}`;
+}
+
+/**
+ * Whether this proposal can carry the Session preferences control. Mirrors the
+ * effect runner's own condition for rendering it: the program must allow it,
+ * and the conversation adapter must do buttons. No conversation adapter at all
+ * means the proposal degrades to plain DMs, and `capabilities` is null.
+ */
+async function canOfferPreferences(
+  pair: PairContext,
+  ctx: SagaContext,
+): Promise<boolean> {
+  if (!pair.policy.pairPreferences.enabled) return false;
+  const caps = await ctx.resolve.capabilities("conversation");
+  return Boolean(caps?.interactiveApproval);
 }
 
 /**
@@ -901,6 +925,35 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
 
         // -------------------------------------------------------------------
         case "cooling": {
+          // The pair changed its length or rhythm between sessions. The wake
+          // time was computed from the old cadence, so a pair moving from
+          // every four weeks to weekly would otherwise sleep three weeks too
+          // long. Recompute from the same `lastSessionAt` and say so in the
+          // thread — the other participant learns of the change here, not by
+          // surprise at the next proposal.
+          if (
+            input.kind === "event" &&
+            input.event.name === "pair.preferences_updated"
+          ) {
+            const who =
+              pair.participants.find(
+                (p) => p.participantId === input.event.payload["participantId"],
+              )?.displayName ?? "Someone";
+            const step = coolingStep(pair, state.lastSessionAt, now);
+            const next = step.timeoutAt
+              ? ` Next proposal around ${new Date(step.timeoutAt).toUTCString()}.`
+              : "";
+            return {
+              next: state,
+              ...step,
+              effects: [
+                {
+                  type: "post_message",
+                  body: `${who} updated your sessions: ${describeCadence(pair.cadence)}.${next}`,
+                },
+              ],
+            };
+          }
           return openProposal(pair, ctx, [], 1, now, undefined, [
             { type: "emit", name: "pair.cadence_deficit" },
           ]);
@@ -956,9 +1009,10 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
       };
     }
 
+    const offerPreferences = await canOfferPreferences(pair, ctx);
     const body = withPlaybook(
       (preamble ? `${preamble}\n\n` : "") +
-        proposalBody(pair, options, degraded, round),
+        proposalBody(pair, options, degraded, round, offerPreferences),
       pair,
     );
 
@@ -978,7 +1032,13 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
       effects: [
         ...extraEffects,
         { type: "ensure_thread", title: pair.title },
-        { type: "post_proposal", agreementId, options, body },
+        {
+          type: "post_proposal",
+          agreementId,
+          options,
+          body,
+          ...(offerPreferences ? { preferencesPairingId: pair.pairingId } : {}),
+        },
         {
           type: "emit",
           name: "agreement.opened",
@@ -1085,7 +1145,14 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
     }
     const wake = addDays(due, -pair.cadence.proposeLeadDays);
     return {
-      waitFor: null,
+      // Only listened for when the pair may change it; otherwise nothing
+      // would ever emit it and the pattern is noise in `awaiting_event`.
+      waitFor: pair.policy.pairPreferences.enabled
+        ? {
+            names: ["pair.preferences_updated"],
+            subjectRef: subjectRef("pairing", pair.pairingId),
+          }
+        : null,
       timeoutAt: Date.parse(wake) > Date.parse(now) ? wake : addMinutes(now, 1),
     };
   }

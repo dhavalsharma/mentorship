@@ -17,6 +17,7 @@ journal about files it did not generate costs more than reading a directory.
 | `0002_rls.sql` | RLS on, forced, tenant policy per table | hand |
 | `0003_grants.sql` | DML for the two roles; no DDL, no BYPASSRLS | hand |
 | `0004_admin_policy.sql` | The admin role's cross-tenant policy, for the relay | hand |
+| `0013_cooling_preferences_wait.sql` | Data backfill: running `SessionLifecycle` instances already in `cooling` start waiting on `pair.preferences_updated` (ADR-0009) | hand |
 
 ## Adding a structural migration
 

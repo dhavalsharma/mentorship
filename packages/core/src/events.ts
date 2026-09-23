@@ -22,6 +22,13 @@ export const EVENT_NAMES = [
    * be attributed back to a pair.
    */
   "pair.thread_bound",
+  /**
+   * A pair member chose a session length and/or rhythm off a structured
+   * control. Written in the same transaction as the `pairings.cadence_override`
+   * change it describes; a cooling `SessionLifecycle` waits on it to re-time
+   * its next proposal rather than sleeping on the old cadence.
+   */
+  "pair.preferences_updated",
   // activity (fact)
   "session.proposed",
   "session.scheduled",

@@ -17,6 +17,7 @@ A decision that had no plausible alternative does not need a record here.
 | [0006](0006-capabilities-are-probed.md) | Capabilities are probed per tenant, not inferred from the vendor | Accepted |
 | [0007](0007-scores-are-deterministic.md) | Scores are deterministic; the model explains them | Accepted |
 | [0008](0008-postgres-only.md) | Postgres only — pgvector, pg-boss, RLS | Accepted |
+| [0009](0009-pairs-choose-their-own-cadence.md) | Pairs choose their own session length and rhythm | Accepted |
 
 ## Adding one
 

@@ -36,6 +36,7 @@ closing a fortnight later. It touches no database, no network and no model.
 | A coding agent, or about to change something | [CLAUDE.md](./CLAUDE.md) — the invariants are the part that matters |
 | Wondering why it is built this way | [docs/decisions/](./docs/decisions/) — one ADR per decision that could have gone the other way |
 | Looking for what is next | [docs/ROADMAP.md](./docs/ROADMAP.md) |
+| Wondering what the tests do and do not prove | [docs/e2e-testing-strategy.md](./docs/e2e-testing-strategy.md) |
 | Getting it onto your machine and into GitHub | [PUSH-TO-GITHUB.md](./PUSH-TO-GITHUB.md) |
 | Setting up Postgres, Anthropic, Slack, Google or the dashboard | [Environment variables](#environment-variables), below |
 
@@ -282,12 +283,32 @@ if (planIsCommittable(plan)) {
 
 It handles what real spreadsheets actually contain: header aliases
 (`Mentor Email` / `mentor_email` / `Mentor E-Mail`), quoted fields, tabs, a
-UTF-8 BOM, cadence written as `biweekly` or `21d` or `as needed`, timezone
+UTF-8 BOM, cadence written as `biweekly` or `21d` or `every 3 weeks` or `as needed`,
+session length in an optional `duration` column (`30`, `45m`, `1h`), timezone
 offsets as `+05:30` or `5.5`. It reports **errors** (self-pairing, unreadable
-email, uninterpretable cadence) separately from **warnings** (mentor over
+email, uninterpretable cadence or length) separately from **warnings** (mentor over
 capacity, missing verified chat id, no timezone) separately from **skips**
 (already exists, duplicated in this file). Re-uploading last week's sheet with
 three new rows at the bottom is the normal case, not an error.
+
+### Pairs choose their own length and rhythm
+
+A program sets the defaults; the two people meeting can adjust them. Every
+proposal carries a **Session preferences** button that opens a Slack modal:
+
+| Choice | Default menu (`policy.pairPreferences`) |
+| --- | --- |
+| Session length | 15 / 30 / 45 minutes, or a custom number (15–240) |
+| Rhythm | every 1 / 2 / 3 / 4 weeks, or every N days (1–365) |
+
+Either member can change it. The choice is a structured fact — a select or a
+number field, never read out of a message — validated against the program's
+own menu, and stored as the pair-level cadence override, so slot search,
+booking, nudges and cadence-adherence scoring all follow it with no special
+case. A pair between sessions has its next proposal re-timed immediately and
+the thread is told who changed what. Programs that fix length and rhythm
+centrally set `pairPreferences.enabled: false`, and the button disappears.
+See [ADR-0009](./docs/decisions/0009-pairs-choose-their-own-cadence.md).
 
 ---
 
@@ -487,7 +508,8 @@ db           imported only by api, jobs, workflows
 | Core contracts, policy schema, agreement resolver, interval maths | **Working, tested** |
 | Saga engine — idempotent effects, optimistic concurrency, timers, history | **Working, tested** |
 | `SessionLifecycle` — all deterministic states | **Working, tested** |
-| Roster import — parse, plan, validate, commit | **Working, tested** |
+| Roster import — parse, plan, validate, commit | **Working, tested** — including an optional `duration` column |
+| Pair-chosen session length and rhythm | **Working, tested** (in-memory and Postgres) — Slack modal off the proposal, policy-driven menu, cooling saga re-times. Not yet run against a live workspace |
 | Integration registry, capability negotiation, degradation | **Working, tested** |
 | Fake adapters (chat, dm, calendar, transcript, document) | **Working** — used by tests and the demo |
 | Postgres schema, RLS policies, `withTenant` | **Working, tested** — migrations applied, and a cross-tenant leak test proves the policy bites rather than assuming it |

@@ -22,13 +22,13 @@ program, on different tooling, without touching `packages/core`.
 
 ```bash
 pnpm install
-pnpm test        # 689 tests, ~3s, no database and no model
+pnpm test        # 732 tests, ~3s, no database and no model
 pnpm demo        # the full session cycle printed as a trace
 pnpm serve:api   # the Slack + auth endpoints, live, seeded against testkit
 pnpm dev:web     # the admin dashboard at :3000, proxying to apps/api at :8787
 pnpm typecheck
 
-# the database-backed tests — 87 more, skipped above rather than failing
+# the database-backed tests — 95 more, skipped above rather than failing
 docker compose up -d db && pnpm db:migrate
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/mentorship pnpm test
 
@@ -193,6 +193,7 @@ ones that do not are marked.
 | You want to… | Do this |
 | --- | --- |
 | Change what a program allows (roles, cadence, goal shape, weights) | Extend `ProgramPolicySchema` in `core/policy.ts`. It is data — no code path should branch on a tenant name. |
+| Change what a *pair* may choose for itself (session length, rhythm) | Edit `policy.pairPreferences` (data). Validation is `resolvePairPreferences` in `core/pair-preferences.ts`; whatever a pair picks lands on `pairings.cadence_override`, the level `resolveCadence` merges last, so no reader needs to change. ADR-0009. |
 | Add a new external tool (Teams, Notion, Zoom) | Implement the slot port in `core/capabilities.ts`, put it in `integrations/<vendor>/`, declare its `AdapterCapabilities`. Nothing else changes. |
 | Change what happens in a session | Edit `workflows/session-lifecycle.ts`. Add a state to the union, handle it in the switch, give it a timeout. |
 | Add a whole new flow | New saga in `workflows/`, register it, add a `starters` entry for the event that begins it. |
@@ -256,7 +257,8 @@ Keep this table honest as you go; it is the first thing a contributor reads.
 | Core contracts, policy schema, agreement resolver, interval maths | Working, tested |
 | Saga engine — idempotent effects, optimistic concurrency, timers, history | Working, tested |
 | `SessionLifecycle` — all deterministic states | Working, tested. A pick now shows up in the thread: one participant accepting posts "X picked <slot>. Waiting on Y." instead of the silence there used to be, and a conflict (both accepted, different slots) says who picked what before re-offering. |
-| Roster import — parse, plan, validate, commit | Working, tested |
+| Roster import — parse, plan, validate, commit | Working, tested. Reads an optional `duration` column (`session_minutes`/`session_length`/`meeting_length`/`meeting_duration`/`length`; "30", "45m", "1h") into the pair's `cadenceOverride.sessionMinutes`, bounded 15–240, and cadence written in weeks ("every 3 weeks", "4 weeks"). |
+| Pair-chosen session length and rhythm (ADR-0009) | Working, tested — including against real Postgres (`apps/api/src/__tests__/postgres-pair-preferences.test.ts`). Every proposal carries a **Session preferences** button (when `policy.pairPreferences.enabled`, default on) that opens a Slack modal — synchronously in the click's request, like "Suggest another" — with the program's menu (default 15/30/45 minutes and every 1/2/3/4 weeks, each with a "custom" number field). Validated in core against the program's own menu, not just schema bounds (`resolvePairPreferences`); either pair member may change it; a stranger is refused at click *and* submission. `PostgresPairPreferencesStore` merges the choice onto `pairings.cadence_override` (never replacing what roster import put there) and writes `pair.preferences_updated` in the same transaction. Every reader follows via `resolveCadence` — slot length, booking, nudge deficits, adherence. A `cooling` saga waits on the event, re-times its next proposal from the same `lastSessionAt`, and posts who changed what to the thread; in any other state the change simply shows in the next proposal (which now states the slot length), and the modal says exactly that rather than promising an announcement. The button and the "Each slot is N minutes" line appear only when the conversation adapter can render buttons — a proposal degraded to plain DMs mentions neither. A button left on an old proposal after the program turns choice off opens nothing (`preferences_disabled`), and a program turning it off mid-modal gets its own error, not "not part of this pair" (`update` returns `{ ok: false, reason }`). Migration `0013_cooling_preferences_wait.sql` backfills the event pattern onto sagas that were already in `cooling` before this shipped, without touching `version` or `updated_at`. **Not yet run against a live workspace**, and no admin view reads preference changes yet. |
 | Integration registry, capability negotiation, degradation | Working, tested |
 | Fake adapters | Working — used by tests and the demo |
 | Postgres schema, RLS, `withTenant` | Working, tested. Migrations applied; the cross-tenant leak test proves the policy bites (`packages/db/src/__tests__/rls.test.ts`). |
@@ -300,5 +302,10 @@ projections become outbox-relay subscribers, and `SagaStore.save` becomes
 | [0006](docs/decisions/0006-capabilities-are-probed.md) | Capabilities are probed per tenant, not inferred from the vendor |
 | [0007](docs/decisions/0007-scores-are-deterministic.md) | Scores are deterministic; the model explains them |
 | [0008](docs/decisions/0008-postgres-only.md) | Postgres only — pgvector, pg-boss, RLS |
+| [0009](docs/decisions/0009-pairs-choose-their-own-cadence.md) | Pairs choose their own session length and rhythm, from a structured control |
 
 `docs/ROADMAP.md` has the build order and why it is in that order.
+`docs/e2e-testing-strategy.md` has the testing one — what the 827 tests
+already prove, the four things "end to end" has to mean here, and why the
+process axis (two processes, one Postgres) is where the escaped bugs have
+actually been.

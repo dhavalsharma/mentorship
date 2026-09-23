@@ -176,6 +176,9 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           options: effect.options,
           body: effect.body,
           idempotencyKey: ctx.key,
+          ...(effect.preferencesPairingId && caps?.interactiveApproval
+            ? { preferencesPairingId: effect.preferencesPairingId }
+            : {}),
         });
       }
 

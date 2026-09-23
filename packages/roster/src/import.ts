@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   CADENCE_PRESETS,
+  cadenceLabelFor,
   type Cadence,
   type PairingOrigin,
   type ProgramPolicy,
@@ -38,6 +39,14 @@ const ALIASES: Record<string, string[]> = {
   ],
   menteeName: ["mentee_name", "mentee_full_name", "mentee_display_name"],
   cadence: ["cadence", "frequency", "meeting_frequency", "rhythm"],
+  sessionMinutes: [
+    "duration",
+    "session_minutes",
+    "session_length",
+    "meeting_length",
+    "meeting_duration",
+    "length",
+  ],
   startDate: ["start_date", "starts_on", "start", "kickoff"],
   mentorChatRef: ["mentor_slack", "mentor_slack_id", "mentor_chat_id"],
   menteeChatRef: ["mentee_slack", "mentee_slack_id", "mentee_chat_id"],
@@ -84,6 +93,7 @@ export const RosterRowSchema = z.object({
   menteeEmail: EMAIL,
   menteeName: z.string().trim().min(1).optional(),
   cadence: z.string().trim().optional(),
+  sessionMinutes: z.string().trim().optional(),
   startDate: z.string().trim().optional(),
   mentorChatRef: z.string().trim().optional(),
   menteeChatRef: z.string().trim().optional(),
@@ -206,6 +216,16 @@ export function parseCadence(
   const preset = CADENCE_PRESETS[key];
   if (preset) return { cadence: preset, ok: true };
 
+  // "every 3 weeks", "4 weeks", "3w" — the rhythms a pair can also pick for
+  // itself, labelled the same way the pair-preferences path labels them.
+  const weeks = /^(?:every\s+)?(\d{1,2})\s*w(?:eeks?|ks?)?$/.exec(value);
+  if (weeks) {
+    const n = Number(weeks[1]) * 7;
+    if (n >= 7 && n <= 365) {
+      return { cadence: { everyDays: n, label: cadenceLabelFor(n) }, ok: true };
+    }
+  }
+
   const days = /^(\d{1,3})\s*d(ays?)?$/.exec(value) ?? /^(\d{1,3})$/.exec(value);
   if (days) {
     const n = Number(days[1]);
@@ -214,6 +234,27 @@ export function parseCadence(
     }
   }
   return { cadence: null, ok: false };
+}
+
+/**
+ * Session length, as a spreadsheet writes it: "30", "45m", "30 min",
+ * "45 minutes", "1h", "1 hour". Bounded exactly as `CadenceSchema` bounds
+ * `sessionMinutes`, so an accepted value can never fail downstream.
+ */
+export function parseSessionMinutes(
+  raw: string | undefined,
+): { sessionMinutes: number | null; ok: boolean } {
+  if (!raw) return { sessionMinutes: null, ok: true };
+  const value = raw.trim().toLowerCase();
+  let minutes: number | null = null;
+  const m = /^(\d{1,3})\s*(?:m|mins?|minutes?)?$/.exec(value);
+  const h = /^(\d)\s*(?:h|hrs?|hours?)$/.exec(value);
+  if (m) minutes = Number(m[1]);
+  else if (h) minutes = Number(h[1]) * 60;
+  if (minutes === null || minutes < 15 || minutes > 240) {
+    return { sessionMinutes: null, ok: false };
+  }
+  return { sessionMinutes: minutes, ok: true };
 }
 
 function nameFromEmail(email: string): string {
@@ -293,6 +334,7 @@ export function planRosterImport(
       menteeEmail: cell("menteeEmail"),
       menteeName: cell("menteeName"),
       cadence: cell("cadence"),
+      sessionMinutes: cell("sessionMinutes"),
       startDate: cell("startDate"),
       mentorChatRef: cell("mentorChatRef"),
       menteeChatRef: cell("menteeChatRef"),
@@ -345,10 +387,27 @@ export function planRosterImport(
       errors.push({
         rowNumber,
         field: "cadence",
-        message: `unrecognised cadence "${row.cadence}". Try: weekly, fortnightly, monthly, quarterly, adhoc, or a number of days`,
+        message: `unrecognised cadence "${row.cadence}". Try: weekly, fortnightly, "3 weeks", monthly, quarterly, adhoc, or a number of days`,
       });
       continue;
     }
+
+    const sessionResult = parseSessionMinutes(row.sessionMinutes);
+    if (!sessionResult.ok) {
+      errors.push({
+        rowNumber,
+        field: "sessionMinutes",
+        message: `unrecognised session length "${row.sessionMinutes}". Try: 15, 30, 45, "60 min" or "1h" (15–240 minutes)`,
+      });
+      continue;
+    }
+    const cadenceOverride: Partial<Cadence> | null =
+      sessionResult.sessionMinutes === null
+        ? cadenceResult.cadence
+        : {
+            ...(cadenceResult.cadence ?? {}),
+            sessionMinutes: sessionResult.sessionMinutes,
+          };
 
     let startsAt: string | null = null;
     if (row.startDate) {
@@ -436,7 +495,7 @@ export function planRosterImport(
       mentor,
       mentee,
       origin: "imported",
-      cadenceOverride: cadenceResult.cadence,
+      cadenceOverride,
       startsAt,
       notes: row.notes ?? null,
     });
@@ -510,7 +569,11 @@ export function renderPlan(plan: ImportPlan): string {
     lines.push(`  WARN    row ${w.rowNumber}: ${w.message}`);
   }
   for (const c of plan.creates) {
-    const cadence = c.cadenceOverride?.label ?? "program default";
+    const rhythm = c.cadenceOverride?.label ?? "program default";
+    const cadence =
+      c.cadenceOverride?.sessionMinutes === undefined
+        ? rhythm
+        : `${rhythm}, ${c.cadenceOverride.sessionMinutes} min`;
     lines.push(
       `  CREATE  ${c.mentor.displayName} -> ${c.mentee.displayName}  (${cadence})`,
     );
