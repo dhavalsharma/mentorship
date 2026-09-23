@@ -111,7 +111,7 @@ describe("createEffectRunner — a retried effect does not re-emit", () => {
   for (const withCalendar of [true, false]) {
     it(`create_calendar_event (${withCalendar ? "calendar bound" : "degraded"}): one session.scheduled, the same sessionId back`, async () => {
       const { log, run } = setup(withCalendar);
-      const ctx = { instance, key: "saga_1:4:0", now: NOW };
+      const ctx = { instance, key: "saga_1:4:0", now: NOW, attempt: 0 };
 
       // The crash: the first attempt ran and emitted, the step never saved,
       // so the retry runs the same effect under the same key.
@@ -127,7 +127,7 @@ describe("createEffectRunner — a retried effect does not re-emit", () => {
 
   it("emit: the same key twice is one event and one eventId", async () => {
     const { log, run } = setup(true);
-    const ctx = { instance, key: "saga_1:7:1", now: NOW };
+    const ctx = { instance, key: "saga_1:7:1", now: NOW, attempt: 0 };
     const effect: Effect = { type: "emit", name: "pair.cadence_deficit" };
     const a = (await run(effect, ctx)) as { eventId: string };
     const b = (await run(effect, ctx)) as { eventId: string };
@@ -138,8 +138,8 @@ describe("createEffectRunner — a retried effect does not re-emit", () => {
   it("a different step is a different key, so a real second emit still lands", async () => {
     const { log, run } = setup(true);
     const effect: Effect = { type: "emit", name: "session.held" };
-    await run(effect, { instance, key: "saga_1:5:0", now: NOW });
-    await run(effect, { instance, key: "saga_1:9:0", now: NOW });
+    await run(effect, { instance, key: "saga_1:5:0", now: NOW, attempt: 0 });
+    await run(effect, { instance, key: "saga_1:9:0", now: NOW, attempt: 0 });
     expect(log.all().filter((e) => e.name === "session.held")).toHaveLength(2);
   });
 });
