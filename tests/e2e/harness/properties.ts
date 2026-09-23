@@ -61,11 +61,21 @@ export async function idsIn(s: Stage): Promise<Set<string>> {
  */
 export async function timeoutTotalityViolations(s: Stage): Promise<string[]> {
   const rows = await s.internals.observer.db
-    .select({ id: sagaInstances.id, history: sagaInstances.history })
+    .select({
+      id: sagaInstances.id,
+      history: sagaInstances.history,
+      status: sagaInstances.status,
+      timeoutAt: sagaInstances.timeoutAt,
+    })
     .from(sagaInstances)
     .where(eq(sagaInstances.orgId, s.orgId));
   const violations: string[] = [];
   for (const row of rows) {
+    // The row as it stands, too: an instance created and never advanced has
+    // no history at all to be wrong in, and is the most stuck of all.
+    if (row.status === "running" && row.timeoutAt === null) {
+      violations.push(`instance ${row.id} is running with no timeout (${(row.history as unknown[]).length} steps taken)`);
+    }
     for (const entry of row.history as SagaHistoryEntry[]) {
       if (entry.input === "terminal-event") continue;
       if (entry.done === undefined) {

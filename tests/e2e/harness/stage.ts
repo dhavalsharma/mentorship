@@ -103,6 +103,17 @@ export interface StageOptions {
   };
   llm?: LlmProvider;
   onTrace?: (line: TraceLine) => void;
+  /**
+   * P2 only: the worker process dies at its Nth adapter call — before the
+   * vendor sees it, or after the vendor acted but before the worker learned
+   * so. `drain()` then restarts the worker, as a supervisor would.
+   */
+  crash?: { atCall: number; mode: "before" | "after" };
+  /**
+   * P2 only: replace the worker before every pass — a deploy between any two
+   * passes. Catches state that lives only in one process's memory.
+   */
+  restartBetweenPasses?: boolean;
 }
 
 export interface DrainResult {
@@ -191,6 +202,7 @@ export async function stage(options: StageOptions = {}): Promise<Stage> {
   // Stamped with `peek`, not `now`: observing must not move the clock.
   const recorder = new ClockedRecorder(() => clock.peek());
   const crash = new CrashSwitch();
+  if (options.crash) crash.arm(options.crash.atCall, options.crash.mode);
   const logs: string[] = [];
 
   const policy: ProgramPolicy = defaultPolicy({
@@ -344,6 +356,7 @@ export async function stage(options: StageOptions = {}): Promise<Stage> {
     for (;;) {
       if (total.passes >= 200) throw new Error("drain did not converge in 200 passes");
       total.passes += 1;
+      if (options.restartBetweenPasses) await restartWorker();
       let result: Awaited<ReturnType<typeof onePass>>;
       try {
         result = await onePass();
