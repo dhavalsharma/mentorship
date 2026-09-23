@@ -1,5 +1,12 @@
 # End-to-end testing strategy
 
+> **Status (Tier 2 built).** `tests/e2e/` now exists: `pnpm test:e2e` runs 16
+> journeys with P1/P3/P4/P5 applied to each, and `pnpm test:e2e:nightly` adds
+> P2. It found ten product bugs on its first run — see
+> [What the journey suite found](#what-the-journey-suite-found). The text below
+> is the strategy as written before it was built, kept because it is the
+> argument; where the build departed from it, the departure is noted.
+
 827 tests pass. None of them is an end-to-end test.
 
 That is not a criticism of the suite — it is very good at what it does, and
@@ -95,7 +102,8 @@ bug to fix.**
 | --- | --- | --- | --- |
 | 0 | Unit and contract tests, no infrastructure | 690 | ~5s |
 | 1 | Postgres-backed component tests (RLS, store, relay, projector, resolvers, API routes over real sockets) | 95 | ~5s with `DATABASE_URL` |
-| 2 | **Journey tests — full stack, two processes, real Postgres** | 0 | — |
+| 2 | **Journey tests — full stack, two processes, real Postgres** (`pnpm test:e2e`) | 153 passing, 3 skipped with reasons — 16 journeys, each with P1/P3/P4/P5; 7 of the 153 are `it.fails` pinning a known bug | ~15s |
+| 2n | Nightly: P2 crash-resume across the catalogue (`pnpm test:e2e:nightly`, adds to the above) | 41 — 18 crash sweeps, 18 restart-every-pass runs, 5 `it.fails` known bugs | ~2 min |
 | 3 | **Browser journeys against `apps/web`** | 0 | — |
 | 4 | **Vendor contract fixtures** | 0 | — |
 | 5 | Evals over the AI primitives | partial (10 golden cases in `session-intel`) | ~5s |
@@ -106,6 +114,9 @@ already takes a `pair.activated` row to a proposed session on Postgres, and
 `apps/api/src/__tests__/postgres-slack-events.test.ts` already posts a
 genuinely signed payload over a real socket. They are one harness apart from
 being the same test, and nothing joins them.
+
+That was true when this was written. `tests/e2e/harness/stage.ts` is the
+harness that joins them.
 
 ---
 
@@ -394,6 +405,72 @@ Worth stating, so the suite's green is read correctly:
 
 ---
 
+## What the journey suite found
+
+Built as specified, with these departures and additions:
+
+- **The harness lives in `tests/e2e/harness/`** (`stage.ts`, `seed.ts`,
+  `observe.ts`, `properties.ts`, `crash.ts`), not one file, and `tests/e2e/`
+  is a directory on the root `tsconfig`/aliases rather than a workspace
+  package — it needs no dependencies of its own. `apps/api`'s Postgres wiring
+  was extracted to `buildPostgresApiDeps` (`apps/api/src/postgres-deps.ts`),
+  so the server a journey talks to is the one `main.ts` ships.
+- **Two processes means two pools.** The API and the worker each get their own
+  connection pool and both run as `mentorship_app`, so RLS is enforced on every
+  journey rather than bypassed by the superuser.
+- **The clock ticks.** One millisecond per read. A frozen clock stamps every
+  event in a drain with the same instant, and the relay's `ORDER BY
+  occurred_at` then returns ties in heap order — an ordering production never
+  has.
+- **A third surface: process logs.** "Warns loudly" (invariant 16) and "the
+  refusal is visible to an operator" are only observable there.
+- **P4 reads `saga_instances.history` and nothing else**, because no
+  participant-visible surface can witness a wait with no deadline. The engine
+  now records each step's `waitFor`/`timeoutAt`/`done` in its history entry;
+  before, only the *current* state's wait was knowable at all. P4 also flags a
+  `running` row with no timeout.
+- **P5's model fence** is an `LlmProvider` that refuses any question except
+  session intelligence, plus a trace check that `run_extraction` is only ever
+  emitted on the transition into `extracting`.
+- **P2 kills the process, not the call.** The Nth adapter call never returns
+  and the worker's pool is ended under it, so Postgres rolls back the relay's
+  claim. A thrown error would be caught by the relay and recorded as an
+  attempt — a much kinder failure than a process that stops. It runs twice per
+  call (before the vendor acts, and after), plus once with a fresh worker
+  before every pass. Its comparison is a multiset with ids and sub-minute time
+  scrubbed, repeated reads (`transcript.fetch`) excluded, and repeated
+  `pair.thread_bound` collapsed (a fresh process re-announces by design).
+- **Skipped, with the reason in the file**: `declined` (no Decline button
+  exists and the parser rejects the kind), `consent-revoked` (nothing writes
+  `consents.revoked_at`), `calendar-never-confirmed` (the runner emits
+  `session.scheduled` inside the same effect as `createEvent`; only losing an
+  outbox row reaches the timeout). Variants added: `transcribed`,
+  `transcription-without-consent`, `document-echo`.
+
+### Product bugs, none fixed here
+
+Each is asserted as the *correct* behaviour and marked `it.fails`, so the day
+one is fixed the suite goes red until the marker is removed.
+
+| # | Found by | Bug |
+| --- | --- | --- |
+| 1 | `one-sided` | A one-sided silence is escalated on the first timeout with **no renudge** — the `partial_response` branch runs before the renudge check (invariant 11). |
+| 2 | P1 on every journey that ends paused | A redelivered `pair.activated` **restarts a paused saga**: `SagaEngine.start()` dedupes only against a `running` instance, and a paused one is `done`. The pair a human was asked to look at gets a fresh proposal. |
+| 3 | `extraction-timeout` | The confirming-timeout render **replaces the write-up** with the "unverified" banner — the managed region ends up containing only the banner (invariant 19 says mark, not erase). |
+| 4 | `dm-outage` | A *failing* (not absent) DM slot **wedges the lifecycle** at the reminder: the step never saves, the timer re-fires and re-throws forever. And `SagaEngine.tick()` has no per-instance failure handling, so that one instance makes **every pass for the org throw**, skipping every other due timer — the same shape as the `findDue` bug, one level down. |
+| 5 | P2 | **Stranded at start**: `SagaEngine.start()` commits the instance before its first step runs. A crash in that step leaves it `running` in `idle` with no wait and no timeout; the redelivered activation finds it "running" and leaves it. The pair is never proposed to. |
+| 6 | P2 | **`emit` effects are not idempotent.** The completed-effect ledger is saved only when the whole step saves, and an emit is its own committed write with no key, so a retried step re-emits: duplicate `session.scheduled` (and a phantom `sessions` row), `session.held`, `pair.cadence_deficit`. |
+| 7 | P2 | **The confirming timeout eats its own event.** It emits `extraction.confirmed {unverified}` before rendering; after a crash the still-`confirming` saga receives that event as a verdict from nobody, re-arms 120h, and the render and feedback requests never happen. |
+| 8 | P2 | **A second shared doc on retry.** A pair's first `render_document` has no doc id, and neither `FakeDocument` nor `GoogleDriveDocumentAdapter` uses the idempotency key when creating — a crash after creation makes a second doc (in Drive, a second access email too). |
+| 9 | P2, restart-every-pass | **The transcript lives in worker memory** between the pass that fetches it and the pass that extracts it. A restart in between extracts from an empty string: "no transcript was available" for a transcribed session. |
+| 10 | seeding | **Nothing writes `integration_bindings.capabilities`.** `PostgresSagaResolvers.capabilities()` reads only that cache (ADR-0006), so a real Postgres tenant sees every slot as `null`: proposals always degrade, and a transcript is never polled for. The harness seeds the probe result, standing in for the connect flow that does not exist. |
+
+Gaps noted rather than tested: there is no Postgres `RosterSink` (the seed has
+the only one), and no inbound route writes `feedback.submitted`, so every
+journey leaves `feedback` by its window closing.
+
+---
+
 ## Build order
 
 Ordered by bugs-caught per hour, not by tier number:
@@ -401,16 +478,17 @@ Ordered by bugs-caught per hour, not by tier number:
 1. **`.github/workflows/ci.yml`** with the PR gate above, running the existing
    827 plus `deps:check`. Nothing new to write; it makes three already-built
    guards actually guard something.
-2. **`tests/e2e/stage.ts`** plus the `happy-path` journey. One file of harness,
+2. (done) **`tests/e2e/stage.ts`** plus the `happy-path` journey. One file of harness,
    one journey. This is the first test in the repo that runs two processes.
-3. **P4 and P5** — timeout totality and determinism. Pure observation, no
+3. (done) **P4 and P5** — timeout totality and determinism. Pure observation, no
    per-journey code, and P4 gives invariant 7 its first test.
-4. **P3 · tenant isolation**, and with it the second journey. This is the one
+4. (done) **P3 · tenant isolation**, and with it the second journey. This is the one
    that would have caught `findDue`.
-5. **The rest of the catalogue**, cheapest first. The pause-reason journeys
+5. (done) **The rest of the catalogue**, cheapest first (three skipped, with reasons). The pause-reason journeys
    (`one-sided`, `no-response`, `declined`, `counter-then-cap`) are mostly
    `script` variations and land in an hour each.
-6. **P1 · idempotency replay**, then **P2 · crash resume** wired into nightly.
+6. (done) **P1 · idempotency replay**, then **P2 · crash resume** wired into nightly
+   (`pnpm test:e2e:nightly`; the workflow file in step 1 still does not exist).
 7. **Tier 4 fixture capture**, during the next live run, starting with the
    three unverified adapters named above.
 8. **Tier 3 Playwright**, six specs.
@@ -422,13 +500,10 @@ the harness step 2 builds.
 
 ---
 
-## One thing to fix along the way
+## One thing to fix along the way — done
 
-`apps/api/src/main.ts` states, in a comment on the Postgres path, that "the
-relay is not built yet (ROADMAP phase 1, pg-boss), so on this path the click
-is durably recorded and nothing moves until it is." The relay *is* built —
-`relayOnce` in `@mentorship/workflows/postgres`, run by `createWorker`. What
-is true is narrower: `pnpm serve:api` does not run a relay itself, so a click
-does not advance a saga unless `pnpm serve:worker` is also running against the
-same database. The first journey test makes the correct statement executable,
-and the comment should be corrected to say what it actually means when it does.
+`apps/api/src/main.ts` used to say, on its Postgres path, that "the relay is
+not built yet". The relay is built — `relayOnce`, run by `createWorker`. What
+is true is narrower, and is what the comment now says: `pnpm serve:api` runs no
+relay itself, so a click advances a saga only while `pnpm serve:worker` drains
+the same database. Every journey in `tests/e2e/` is that statement, executed.
