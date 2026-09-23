@@ -132,7 +132,9 @@ export async function redeliverEverything(s: Stage): Promise<void> {
   await s.internals.observer.db.execute(
     sql`update events set relayed_at = null where org_id = ${s.orgId} and dead_lettered_at is null`,
   );
-  await s.drain();
+  // Tolerant: a journey that ends wedged (dm-outage) is still wedged after
+  // redelivery, and that is not what this property is about.
+  await s.drain({ tolerate: true });
 }
 
 // ---------------------------------------------------------------------------

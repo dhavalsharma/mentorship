@@ -79,16 +79,18 @@ export function instrument<T extends Adapter>(adapter: T, crash: CrashSwitch): T
   });
 }
 
-/** A DM slot that is bound and probes fine, and fails every send. */
+/**
+ * A DM slot that is bound and probes fine, and fails every send. It records
+ * nothing: a 503 leaves no message at the vendor, and the attempt shows up
+ * where an operator would see it — the worker's log.
+ */
 export class DownDm implements DmAdapter {
   readonly slot = "dm" as const;
   readonly id = "down-dm";
-  constructor(private readonly recorder: Recorder) {}
   async probe(): Promise<AdapterCapabilities> {
     return AdapterCapabilitiesSchema.parse({ identityMapping: "verified" });
   }
-  async send(input: { memberRef: string }): Promise<{ messageRef: string }> {
-    this.recorder.record("dm.failed", { to: input.memberRef });
+  async send(): Promise<{ messageRef: string }> {
     throw new Error("dm outage: 503 from the chat vendor");
   }
 }

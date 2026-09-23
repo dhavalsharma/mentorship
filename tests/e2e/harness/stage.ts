@@ -202,7 +202,7 @@ export async function stage(options: StageOptions = {}): Promise<Stage> {
   const conversation = new FakeConversation(recorder);
   const calendar = new FakeCalendar(recorder, options.busy ?? {});
   const document = options.adapters?.document === false ? null : new FakeDocument(recorder);
-  const dm = options.adapters?.dm === "down" ? new DownDm(recorder) : new FakeDm(recorder);
+  const dm = options.adapters?.dm === "down" ? new DownDm() : new FakeDm(recorder);
   const transcript = options.adapters?.transcript
     ? new FakeTranscript(recorder, options.adapters.transcript)
     : null;
