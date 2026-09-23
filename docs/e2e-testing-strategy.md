@@ -533,10 +533,11 @@ Built as specified, with these departures and additions:
   outbox row reaches the timeout). Variants added: `transcribed`,
   `transcription-without-consent`, `document-echo`.
 
-### Product bugs, none fixed here
+### Product bugs
 
 Each is asserted as the *correct* behaviour and marked `it.fails`, so the day
-one is fixed the suite goes red until the marker is removed.
+one is fixed the suite goes red until the marker is removed. A fixed one
+keeps its row, marked **Fixed**, and its check becomes a plain `it`.
 
 | # | Found by | Bug |
 | --- | --- | --- |
@@ -545,7 +546,7 @@ one is fixed the suite goes red until the marker is removed.
 | 3 | `extraction-timeout` | The confirming-timeout render **replaces the write-up** with the "unverified" banner — the managed region ends up containing only the banner (invariant 19 says mark, not erase). |
 | 4 | `dm-outage` | **Fixed.** ~~A *failing* (not absent) DM slot wedges the lifecycle at the reminder, and `SagaEngine.tick()` has no per-instance failure handling, so every pass for the org throws.~~ `tick()` now isolates each instance: a throwing timer step is recorded in that instance's history (error, attempt, ledger so far) with `timeoutAt` backed off on the relay's curve, and parked as `failed` after 5 attempts (listed by `stuck-sagas`, escalated best-effort); `tick()` returns `{fired, advanced, failed, parked}`. A DM that fails again on its retry degrades — not sent, `saga.escalated {reason: dm_undeliverable}`, never the thread (invariant 13) — so the session carries on. No migration: history carries the attempts. |
 | 5 | P2 | **Stranded at start**: `SagaEngine.start()` commits the instance before its first step runs. A crash in that step leaves it `running` in `idle` with no wait and no timeout; the redelivered activation finds it "running" and leaves it. The pair is never proposed to. |
-| 6 | P2 | **`emit` effects are not idempotent.** The completed-effect ledger is saved only when the whole step saves, and an emit is its own committed write with no key, so a retried step re-emits: duplicate `session.scheduled` (and a phantom `sessions` row), `session.held`, `pair.cadence_deficit`. |
+| 6 | P2 | **Fixed.** ~~`emit` effects are not idempotent.~~ The ledger is saved only with the whole step, so a retried step re-emitted: duplicate `session.scheduled` (and a phantom `sessions` row), `session.held`, `pair.cadence_deficit`. Every event an effect produces now carries `{effect key}:{event name}` in `events.idempotency_key`, deduped by a partial unique index (migration `0014`) with `ON CONFLICT DO NOTHING` returning the original row; `EventLog` has the same semantics, and the `session.scheduled` projection skips a second row for the same calendar invite. The nightly `reEmittedOnRetry` check is now a plain `it`. |
 | 7 | P2 | **The confirming timeout eats its own event.** It emits `extraction.confirmed {unverified}` before rendering; after a crash the still-`confirming` saga receives that event as a verdict from nobody, re-arms 120h, and the render and feedback requests never happen. |
 | 8 | P2 | **A second shared doc on retry.** A pair's first `render_document` has no doc id, and neither `FakeDocument` nor `GoogleDriveDocumentAdapter` uses the idempotency key when creating — a crash after creation makes a second doc (in Drive, a second access email too). |
 | 9 | P2, restart-every-pass | **The transcript lives in worker memory** between the pass that fetches it and the pass that extracts it. A restart in between extracts from an empty string: "no transcript was available" for a transcribed session. |

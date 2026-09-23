@@ -88,17 +88,44 @@ export class PostgresProjector {
     const p = event.payload;
     const id = str(p["sessionId"]);
     if (!id) return;
+    const pairingId = idFromRef(event.subjectRef);
+    const calendarEventId = str(p["calendarEventId"]);
+    // `onConflictDoNothing` below only catches a redelivery of the *same*
+    // event. A re-emitted one (a crash-retried `create_calendar_event`, before
+    // migration 0014 keyed effect emits) carries a freshly minted `sessionId`
+    // for the same calendar invite, and used to land as a phantom second
+    // session. The calendar adapter dedupes the invite by idempotency key, so
+    // the event id is the stable identity here. A check rather than a unique
+    // index: the shared databases this runs on already hold such phantom
+    // pairs, and the event-level key is now the primary guard — this is the
+    // second one, for events written before it existed. The degraded path
+    // (no calendar, empty event id) has no such identity and relies on the
+    // event key alone.
+    if (calendarEventId) {
+      const [already] = await tx
+        .select({ id: sessions.id })
+        .from(sessions)
+        .where(
+          and(
+            eq(sessions.orgId, event.orgId),
+            eq(sessions.pairingId, pairingId),
+            eq(sessions.calendarEventId, calendarEventId),
+          ),
+        )
+        .limit(1);
+      if (already) return;
+    }
     await tx
       .insert(sessions)
       .values({
         id,
         orgId: event.orgId,
-        pairingId: idFromRef(event.subjectRef),
+        pairingId,
         startsAt: new Date(str(p["startsAt"]) ?? event.occurredAt),
         endsAt: new Date(str(p["endsAt"]) ?? event.occurredAt),
         state: "scheduled",
         source: "calendar",
-        calendarEventId: str(p["calendarEventId"]) ?? null,
+        calendarEventId: calendarEventId ?? null,
         conferenceUrl: str(p["conferenceUrl"]) ?? null,
         transcriptionEnabled: Boolean(p["transcriptionEnabled"]),
       })

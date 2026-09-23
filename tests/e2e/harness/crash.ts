@@ -266,6 +266,15 @@ export const P2_KNOWN_BUGS = {
     ),
 } as const;
 
+/**
+ * Signatures kept after the fix, asserted as *absent* rather than `it.fails`.
+ * `reEmittedOnRetry` (#6): effect-produced events carry their effect key and
+ * dedupe on `events_idempotency_key_unique` (migration 0014).
+ */
+export const P2_FIXED_BUGS: ReadonlySet<string> = new Set<keyof typeof P2_KNOWN_BUGS>([
+  "reEmittedOnRetry",
+]);
+
 export function explain(f: CrashFinding, expected?: Outcome): keyof typeof P2_KNOWN_BUGS | null {
   for (const [name, matches] of Object.entries(P2_KNOWN_BUGS)) {
     if (matches(f, expected)) return name as keyof typeof P2_KNOWN_BUGS;

@@ -8,6 +8,16 @@ export interface EmitInput {
   name: EventName;
   subjectRef: string;
   payload?: Record<string, unknown>;
+  /**
+   * Set by the effect runner for an event a saga effect produced: the
+   * effect's key (`saga:{id}:{step}:{index}`) plus the event name. A second
+   * emit with the same key in the same org is a no-op that returns the event
+   * already appended — not a second event, and not an error. That is what
+   * keeps an emit idempotent across a step retried after a crash (invariant
+   * 6), where the engine's completed-effect ledger cannot help: it is saved
+   * with the step, and the event was committed before the step was.
+   */
+  idempotencyKey?: string;
 }
 
 /**
@@ -39,6 +49,8 @@ export interface DeadLetter {
 export class EventLog implements EventSink {
   private handlers: EventHandler[] = [];
   private readonly events: DomainEvent[] = [];
+  /** Parity with `events_idempotency_key_unique` on Postgres (migration 0014). */
+  private readonly byKey = new Map<string, DomainEvent>();
   readonly deadLetters: DeadLetter[] = [];
 
   constructor(
@@ -54,6 +66,16 @@ export class EventLog implements EventSink {
   }
 
   async emit(input: EmitInput): Promise<DomainEvent> {
+    const dedupe =
+      input.idempotencyKey === undefined
+        ? undefined
+        : `${input.orgId}\u0000${input.idempotencyKey}`;
+    if (dedupe !== undefined) {
+      // Already appended: hand back the original and fan nothing out. A
+      // handler seeing it twice is exactly the duplicate this key prevents.
+      const seen = this.byKey.get(dedupe);
+      if (seen) return seen;
+    }
     const event: DomainEvent = {
       id: this.ids.next("evt"),
       orgId: input.orgId,
@@ -64,6 +86,7 @@ export class EventLog implements EventSink {
       payload: input.payload ?? {},
     };
     this.events.push(event);
+    if (dedupe !== undefined) this.byKey.set(dedupe, event);
 
     for (const handler of [...this.handlers]) {
       try {
