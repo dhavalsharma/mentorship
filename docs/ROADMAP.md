@@ -227,8 +227,9 @@ risk, and it is the only one that *generates* the labelled data the others need.
       asserting zero constraint violations, capacity never exceeded, and
       coverage at least matching a greedy baseline across 40 randomized,
       seeded cohorts. Runs as part of the default `pnpm test` (also runnable
-      alone via `pnpm test:matching-invariants`); still no CI workflow file
-      in this repo for it to be wired into.
+      alone via `pnpm test:matching-invariants`), and so inside
+      `.github/workflows/ci.yml`'s test step — which has not yet run on
+      GitHub.
 - [x] Commit a round into real pairings — `runMatchingRound`/
       `commitMatchingRound` (`round.ts`) turn assignments into `pair.activated`
       through the same sink shape `RosterSink` already uses; `World` satisfies
@@ -325,8 +326,8 @@ blocked while this waits.
 - [ ] Docs site
 - [x] `dependency-cruiser` enforcing the boundary rule — `.dependency-cruiser.cjs`
       + `pnpm deps:check`, verified both directions (clean against the real
-      codebase, catches a deliberate violation). Not yet wired into CI: no
-      CI workflow exists anywhere in this repo yet for it to join.
+      codebase, catches a deliberate violation). A step in
+      `.github/workflows/ci.yml`; that workflow has not yet run on GitHub.
 - [ ] Full Apache-2.0 licence text
 - [ ] A custom-primitive walkthrough, and the eval harness front and centre so
       contributors can change prompts safely
@@ -360,11 +361,16 @@ blocked while this waits.
 
 These are not a phase; they are things that go stale if ignored.
 
-- There is still no CI workflow file anywhere in this repo, so `deps:check`,
-  the RLS cross-tenant leak test and the matching invariants suite all exist
-  and guard nothing automatically. It is the first step in
-  [e2e-testing-strategy.md](./e2e-testing-strategy.md), ahead of writing any
-  new test, because everything else there is hypothetical without it.
+- CI now exists — `.github/workflows/ci.yml` (PR gate: typecheck,
+  `deps:check`, migrations, the full suite with `DATABASE_URL` through
+  `scripts/assert-no-skipped.mjs` so a skipped test fails, `test:e2e`, the web
+  build), `nightly.yml` and `live-contracts.yml` (manual only). **It has not
+  yet run on GitHub**: every step was run by hand locally, but the first
+  green run on a real PR is still outstanding, and until then `deps:check`,
+  the RLS leak test and the matching invariants are written into a gate
+  nobody has watched close. Once it has run, make `Gate` a required status
+  check on `main` — a workflow that can be merged past guards nothing. See
+  "CI — the gate" in [e2e-testing-strategy.md](./e2e-testing-strategy.md).
 - No test runs `apps/api` and `apps/worker` together against one Postgres.
   Both composition bugs that have escaped so far (the projector's `pairing_id`,
   `findDue`'s missing org scope) were exactly that shape and were found by a

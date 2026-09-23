@@ -1,0 +1,26 @@
+# Shared by every workflow: pnpm, Node, a cached store, a frozen install.
+#
+# pnpm's version is pinned here rather than read from `packageManager`: the
+# root package.json has no such field (only apps/web declares pnpm@9.15.0),
+# and pnpm/action-setup refuses to run when both are set and disagree — so if
+# a root `packageManager` is ever added, delete `version:` below.
+name: Setup
+description: Install pnpm and Node, restore the pnpm store cache, install with a frozen lockfile.
+
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 9.15.0
+
+    - uses: actions/setup-node@v4
+      with:
+        # package.json says ">=20"; 22 is the active LTS and what the repo is
+        # developed on.
+        node-version: 22
+        cache: pnpm
+
+    - name: Install
+      shell: bash
+      run: pnpm install --frozen-lockfile

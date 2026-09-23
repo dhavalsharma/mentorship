@@ -1,0 +1,72 @@
+# The PR gate — docs/e2e-testing-strategy.md, "CI — the gate".
+#
+# Two rules this file exists to enforce, and which are easy to erode:
+#
+# - Nothing nondeterministic runs here. No model, no network to a vendor, no
+#   wall-clock sleep. Evals, Playwright and crash-resume live in nightly.yml;
+#   live vendor contracts in live-contracts.yml, which never runs on a PR.
+# - A skipped test is a failure. Every Postgres-backed suite is
+#   `describe.skipIf(!DATABASE_URL)`, which is right on a laptop and would,
+#   here, silently drop the cross-tenant leak test. The test step therefore
+#   runs through scripts/assert-no-skipped.mjs, which fails on any skip.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      db:
+        # Same image as docker-compose.yml — pgvector is needed by the schema.
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mentorship
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/mentorship
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Dependency boundaries (invariants 1 and 2)
+        run: pnpm deps:check
+
+      - name: Migrations apply from scratch
+        run: pnpm db:migrate
+
+      - name: Test (fails on any skipped test)
+        run: node scripts/assert-no-skipped.mjs
+
+      - name: Journey tests
+        run: pnpm test:e2e
+
+      - name: Build apps/web
+        run: pnpm --filter @mentorship/web build
