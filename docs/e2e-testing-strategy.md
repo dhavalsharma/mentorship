@@ -99,7 +99,7 @@ bug to fix.**
 | 3 | **Browser journeys against `apps/web`** | 0 | — |
 | 4 | **Vendor contract fixtures** | 0 | — |
 | 5 | Evals over the AI primitives | partial (10 golden cases in `session-intel`) | ~5s |
-| — | **CI running any of it** | none — no workflow file exists | — |
+| — | **CI running any of it** | `.github/workflows/ci.yml` written (tiers 0–1, `deps:check`, migrations, web build); **not yet run on GitHub** | — |
 
 Tier 1 is stronger than the name suggests: `apps/worker/src/__tests__/worker.test.ts`
 already takes a `pair.activated` row to a proposed session on Postgres, and
@@ -334,30 +334,46 @@ deliberately hostile `LlmProvider` proves it end to end.
 
 ## CI — the gate
 
-No CI workflow exists in this repository. Three separate things in the status
-table say "not yet wired into CI, since no CI workflow exists" — `deps:check`,
-the matching invariants suite, the RLS leak test. Everything above is
-hypothetical until this file exists, so it is the first thing to build, before
-a single journey.
+Three workflow files now exist in `.github/workflows/`, sharing one setup
+action (`.github/actions/setup` — pnpm 9.15.0, Node 22, cached store,
+`pnpm install --frozen-lockfile`). **None of them has run on GitHub yet.**
+Every step was run by hand locally against the same commands (see below); the
+YAML itself is parsed and structurally checked, not executed by Actions. Until
+the first green run on a real PR, treat this section as "written", not
+"enforced".
 
-`.github/workflows/ci.yml`, with a `pgvector/pgvector:pg17` service:
-
-**On every PR** — target under three minutes:
+**`ci.yml` — every PR and every push to `main`**, one job with a
+`pgvector/pgvector:pg17` service and `DATABASE_URL` set. Target under three
+minutes:
 
 ```
 pnpm typecheck
-pnpm deps:check                     # invariants 1 and 2, currently unenforced
+pnpm deps:check                     # invariants 1 and 2
 pnpm db:migrate                     # migrations apply from scratch
-pnpm test                           # 827, with DATABASE_URL set
+node scripts/assert-no-skipped.mjs  # = pnpm test, 827, and fails on any skip
 pnpm test:e2e                       # tier 2 journeys + P1, P3, P4, P5
 pnpm --filter @mentorship/web build
 ```
 
-**Nightly** — P2 crash-resume across every journey, the full Playwright suite,
-`pnpm eval`, and a `pnpm demo` smoke run.
+**`nightly.yml` — cron (03:17 UTC) and manual dispatch**, one job each so a red
+one never hides another: `pnpm test:e2e:nightly` (P2 crash-resume across every
+journey), `pnpm test:browser` (Playwright, chromium installed with
+`--with-deps`, report uploaded on failure), `pnpm eval` (`ANTHROPIC_API_KEY`
+optional, from secrets), and a `pnpm demo` smoke run with no database.
 
-**On demand, manually triggered, credentials from secrets** — the live vendor
-contract tests and fixture capture.
+**`live-contracts.yml` — `workflow_dispatch` only, never on a PR**:
+`pnpm test:contracts:live` in a `live-sandbox` environment (so its secrets can
+sit behind required reviewers), with `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`,
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`,
+`GOOGLE_CALENDAR_ID` and `SANDBOX_ALLOWLIST` from secrets. A missing secret
+fails the job before anything runs; captured fixtures under
+`tests/fixtures/vendor/` are uploaded as an artifact, never auto-committed.
+Serialised by a concurrency group — two runs against one sandbox prove nothing.
+
+The `test:e2e`, `test:e2e:nightly`, `test:browser`, `eval` and
+`test:contracts:live` scripts are referenced by these workflows and provided
+by their own changes; until each lands, the step that calls it fails with a
+missing-script error rather than passing vacuously.
 
 Two gate rules worth writing down now rather than discovering later:
 
@@ -367,8 +383,15 @@ Two gate rules worth writing down now rather than discovering later:
 - **A skipped test is a failure in CI.** `DATABASE_URL` being unset locally is
   a convenience (`describe.skipIf`), and it is the correct default for `pnpm
   test` on a laptop. In CI it would silently drop 95 tests including the
-  cross-tenant leak test. The workflow sets `DATABASE_URL` and asserts the
-  skipped count is zero.
+  cross-tenant leak test. The workflow sets `DATABASE_URL` and runs the suite
+  through `scripts/assert-no-skipped.mjs`, which reads Vitest's JSON report
+  and exits non-zero on any skipped or todo test — and, when `CI` is set, on a
+  missing `DATABASE_URL` too. Checked locally both ways: with the database,
+  827 run and 0 skipped (exit 0); without it and `CI=true`, 95 skipped
+  (exit 1). Without `CI` or `DATABASE_URL` it only reports the counts, so on
+  a laptop it behaves like `pnpm test`. Vitest has no fail-on-skip option,
+  and its console summary is not a contract; the JSON report's per-test
+  `status` is.
 
 ---
 
@@ -400,7 +423,8 @@ Ordered by bugs-caught per hour, not by tier number:
 
 1. **`.github/workflows/ci.yml`** with the PR gate above, running the existing
    827 plus `deps:check`. Nothing new to write; it makes three already-built
-   guards actually guard something.
+   guards actually guard something. *Written, with nightly and live-contract
+   workflows alongside; awaiting its first run on GitHub.*
 2. **`tests/e2e/stage.ts`** plus the `happy-path` journey. One file of harness,
    one journey. This is the first test in the repo that runs two processes.
 3. **P4 and P5** — timeout totality and determinism. Pure observation, no
