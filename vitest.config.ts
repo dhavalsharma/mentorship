@@ -29,7 +29,16 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["packages/**/*.test.ts", "apps/**/*.test.ts"],
+    // `tests/contracts/live` (real vendors) and `evals/run.ts` (a measurement,
+    // not a test) are deliberately outside this include — they have their own
+    // commands, `pnpm test:contracts:live` and `pnpm eval`, and neither may
+    // ever run in the gate. Only their deterministic harness tests are here.
+    include: [
+      "packages/**/*.test.ts",
+      "apps/**/*.test.ts",
+      "tests/contracts/*.test.ts",
+      "evals/**/*.test.ts",
+    ],
     environment: "node",
   },
 });

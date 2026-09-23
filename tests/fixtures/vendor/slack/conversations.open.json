@@ -1,0 +1,22 @@
+{
+  "vendor": "slack",
+  "call": "conversations.open",
+  "capturedOn": "2026-09-23",
+  "source": "hand-written",
+  "notes": "Hand-written from the stub it replaced and the vendor's published reference. This call has run against a live sandbox (CLAUDE.md status table), but no response was captured and the date of that run was not recorded, so this is still an assumption, not an observation. Replace it with a capture from pnpm test:contracts:live.",
+  "request": {
+    "method": "POST",
+    "path": "conversations.open",
+    "body": {
+      "users": "UREDACTED02,UREDACTED03"
+    }
+  },
+  "response": {
+    "ok": true,
+    "no_op": false,
+    "already_open": false,
+    "channel": {
+      "id": "C0EXAMPLE01"
+    }
+  }
+}

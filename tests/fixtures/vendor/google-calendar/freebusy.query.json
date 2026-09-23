@@ -1,0 +1,41 @@
+{
+  "vendor": "google-calendar",
+  "call": "freebusy.query",
+  "capturedOn": "2026-09-23",
+  "source": "hand-written",
+  "notes": "Hand-written from the stub it replaced and the vendor's published reference. This call has run against a live sandbox (CLAUDE.md status table), but no response was captured and the date of that run was not recorded, so this is still an assumption, not an observation. Replace it with a capture from pnpm test:contracts:live.",
+  "request": {
+    "method": "POST",
+    "path": "/freeBusy",
+    "body": {
+      "timeMin": "2026-09-21T00:00:00.000Z",
+      "timeMax": "2026-09-22T00:00:00.000Z",
+      "items": [
+        {
+          "id": "user1@example.com"
+        },
+        {
+          "id": "user2@example.com"
+        }
+      ]
+    }
+  },
+  "response": {
+    "kind": "calendar#freeBusy",
+    "timeMin": "2026-09-21T00:00:00.000Z",
+    "timeMax": "2026-09-22T00:00:00.000Z",
+    "calendars": {
+      "user1@example.com": {
+        "busy": [
+          {
+            "start": "2026-09-21T10:00:00Z",
+            "end": "2026-09-21T11:00:00Z"
+          }
+        ]
+      },
+      "user2@example.com": {
+        "busy": []
+      }
+    }
+  }
+}

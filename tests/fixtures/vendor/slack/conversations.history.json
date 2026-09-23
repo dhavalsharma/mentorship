@@ -1,0 +1,31 @@
+{
+  "vendor": "slack",
+  "call": "conversations.history",
+  "capturedOn": "2026-09-23",
+  "source": "hand-written",
+  "notes": "Hand-written. Not called by any adapter: the live contract suite calls it on the pair's group DM as the only outbound way to prove the bot holds `mpim:history`. The inbound `message.mpim` / `message.im` event subscriptions cannot be proved from an outbound call at all; see docs/vendor-contracts.md.",
+  "request": {
+    "method": "POST",
+    "path": "conversations.history",
+    "body": {
+      "channel": "C0EXAMPLE01",
+      "limit": 5
+    }
+  },
+  "response": {
+    "ok": true,
+    "messages": [
+      {
+        "type": "message",
+        "text": "Heads up: your session is at 9am.",
+        "user": "UREDACTED01",
+        "bot_id": "BREDACTED01",
+        "app_id": "AEXAMPLE01",
+        "ts": "1726400000.000100",
+        "team": "TREDACTED01"
+      }
+    ],
+    "has_more": false,
+    "pin_count": 0
+  }
+}

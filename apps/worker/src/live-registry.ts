@@ -1,4 +1,6 @@
+import { fileURLToPath } from "node:url";
 import {
+  fileFixtureSink,
   FakeDocument,
   FakeSheet,
   FakeTranscript,
@@ -11,6 +13,10 @@ import {
   httpGoogleTransport,
   httpSlackTransport,
   IntegrationRegistry,
+  recordingGoogleDocsTransport,
+  recordingGoogleSheetsTransport,
+  recordingGoogleTransport,
+  recordingSlackTransport,
   Recorder,
   refreshableGoogleAccessToken,
   SandboxGuard,
@@ -18,8 +24,13 @@ import {
   SlackDmAdapter,
   staticAccessToken,
   type GoogleAccessTokenSource,
+  type GoogleDocsTransport,
   type GoogleDriveDocumentConfig,
   type GoogleSheetConfig,
+  type GoogleSheetsTransport,
+  type GoogleTransport,
+  type RecordingOptions,
+  type SlackTransport,
 } from "@mentorship/integrations";
 import { documentConfigFromEnv, type DocumentEnv } from "./document-config.js";
 import { sheetConfigFromEnv, type SheetEnv } from "./reports.js";
@@ -53,7 +64,28 @@ export interface LiveEnv extends DocumentEnv, SheetEnv {
   GOOGLE_REFRESH_TOKEN?: string | undefined;
   GOOGLE_CALENDAR_ID?: string | undefined;
   SANDBOX_ALLOWLIST?: string | undefined;
+  /**
+   * `1` turns on vendor fixture capture (docs/vendor-contracts.md): every
+   * Slack and Google request/response this registry's transports carry is
+   * written, redacted, to `VENDOR_FIXTURE_DIR`. Off unless set — capture
+   * changes nothing about what is sent, but it does write files.
+   */
+  CAPTURE_VENDOR_FIXTURES?: string | undefined;
+  /** Defaults to the repo's `tests/fixtures/vendor`. */
+  VENDOR_FIXTURE_DIR?: string | undefined;
 }
+
+/** The raw transports under the adapters — already capture-wrapped when capture is on. */
+export interface LiveTransports {
+  slack: SlackTransport;
+  googleCalendar: GoogleTransport;
+  googleDocs: GoogleDocsTransport;
+  googleSheets: GoogleSheetsTransport;
+}
+
+export const DEFAULT_VENDOR_FIXTURE_DIR = fileURLToPath(
+  new URL("../../../tests/fixtures/vendor", import.meta.url),
+);
 
 export function buildLiveRegistry(
   env: LiveEnv,
@@ -67,7 +99,13 @@ export function buildLiveRegistry(
   documentConfig?: GoogleDriveDocumentConfig | null,
   /** Same "already resolved, outranks the environment" reasoning, for the `sheet` slot. */
   sheetConfig?: GoogleSheetConfig | null,
-): { registry: IntegrationRegistry; recorder: Recorder } {
+): {
+  registry: IntegrationRegistry;
+  recorder: Recorder;
+  transports: LiveTransports;
+  /** Files written by fixture capture so far; empty and unused when capture is off. */
+  capturedFixtures: string[];
+} {
   const missing: string[] = (
     ["SLACK_BOT_TOKEN", "GOOGLE_CALENDAR_ID", "SANDBOX_ALLOWLIST"] as const
   ).filter((key) => !env[key]);
@@ -88,7 +126,22 @@ export function buildLiveRegistry(
   const recorder = new Recorder();
   const registry = new IntegrationRegistry();
 
-  const slackCall = httpSlackTransport(env.SLACK_BOT_TOKEN!);
+  // Capture wraps the transport, under the adapter — and so under the guard
+  // wrapped around the adapter below: a refused recipient throws before any
+  // request exists to record.
+  const sink = env.CAPTURE_VENDOR_FIXTURES === "1"
+    ? fileFixtureSink(env.VENDOR_FIXTURE_DIR ?? DEFAULT_VENDOR_FIXTURE_DIR)
+    : null;
+  const recording: RecordingOptions | null = sink
+    ? {
+        sink,
+        onWarn: (message, detail) => console.warn(`[capture] ${message}`, detail ?? ""),
+      }
+    : null;
+
+  const slackCall = recording
+    ? recordingSlackTransport(httpSlackTransport(env.SLACK_BOT_TOKEN!), recording)
+    : httpSlackTransport(env.SLACK_BOT_TOKEN!);
   registry.bind(guardAdapter(new SlackConversationAdapter(slackCall), guard));
   registry.bind(guardAdapter(new SlackDmAdapter(slackCall), guard));
 
@@ -103,7 +156,15 @@ export function buildLiveRegistry(
       })
     : staticAccessToken(env.GOOGLE_ACCESS_TOKEN!);
 
-  const googleCall = httpGoogleTransport(googleToken);
+  const googleCall = recording
+    ? recordingGoogleTransport(httpGoogleTransport(googleToken), recording)
+    : httpGoogleTransport(googleToken);
+  const docsCall = recording
+    ? recordingGoogleDocsTransport(httpGoogleDocsTransport(googleToken), recording)
+    : httpGoogleDocsTransport(googleToken);
+  const sheetsCall = recording
+    ? recordingGoogleSheetsTransport(httpGoogleSheetsTransport(googleToken), recording)
+    : httpGoogleSheetsTransport(googleToken);
   registry.bind(
     guardAdapter(
       new GoogleCalendarAdapter(googleCall, {
@@ -131,7 +192,7 @@ export function buildLiveRegistry(
   registry.bind(
     docConfig
       ? new GoogleDriveDocumentAdapter(
-          httpGoogleDocsTransport(googleToken),
+          docsCall,
           docConfig,
           // A participant silently missing from their own doc is exactly the
           // kind of gap a live run is meant to surface, so the adapter's skip
@@ -153,11 +214,21 @@ export function buildLiveRegistry(
   const sheetCfg = sheetConfig ?? sheetConfigFromEnv(env);
   registry.bind(
     sheetCfg
-      ? new GoogleSheetsAdapter(httpGoogleSheetsTransport(googleToken), sheetCfg, (message, detail) =>
+      ? new GoogleSheetsAdapter(sheetsCall, sheetCfg, (message, detail) =>
           console.warn(`[warn] ${message}`, detail ?? ""),
         )
       : new FakeSheet(recorder),
   );
 
-  return { registry, recorder };
+  return {
+    registry,
+    recorder,
+    transports: {
+      slack: slackCall,
+      googleCalendar: googleCall,
+      googleDocs: docsCall,
+      googleSheets: sheetsCall,
+    },
+    capturedFixtures: sink?.written ?? [],
+  };
 }

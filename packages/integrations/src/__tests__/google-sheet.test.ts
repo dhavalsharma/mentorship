@@ -1,25 +1,21 @@
 import { describe, expect, it } from "vitest";
-import {
-  extractSpreadsheetId,
-  GoogleSheetsAdapter,
-  type GoogleSheetsTransport,
-} from "@mentorship/integrations";
+import { extractSpreadsheetId, GoogleSheetsAdapter } from "@mentorship/integrations";
+
+import { openReplay, warnOnStaleFixtures } from "./vendor-replay.js";
 
 /**
- * No network — a stubbed transport over an in-memory spreadsheet, same shape
- * as `google-document.test.ts`. What matters: the create-then-move-into-folder
- * dance when no spreadsheet is configured, reusing a configured id rather
- * than creating a second spreadsheet, adding a tab that does not exist yet,
- * and a full clear+overwrite of a tab that does.
+ * No network — the transport replays `tests/fixtures/vendor/google-{drive,sheets}`
+ * (tier 4, docs/e2e-testing-strategy.md), with handlers layering an in-memory
+ * spreadsheet on top of the recorded responses. The replay refuses any query
+ * or body field no fixture has recorded, and any response field a fixture
+ * does not have, so the state below can only ever describe the API the
+ * fixtures describe. What matters: the create-then-move-into-folder dance
+ * when no spreadsheet is configured, reusing a configured id rather than
+ * creating a second spreadsheet, adding a tab that does not exist yet, and a
+ * full clear+overwrite of a tab that does.
  */
 
-interface Call {
-  api: string;
-  path: string;
-  method: string;
-  body?: unknown;
-  query?: Record<string, string>;
-}
+warnOnStaleFixtures("google-sheet.test.ts");
 
 function stubTransport(
   initial: {
@@ -27,45 +23,37 @@ function stubTransport(
     tabs?: Record<string, Record<string, { columns: string[]; rows: unknown[][] }>>;
     filesByName?: Record<string, string>;
   } = {},
-): { call: GoogleSheetsTransport; calls: Call[]; tabsOf: (spreadsheetId: string) => string[] } {
-  const calls: Call[] = [];
+) {
+  const replay = openReplay();
   const tabs = new Map(
     Object.entries(initial.tabs ?? {}).map(([id, t]) => [id, new Map(Object.entries(t))]),
   );
   const filesByName = new Map(Object.entries(initial.filesByName ?? {}));
   let nextSpreadsheetId = 1;
+  const idOf = (path: string) => path.split("/")[2]!.replace(/:.*$/, "");
 
-  const call: GoogleSheetsTransport = async (api, path, init) => {
-    calls.push({
-      api,
-      path,
-      method: init.method,
-      ...(init.body === undefined ? {} : { body: init.body }),
-      ...(init.query === undefined ? {} : { query: init.query }),
-    });
-
-    if (api === "drive" && path === "/files" && init.method === "GET") {
-      const query = init.query?.["q"] ?? "";
+  replay
+    .on("files.list", ({ request, response }) => {
+      const query = request.query?.["q"] ?? "";
       for (const [name, id] of filesByName) {
-        if (query.includes(`name = '${name}'`)) return { files: [{ id }] };
+        if (query.includes(`name = '${name}'`)) return { ...response, files: [{ id }] };
       }
-      return { files: [] };
-    }
-    if (api === "sheets" && path === "/spreadsheets" && init.method === "POST") {
+      return response;
+    })
+    .on("spreadsheets.create", ({ response }) => {
       const id = `sheet_${nextSpreadsheetId++}`;
       tabs.set(id, new Map());
-      return { spreadsheetId: id };
-    }
-    if (api === "sheets" && init.method === "GET" && !path.includes(":")) {
-      const id = path.split("/")[2]!;
-      const sheetTabs = tabs.get(id) ?? new Map();
-      return {
-        sheets: [...sheetTabs.keys()].map((title) => ({ properties: { title } })),
-      };
-    }
-    if (api === "sheets" && path.endsWith(":batchUpdate")) {
-      const id = path.split("/")[2]!.replace(":batchUpdate", "");
-      const body = init.body as {
+      return { ...response, spreadsheetId: id };
+    })
+    .on("spreadsheets.get", ({ request, response }) => ({
+      ...response,
+      sheets: [...(tabs.get(idOf(request.path))?.keys() ?? [])].map((title, sheetId) => ({
+        properties: { sheetId, title },
+      })),
+    }))
+    .on("spreadsheets.batchUpdate", ({ request, response }) => {
+      const id = idOf(request.path);
+      const body = request.body as {
         requests: { addSheet: { properties: { title: string } } }[];
       };
       const sheetTabs = tabs.get(id) ?? new Map();
@@ -73,32 +61,23 @@ function stubTransport(
         sheetTabs.set(r.addSheet.properties.title, { columns: [], rows: [] });
       }
       tabs.set(id, sheetTabs);
-      return {};
-    }
-    if (api === "sheets" && path.includes("/values/") && path.endsWith(":clear")) {
-      return {};
-    }
-    if (api === "sheets" && path.includes("/values/") && init.method === "PUT") {
-      const [, , spreadsheetId, , rangeRaw] = path.split("/");
+      return response;
+    })
+    .on("spreadsheets.values.update", ({ request, response }) => {
+      const [, , spreadsheetId, , rangeRaw] = request.path.split("/");
       const tabTitle = rangeRaw!.replace(/^'/, "").replace(/'$/, "").replace(/''/g, "'");
-      const body = init.body as { values: unknown[][] };
+      const body = request.body as { values: unknown[][] };
       const sheetTabs = tabs.get(spreadsheetId!) ?? new Map();
       const [columns, ...rows] = body.values;
       sheetTabs.set(tabTitle, { columns: columns as string[], rows });
       tabs.set(spreadsheetId!, sheetTabs);
-      return {};
-    }
-
-    // Drive: generic get-parents (createDoc/ensureSpreadsheet's move step)
-    // and the folder probe both land here, in that order.
-    if (api === "drive" && init.method === "GET") return { parents: ["root"] };
-    if (api === "drive" && init.method === "PATCH") return { id: "moved" };
-    return {};
-  };
+      return response;
+    });
 
   return {
-    call,
-    calls,
+    replay,
+    call: replay.googleSheets(),
+    calls: replay.calls,
     tabsOf: (spreadsheetId: string) => [...(tabs.get(spreadsheetId)?.keys() ?? [])],
   };
 }
@@ -138,7 +117,7 @@ describe("GoogleSheetsAdapter", () => {
     });
 
     it("creates a new spreadsheet and moves it into the folder when none exists", async () => {
-      const { call, calls } = stubTransport();
+      const { call, calls, replay } = stubTransport();
       const result = await new GoogleSheetsAdapter(call, CONFIG).ensureSpreadsheet({
         spreadsheetId: null,
         title: "Reports",
@@ -147,8 +126,14 @@ describe("GoogleSheetsAdapter", () => {
       expect(result.spreadsheetId).toBe("sheet_1");
       const create = calls.find((c) => c.api === "sheets" && c.path === "/spreadsheets");
       expect(create?.body).toEqual({ properties: { title: "Reports" } });
+      // Whatever parent Drive reported for the new file is what gets removed —
+      // taken from the fixture, not a value this test made up.
+      const recordedParents = replay.fixture("files.get", "parents").response!["parents"] as string[];
       const move = calls.find((c) => c.method === "PATCH");
-      expect(move?.query).toMatchObject({ addParents: "folder_1", removeParents: "root" });
+      expect(move?.query).toMatchObject({
+        addParents: "folder_1",
+        removeParents: recordedParents.join(","),
+      });
     });
   });
 
@@ -229,6 +214,47 @@ describe("GoogleSheetsAdapter", () => {
 
       expect(tabsOf("sheet_1")).toEqual(["Nudges"]);
     });
+  });
+});
+
+/**
+ * No handlers: every response is the fixture exactly as recorded. This is the
+ * part a stub could never check — that the adapter reads the vendor's real
+ * response shape, including the parts the stub did not bother to model (a new
+ * spreadsheet arrives with a default `Sheet1` tab).
+ */
+describe("against the fixtures as recorded", () => {
+  it("creates, moves and writes a tab using only recorded responses", async () => {
+    const replay = openReplay();
+    const adapter = new GoogleSheetsAdapter(replay.googleSheets(), CONFIG);
+
+    const created = await adapter.ensureSpreadsheet({
+      spreadsheetId: null,
+      title: "Reports",
+      idempotencyKey: "k1",
+    });
+    const recordedId = replay.fixture("spreadsheets.create").response!["spreadsheetId"];
+    expect(created.spreadsheetId).toBe(recordedId);
+
+    await adapter.writeTab({
+      spreadsheetId: created.spreadsheetId,
+      tabTitle: "Risk findings",
+      columns: ["id"],
+      rows: [["rf1"]],
+      idempotencyKey: "k2",
+    });
+
+    // The recorded `spreadsheets.get` only has `Sheet1`, so the tab is added.
+    expect(replay.calls.map((c) => c.call)).toEqual([
+      "files.list",
+      "spreadsheets.create",
+      "files.get",
+      "files.update",
+      "spreadsheets.get",
+      "spreadsheets.batchUpdate",
+      "spreadsheets.values.clear",
+      "spreadsheets.values.update",
+    ]);
   });
 });
 

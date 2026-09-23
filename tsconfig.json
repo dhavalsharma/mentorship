@@ -83,7 +83,9 @@
   },
   "include": [
     "packages/**/*.ts",
-    "apps/**/*.ts"
+    "apps/**/*.ts",
+    "tests/**/*.ts",
+    "evals/**/*.ts"
   ],
   "exclude": [
     "node_modules",
