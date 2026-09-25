@@ -1,5 +1,10 @@
 import { and, desc, eq, isNotNull, lte, sql } from "drizzle-orm";
-import type { DomainEvent, EventPattern, SagaInstance } from "@mentorship/core";
+import type {
+  DomainEvent,
+  EventPattern,
+  SagaInstance,
+  SagaPendingStep,
+} from "@mentorship/core";
 import { matchesPattern } from "@mentorship/core";
 import { sagaInstances, type Db } from "@mentorship/db";
 import { SagaConflictError, type SagaStore } from "./store.js";
@@ -144,6 +149,7 @@ function toRow(instance: SagaInstance): typeof sagaInstances.$inferInsert {
     completedEffects: instance.completedEffects,
     history: instance.history,
     status: instance.status,
+    pendingStep: instance.pendingStep ?? null,
     createdAt: new Date(instance.createdAt),
     updatedAt: new Date(instance.updatedAt),
   };
@@ -163,6 +169,7 @@ function toInstance(row: Row): SagaInstance {
     completedEffects: row.completedEffects as Record<string, unknown>,
     history: row.history as SagaInstance["history"],
     status: row.status as SagaInstance["status"],
+    pendingStep: (row.pendingStep as SagaPendingStep | null) ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

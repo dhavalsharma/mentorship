@@ -7,9 +7,11 @@ import type {
   SagaContext,
   SagaInput,
   SagaInstance,
+  SagaPendingStep,
   SagaResolvers,
+  SagaStep,
 } from "@mentorship/core";
-import { stateName, uuidIds } from "@mentorship/core";
+import { matchesPattern, stateName, uuidIds } from "@mentorship/core";
 import { SagaConflictError, type SagaStore } from "./store.js";
 
 export interface EffectContext {
@@ -75,7 +77,10 @@ export interface StepFailure {
 }
 
 export interface TickResult {
-  /** Due instances found — advanced, failed or parked. */
+  /**
+   * Due instances found — advanced, failed or parked, plus any whose failure
+   * lost a race to another writer (counted here and nowhere else).
+   */
   fired: number;
   advanced: number;
   /** Threw, recorded, and will be retried after backoff. */
@@ -103,15 +108,18 @@ const defaultStepBackoff = (attempt: number): number =>
   Math.min(4 ** attempt * 1000, 15 * 60 * 1000);
 
 /**
- * A step threw partway through its effects. Carries the ledger as it stood,
- * so the recorded failure keeps the effects that *did* complete and the retry
- * skips them (invariant 6) — without this, retrying a reminder step whose DM
- * failed would re-post the shared reminder into the thread on every attempt.
- * The message is the cause's, so the relay's `lastError` reads the same.
+ * A step threw — in `step()` itself, or partway through its effects. Carries
+ * the instance row as it now stands in the store (with its `pendingStep`, if
+ * the step got that far) and the ledger as it stood, so the recorded failure
+ * keeps the effects that *did* complete and the retry skips them (invariant
+ * 6) — without this, retrying a reminder step whose DM failed would re-post
+ * the shared reminder into the thread on every attempt. The message is the
+ * cause's, so the relay's `lastError` reads the same.
  */
-class StepEffectsError extends Error {
+class StepFailedError extends Error {
   constructor(
     readonly original: unknown,
+    readonly instance: SagaInstance,
     readonly completed: Record<string, unknown>,
     readonly ran: string[],
   ) {
@@ -165,9 +173,31 @@ export class SagaEngine {
       input.sagaName,
       input.subjectRef,
     );
-    // One live instance per subject. Restarting a running saga is almost always
-    // a double-delivery bug, not an intention.
-    if (existing && existing.status === "running") return existing;
+    if (existing) {
+      // A first step that never committed — the process died after `create`
+      // (or mid-effects), or the step threw on the relay's delivery. The
+      // redelivered start event is exactly the input that step was waiting
+      // for, so run it; `advance` replays a recorded pending step rather than
+      // deciding afresh. Without this the instance sits `running` in its
+      // initial state with no wait and no timeout, forever (invariant 7).
+      if (existing.status === "running" && existing.stepIndex === 0) {
+        return this.advance(existing, { kind: "start", payload: input.payload });
+      }
+      // One instance per subject, whatever its status. A start event is
+      // delivered at least once, so a second one is a redelivery, not an
+      // intention — and a saga that has paused (`done`, awaiting a human) or
+      // been parked (`failed`, awaiting review in stuck-sagas) is precisely
+      // the one a replay must not quietly restart and re-propose into the
+      // pair's thread.
+      //
+      // Rejected: deduping only non-`done` instances. A paused
+      // SessionLifecycle *is* `done`, so that rule would still restart it —
+      // e2e bug #2. Rejected: deduping by the starting event's id, which
+      // would allow a deliberate second start with a fresh event. Nothing in
+      // the system re-activates a pairing today; when something does, it
+      // should be an explicit resume, not a second `pair.activated`.
+      return existing;
+    }
 
     const at = this.now().toISOString();
     const instance: SagaInstance = {
@@ -183,6 +213,7 @@ export class SagaEngine {
       completedEffects: {},
       history: [],
       status: "running",
+      pendingStep: null,
       createdAt: at,
       updatedAt: at,
     };
@@ -220,20 +251,57 @@ export class SagaEngine {
 
     for (const starter of this.starters) {
       if (!starter.on.includes(event.name)) continue;
-      await this.start({
-        sagaName: starter.sagaName,
-        orgId: event.orgId,
-        subjectRef: event.subjectRef,
-        payload: event.payload,
-      });
+      await this.recordingEventFailure(() =>
+        this.start({
+          sagaName: starter.sagaName,
+          orgId: event.orgId,
+          subjectRef: event.subjectRef,
+          payload: event.payload,
+        }),
+      );
       advanced++;
     }
 
     for (const instance of await this.store.findAwaiting(event)) {
-      await this.advance(instance, { kind: "event", event }, options.attempt ?? 0);
+      await this.recordingEventFailure(() =>
+        this.advance(instance, { kind: "event", event }, options.attempt ?? 0),
+      );
       advanced++;
     }
     return advanced;
+  }
+
+  /**
+   * An event-driven step that fails still propagates — the relay owns
+   * retrying and dead-lettering the event — but once its pending step is
+   * recorded, the failure is recorded on the instance too: the ledger as far
+   * as it got (so neither the relay's retry nor the tick repeats what already
+   * ran) and a failure entry (so the attempt count a failing DM degrades on
+   * is the step's, whichever path retries it). The timer is left alone: the
+   * relay backs off the event, and the timer the row already carries is the
+   * pending step's other way back.
+   *
+   * Without this, a timer step interrupted by a crash and resumed by the
+   * relay's delivery of its own emitted event failed at attempt 0 on the
+   * event path, unrecorded, and the tick then failed it at attempt 0 again —
+   * two failures, neither of them counted towards degrading.
+   */
+  private async recordingEventFailure(
+    fn: () => Promise<SagaInstance>,
+  ): Promise<SagaInstance> {
+    try {
+      return await fn();
+    } catch (caught) {
+      if (caught instanceof StepFailedError && caught.instance.pendingStep) {
+        await this.recordFailure(
+          caught.instance,
+          caught,
+          consecutiveFailures(caught.instance) + 1,
+          "event",
+        );
+      }
+      throw caught;
+    }
   }
 
   /** Earliest pending timer across running instances — used to fast-forward. */
@@ -279,18 +347,28 @@ export class SagaEngine {
       parked: 0,
     };
     for (const instance of due) {
-      const attempt = consecutiveFailures(instance);
       try {
         await this.advance(
           instance,
           { kind: "timeout", at: instance.timeoutAt ?? this.now().toISOString() },
-          attempt,
+          consecutiveFailures(instance),
         );
         result.advanced++;
       } catch (caught) {
-        const parked = await this.recordFailure(instance, caught, attempt + 1);
-        if (parked) result.parked++;
-        else result.failed++;
+        // The row the failure belongs to is the one the step left behind —
+        // with its pending step, one version on from `instance` — not the
+        // stale copy `findDue` returned.
+        const failedRow = caught instanceof StepFailedError ? caught.instance : instance;
+        const outcome = await this.recordFailure(
+          failedRow,
+          caught,
+          consecutiveFailures(failedRow) + 1,
+        );
+        if (outcome === "parked") result.parked++;
+        else if (outcome === "retrying") result.failed++;
+        // "superseded": another writer moved the instance on while this step
+        // was failing. Counted in `fired` only — it neither failed nor was
+        // advanced by this tick.
       }
     }
     return result;
@@ -306,11 +384,70 @@ export class SagaEngine {
     return saga;
   }
 
+  /**
+   * One step: decide, record the decision, execute it, commit — two writes.
+   *
+   * 1. `saga.step()` decides the next state and the effects (pure, apart from
+   *    resolver reads and minting ids).
+   * 2. The decision is saved as the instance's `pendingStep` *before* any
+   *    effect runs (a write-ahead record).
+   * 3. The effects run, keyed `{id}:{stepIndex}:{index}`, and the instance
+   *    commits to `next`, clearing the pending step.
+   *
+   * Why the write-ahead record (PR #13 review findings 1 and 2): the keys are
+   * only safe if one `stepIndex` only ever means one effect list. Before it,
+   * a retry called `step()` again and matched the *new* list against the
+   * ledger by index. A retried step could then mint a second agreement id and
+   * skip the effects that had posted buttons for the first (finding 2), and a
+   * *different* input — `session.cancelled` arriving while the reminder step
+   * was backing off — ran its proposal under keys the reminder's partial
+   * ledger already held, so the proposal was never posted (finding 1).
+   *
+   * With the record, any input that finds a pending step finishes *that*
+   * step first — same effects, same ids, same keys — and a different input is
+   * then offered to the state the instance actually landed in, if it still
+   * applies there. Deferring to the pending step rather than abandoning it is
+   * the point: a reminder half-sent is finished, not silently dropped, and an
+   * event the step itself emitted (the `confirming` timeout's own
+   * `extraction.confirmed`) is no longer read back as a verdict by the state
+   * it was leaving.
+   *
+   * Rejected alternatives:
+   * - Persisting the record only when a step *fails* (in `recordFailure`).
+   *   Covers a thrown effect, not a killed process: a crash mid-step still
+   *   leaves no record, and the retry calls `step()` again with fresh ids.
+   *   The cost of writing ahead is one extra `UPDATE` per step.
+   * - Salting keys per attempt. Wrong by construction: the adapters
+   *   (`FakeCalendar`, the Google event id) and `events.idempotency_key`
+   *   dedupe on the key being *stable* across retries of the same step.
+   * - Salting keys per input, or clearing the ledger when a different input
+   *   arrives. Either one stops the key collision but abandons the pending
+   *   step half-done — a shared reminder posted with its DMs never sent, or
+   *   buttons posted for an agreement no state will ever wait on.
+   */
   private async advance(
     instance: SagaInstance,
     input: SagaInput,
     attempt = 0,
   ): Promise<SagaInstance> {
+    const pending = instance.pendingStep ?? null;
+    if (pending) {
+      const { row, won } = await this.completePending(
+        instance,
+        pending,
+        Math.max(attempt, consecutiveFailures(instance)),
+        inputKey(input) === pending.inputKey ? undefined : describeInput(input),
+      );
+      // The same input redelivered: that step is now done, and so is this call.
+      if (!won || inputKey(input) === pending.inputKey) return row;
+      if (!this.stillApplies(row, input)) return row;
+      return this.advance(
+        row,
+        input,
+        input.kind === "timeout" ? consecutiveFailures(row) : attempt,
+      );
+    }
+
     const saga = this.mustGet(instance.sagaName);
     const now = this.now();
     const ctx: SagaContext = {
@@ -322,103 +459,196 @@ export class SagaEngine {
       effectResults: instance.completedEffects,
     };
 
-    const from = stateName(instance.state);
-    const result = await saga.step(instance.state, input, ctx);
+    let result: SagaStep<unknown>;
+    try {
+      result = await saga.step(instance.state, input, ctx);
+    } catch (error) {
+      throw new StepFailedError(error, instance, instance.completedEffects, []);
+    }
 
-    const effects = result.effects ?? [];
-    const completed = { ...instance.completedEffects };
+    const step: SagaPendingStep = {
+      inputKey: inputKey(input),
+      input: describeInput(input),
+      at: now.toISOString(),
+      from: stateName(instance.state),
+      effects: result.effects ?? [],
+      next: result.next,
+      waitFor: result.waitFor ?? null,
+      timeoutAt: result.timeoutAt ?? null,
+      done: Boolean(result.done),
+    };
+
+    let claimed: SagaInstance;
+    try {
+      claimed = await this.store.save(
+        {
+          ...instance,
+          pendingStep: step,
+          version: instance.version + 1,
+          // A pending step always has a way back. The row keeps the timer of
+          // the state it is leaving (invariant 7 already guarantees one) — or,
+          // for the very first step, which has none, a short one — so a
+          // step whose delivery is dead-lettered is still finished by the
+          // tick. `updatedAt` is untouched: nothing has advanced yet, and the
+          // stuck-saga view reads it as "last advanced".
+          timeoutAt:
+            instance.timeoutAt ??
+            new Date(now.getTime() + this.stepBackoff(1)).toISOString(),
+        },
+        instance.version,
+      );
+    } catch (error) {
+      if (error instanceof SagaConflictError) {
+        // Someone else advanced this instance first — and nothing of ours has
+        // run yet, so there is nothing to reconcile.
+        const fresh = await this.store.get(instance.id);
+        if (fresh) return fresh;
+      }
+      throw error;
+    }
+
+    return (await this.completePending(claimed, step, attempt)).row;
+  }
+
+  /**
+   * Runs a pending step's remaining effects and commits it. `won` is false
+   * when another writer moved the row first; the effects we ran are keyed, so
+   * nothing is repeated either way.
+   */
+  private async completePending(
+    row: SagaInstance,
+    step: SagaPendingStep,
+    attempt: number,
+    finishedFor?: string,
+  ): Promise<{ row: SagaInstance; won: boolean }> {
+    const now = this.now();
+    const completed = { ...row.completedEffects };
     const ran: string[] = [];
 
-    for (const [index, effect] of effects.entries()) {
-      const key = `${instance.id}:${instance.stepIndex}:${index}`;
+    for (const [index, effect] of step.effects.entries()) {
+      const key = `${row.id}:${row.stepIndex}:${index}`;
       if (key in completed) {
-        // Already done on a previous attempt at this step. Skipping here is the
+        // Already done on a previous attempt at this very step — the pending
+        // record guarantees it is the same effect. Skipping here is the
         // difference between a retry and a second calendar invite.
         continue;
       }
       let value: unknown;
       try {
-        value = await this.runEffect(effect, { instance, key, now, attempt });
+        value = await this.runEffect(effect, { instance: row, key, now, attempt });
       } catch (error) {
-        throw new StepEffectsError(error, completed, ran);
+        throw new StepFailedError(error, row, completed, ran);
       }
       completed[key] = value ?? null;
       ran.push(effect.type);
     }
 
-    const to = stateName(result.next);
+    const to = stateName(step.next);
     const entry = {
       at: now.toISOString(),
-      stepIndex: instance.stepIndex,
-      input: describeInput(input),
-      from,
+      stepIndex: row.stepIndex,
+      input: step.input,
+      from: step.from,
       to,
       effects: ran,
-      waitFor: result.waitFor?.names ?? null,
-      timeoutAt: result.timeoutAt ?? null,
-      done: Boolean(result.done),
+      waitFor: step.waitFor?.names ?? null,
+      timeoutAt: step.timeoutAt,
+      done: step.done,
+      ...(finishedFor ? { note: `pending step finished before ${finishedFor}` } : {}),
     };
 
     const updated: SagaInstance = {
-      ...instance,
-      state: result.next,
-      awaitingEvent: result.waitFor ?? null,
-      timeoutAt: result.timeoutAt ?? null,
-      version: instance.version + 1,
-      stepIndex: instance.stepIndex + 1,
+      ...row,
+      state: step.next,
+      awaitingEvent: step.waitFor,
+      timeoutAt: step.timeoutAt,
+      version: row.version + 1,
+      stepIndex: row.stepIndex + 1,
       completedEffects: completed,
-      history: [...instance.history, entry],
-      status: result.done ? "done" : "running",
+      pendingStep: null,
+      history: [...row.history, entry],
+      status: step.done ? "done" : "running",
       updatedAt: now.toISOString(),
     };
 
     this.onTrace?.({
       at: entry.at,
-      instanceId: instance.id,
+      instanceId: row.id,
       input: entry.input,
-      from,
+      from: step.from,
       to,
       effects: ran,
+      ...(entry.note ? { note: entry.note } : {}),
     });
 
     try {
-      return await this.store.save(updated, instance.version);
+      return { row: await this.store.save(updated, row.version), won: true };
     } catch (error) {
       if (error instanceof SagaConflictError) {
         // Someone else advanced this instance first. The effects we ran are
         // keyed, so the winning writer's retry will skip them.
-        const fresh = await this.store.get(instance.id);
-        if (fresh) return fresh;
+        const fresh = await this.store.get(row.id);
+        if (fresh) return { row: fresh, won: false };
       }
       throw error;
     }
   }
 
   /**
-   * Records a failed timer step on the instance itself and returns whether it
-   * was parked. The instance keeps its state, its `stepIndex` (so effect keys
-   * stay stable across retries) and its `awaitingEvent` (an event can still
-   * move it on — a cancelled session should not wait out a DM outage).
+   * Whether an input that found a pending step still means anything once
+   * that step has committed. An event only if the new state waits for it; a
+   * timer only if the new state's own timer is due; a start never — the
+   * pending step it found *was* the start.
+   */
+  private stillApplies(row: SagaInstance, input: SagaInput): boolean {
+    if (row.status !== "running") return false;
+    switch (input.kind) {
+      case "start":
+        return false;
+      case "event":
+        return matchesPattern(input.event, row.awaitingEvent);
+      case "timeout":
+        return row.timeoutAt !== null && Date.parse(row.timeoutAt) <= this.now().getTime();
+    }
+  }
+
+  /**
+   * Records a failed timer step on the instance itself. The instance keeps
+   * its state, its `stepIndex` and its `pendingStep` (so the retry replays the
+   * same effects under the same keys) and its `awaitingEvent` (an event can
+   * still move it on — a cancelled session should not wait out a DM outage;
+   * it finishes the pending step first, see `advance`).
+   *
+   * Returns `"superseded"` when the save loses the race to another writer: the
+   * instance was moved on while this step was failing, so there is no failure
+   * of ours to report — no `onStepFailed`, no parking, and above all no
+   * `saga_step_failed` escalation to a human about a healthy saga.
    */
   private async recordFailure(
     instance: SagaInstance,
     caught: unknown,
     attempts: number,
-  ): Promise<boolean> {
-    const partial = caught instanceof StepEffectsError ? caught : null;
+    source: "timer" | "event" = "timer",
+  ): Promise<"parked" | "retrying" | "superseded"> {
+    const partial = caught instanceof StepFailedError ? caught : null;
     const original = partial ? partial.original : caught;
     const error = original instanceof Error ? original : new Error(String(original));
     const now = this.now();
     const at = now.toISOString();
-    const parked = attempts >= this.maxStepAttempts;
+    // Only the tick parks: an event-path failure is the relay's to give up on.
+    const parked = source === "timer" && attempts >= this.maxStepAttempts;
     const retryAt = parked
       ? null
-      : new Date(now.getTime() + this.stepBackoff(attempts)).toISOString();
+      : source === "event"
+        ? instance.timeoutAt
+        : new Date(now.getTime() + this.stepBackoff(attempts)).toISOString();
     const state = stateName(instance.state);
     const ran = partial ? partial.ran : [];
     const note = parked
       ? `parked after ${attempts} failed attempts`
-      : `step failed (attempt ${attempts}); retrying at ${retryAt}`;
+      : source === "event"
+        ? `step failed (attempt ${attempts}); the relay will redeliver`
+        : `step failed (attempt ${attempts}); retrying at ${retryAt}`;
 
     const updated: SagaInstance = {
       ...instance,
@@ -431,7 +661,9 @@ export class SagaEngine {
         {
           at,
           stepIndex: instance.stepIndex,
-          input: "timeout",
+          // The input whose step failed: a pending event step can be the one
+          // a tick was finishing.
+          input: instance.pendingStep?.input ?? "timeout",
           from: state,
           to: state,
           effects: ran,
@@ -453,14 +685,17 @@ export class SagaEngine {
       await this.store.save(updated, instance.version);
     } catch (saveError) {
       // Another writer advanced the instance while this step was failing —
-      // theirs is the live row now, and there is nothing of ours to record.
-      if (!(saveError instanceof SagaConflictError)) throw saveError;
+      // theirs is the live row now, and there is nothing of ours to record,
+      // report or escalate (PR #13 review finding 4).
+      if (saveError instanceof SagaConflictError) return "superseded";
+      throw saveError;
     }
+    if (source === "event") return "retrying";
 
     this.onTrace?.({
       at,
       instanceId: instance.id,
-      input: "timeout",
+      input: instance.pendingStep?.input ?? "timeout",
       from: state,
       to: parked ? "failed" : state,
       effects: ran,
@@ -500,7 +735,7 @@ export class SagaEngine {
         // Already recorded; see above.
       }
     }
-    return parked;
+    return parked ? "parked" : "retrying";
   }
 
   private async terminate(
@@ -514,6 +749,9 @@ export class SagaEngine {
         status: "done",
         awaitingEvent: null,
         timeoutAt: null,
+        // The pair has ended; whatever a pending step still had to do no
+        // longer should be done.
+        pendingStep: null,
         version: instance.version + 1,
         updatedAt: at,
         history: [
@@ -556,6 +794,11 @@ function consecutiveFailures(instance: SagaInstance): number {
     count++;
   }
   return count;
+}
+
+/** Identity of an input, for matching a redelivery to its pending step. */
+function inputKey(input: SagaInput): string {
+  return input.kind === "event" ? `event:${input.event.id}` : input.kind;
 }
 
 function describeInput(input: SagaInput): string {

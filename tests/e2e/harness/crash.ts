@@ -268,11 +268,20 @@ export const P2_KNOWN_BUGS = {
 
 /**
  * Signatures kept after the fix, asserted as *absent* rather than `it.fails`.
- * `reEmittedOnRetry` (#6): effect-produced events carry their effect key and
- * dedupe on `events_idempotency_key_unique` (migration 0014).
+ * - `reEmittedOnRetry` (#6): effect-produced events carry their effect key
+ *   and dedupe on `events_idempotency_key_unique` (migration 0014).
+ * - `strandedAtStart` and `timeoutStepConsumesItsOwnEvent`: the engine writes
+ *   each decided step to `saga_instances.pending_step` before running its
+ *   effects (migration 0015). A redelivered start event resumes a first step
+ *   that never committed; an event arriving at an instance with a pending
+ *   step — including the one the step itself emitted — finishes that step
+ *   first and is then offered to the state it landed in, so `confirming`'s
+ *   own auto-confirm is no longer read back as a verdict.
  */
 export const P2_FIXED_BUGS: ReadonlySet<string> = new Set<keyof typeof P2_KNOWN_BUGS>([
   "reEmittedOnRetry",
+  "strandedAtStart",
+  "timeoutStepConsumesItsOwnEvent",
 ]);
 
 export function explain(f: CrashFinding, expected?: Outcome): keyof typeof P2_KNOWN_BUGS | null {

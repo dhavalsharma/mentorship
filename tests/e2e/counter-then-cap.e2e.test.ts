@@ -7,7 +7,7 @@ import {
   ofKind,
   threadMessages,
 } from "./harness/observe.js";
-import { describeProperties, KNOWN_BUGS } from "./harness/properties.js";
+import { describeProperties } from "./harness/properties.js";
 import type { Stage, StageEvent } from "./harness/stage.js";
 import { counterThenCap } from "./journeys/counter-then-cap.js";
 
@@ -52,6 +52,4 @@ describe("journey: counter-then-cap", () => {
   });
 });
 
-describeProperties(counterThenCap, {
-  known: { P1: KNOWN_BUGS.redeliveredActivationRestartsPausedSaga },
-});
+describeProperties(counterThenCap);
