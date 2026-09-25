@@ -81,3 +81,34 @@ export function resolveManagedRegionWrite(
 
   return { text: input.markdown, pinned: false };
 }
+
+/**
+ * The line that marks an auto-confirmed write-up as unverified (invariant 19,
+ * ADR-0005's third safeguard). One constant, because the saga writes it and
+ * tests and readers look for it — two copies of a marker is how they drift.
+ */
+export const UNVERIFIED_BANNER =
+  "> Not reviewed by either participant — treat as unverified.";
+
+/**
+ * What goes into the managed region for one session's write-up.
+ *
+ * `unverified` *marks* the write-up; it never replaces it. The confirmation
+ * timeout used to render the banner as the whole region, so the doc said
+ * "treat as unverified" about nothing — the action items it was meant to
+ * qualify were gone (journey-suite bug #3). Invariant 19 is "never silently
+ * promote a guess to agreed fact", not "throw the guess away": the reader
+ * still needs the guess, labelled as one.
+ *
+ * The banner goes *above* the write-up, separated by a blank line, so it is
+ * the first thing a reader sees and so a markdown renderer does not fold the
+ * write-up's first line into the blockquote. A pending (not yet timed-out)
+ * write-up renders byte-identically to the markdown it was given. Applying
+ * the banner twice is a no-op, so a retried or repeated unverified render
+ * cannot stack banners.
+ */
+export function renderWriteUp(input: { markdown: string; unverified: boolean }): string {
+  if (!input.unverified) return input.markdown;
+  if (input.markdown.startsWith(UNVERIFIED_BANNER)) return input.markdown;
+  return `${UNVERIFIED_BANNER}\n\n${input.markdown}`;
+}

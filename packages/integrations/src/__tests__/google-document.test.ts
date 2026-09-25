@@ -86,8 +86,8 @@ function stubTransport(
     permissions?: { emailAddress: string; role: string }[];
     /** Who authored the current revision before any call is made. */
     revisionAuthor?: "service" | "human";
-    /** Names already present in the folder, for the adopt-don't-duplicate path. */
-    existingFileId?: string;
+    /** Files already in the folder, for the adopt-don't-duplicate path. */
+    existingFiles?: DriveFile[];
   } = {},
 ) {
   const replay = openReplay();
@@ -95,6 +95,12 @@ function stubTransport(
   let revisionCounter = 1;
   let revisionAuthor: "service" | "human" = initial.revisionAuthor ?? "service";
   const permissions = [...(initial.permissions ?? [])];
+  const files: DriveFile[] = [...(initial.existingFiles ?? [])];
+  const created = (body: unknown, id: string): { id: string } => {
+    const b = body as { name: string; appProperties?: Record<string, string> };
+    files.push({ id, name: b.name, ...(b.appProperties ? { appProperties: b.appProperties } : {}) });
+    return { id };
+  };
 
   replay
     .on("revisions.list", ({ response }) => {
@@ -111,8 +117,15 @@ function stubTransport(
       permissions.push({ emailAddress: body.emailAddress, role: body.role });
       return response;
     })
-    .on("files.list", ({ response }) =>
-      initial.existingFileId ? { ...response, files: [{ id: initial.existingFileId }] } : response,
+    .on("files.list", ({ request, response }) => ({
+      ...response,
+      files: files.filter(matchesQuery(String(request.query?.["q"] ?? ""))).map((f) => ({ id: f.id })),
+    }))
+    .on("files.copy", ({ request, response }) =>
+      created(request.body, `${String(response["id"])}${files.length === 0 ? "" : `_${files.length}`}`),
+    )
+    .on("files.create", ({ request, response }) =>
+      created(request.body, `${String(response["id"])}${files.length === 0 ? "" : `_${files.length}`}`),
     )
     .on("documents.batchUpdate", ({ request, response }) => {
       const { requests } = request.body as { requests: unknown[] };
@@ -131,6 +144,7 @@ function stubTransport(
     replay,
     call: replay.googleDocs(),
     calls: replay.calls,
+    files: () => files,
     text: () => text,
     /** Test hook: a human edits the doc directly, out of band from any render. */
     humanEdit: (newText: string) => {
@@ -149,6 +163,27 @@ function stubTransport(
       revisionCounter++;
     },
   };
+}
+
+interface DriveFile {
+  id: string;
+  name: string;
+  appProperties?: Record<string, string>;
+}
+
+/**
+ * Just enough of Drive's query language to answer the two lookups the Drive
+ * adapters make: by name, and by an `appProperties` entry. Everything else
+ * in the `q` (`in parents`, `trashed`, `mimeType`) holds for every file in
+ * this stub by construction.
+ */
+function matchesQuery(q: string): (f: DriveFile) => boolean {
+  const unescape = (v: string) => v.replace(/\\(.)/g, "$1");
+  const name = /name = '((?:[^'\\]|\\.)*)'/.exec(q);
+  const prop = /appProperties has \{ key='((?:[^'\\]|\\.)*)' and value='((?:[^'\\]|\\.)*)' \}/.exec(q);
+  return (f) =>
+    (!name || f.name === unescape(name[1]!)) &&
+    (!prop || f.appProperties?.[unescape(prop[1]!)] === unescape(prop[2]!));
 }
 
 const CONFIG = { folderId: "folder_1" };
@@ -182,6 +217,8 @@ describe("GoogleDriveDocumentAdapter", () => {
     expect(copy?.body).toEqual({
       name: "Arjun & Priya — session notes",
       parents: ["folder_1"],
+      // The render's key goes onto the file itself, so a retry can find it.
+      appProperties: { mentorshipIdempotencyKey: "k1" },
     });
     const copiedId = replay.fixture("files.copy").response!["id"];
     expect(result.docRef).toBe(copiedId);
@@ -189,7 +226,7 @@ describe("GoogleDriveDocumentAdapter", () => {
     expect(result.revisionId).toBe("rev2");
   });
 
-  it("creates a blank doc and moves it into the folder when no guideline is configured", async () => {
+  it("creates a blank doc inside the folder, key attached, in one call when no guideline is configured", async () => {
     const { call, calls, replay } = stubTransport();
     const adapter = new GoogleDriveDocumentAdapter(call, CONFIG);
 
@@ -202,33 +239,113 @@ describe("GoogleDriveDocumentAdapter", () => {
     });
 
     expect(calls.some((c) => c.path.endsWith("/copy"))).toBe(false);
-    expect(calls.find((c) => c.api === "docs" && c.path === "/documents")?.body).toEqual({
-      title: "Blank pair",
+    const create = calls.find((c) => c.call === "files.create");
+    expect(create?.body).toEqual({
+      name: "Blank pair",
+      mimeType: "application/vnd.google-apps.document",
+      parents: ["folder_1"],
+      appProperties: { mentorshipIdempotencyKey: "k1" },
     });
-    // Whatever parent Drive reported for the new doc is what gets removed.
-    const recordedParents = replay.fixture("files.get", "parents").response!["parents"] as string[];
-    const move = calls.find((c) => c.method === "PATCH");
-    expect(move?.query).toMatchObject({
-      addParents: "folder_1",
-      removeParents: recordedParents.join(","),
-    });
-    expect(result.docRef).toBe(replay.fixture("documents.create").response!["documentId"]);
+    // One atomic create: no create-then-move, so there is no window in which
+    // the doc exists outside the folder or without its key.
+    expect(calls.some((c) => c.method === "PATCH")).toBe(false);
+    expect(calls.some((c) => c.api === "docs" && c.path === "/documents")).toBe(false);
+    expect(result.docRef).toBe(replay.fixture("files.create").response!["id"]);
   });
 
-  it("adopts an existing doc of the same name rather than creating a second", async () => {
-    const { call, calls } = stubTransport({ docText: "\n", existingFileId: "already_there" });
+  it("looks the key up inside the folder before creating anything", async () => {
+    const { call, calls } = stubTransport();
+
+    await new GoogleDriveDocumentAdapter(call, CONFIG).renderManagedRegion({
+      docRef: null,
+      title: "Arjun & Priya",
+      markdown: "x",
+      collaborators: PAIR,
+      idempotencyKey: "saga:abc:4:0",
+    });
+
+    const lookup = calls.findIndex((c) => c.call === "files.list");
+    const create = calls.findIndex((c) => c.call === "files.create");
+    expect(lookup).toBeGreaterThanOrEqual(0);
+    expect(lookup).toBeLessThan(create);
+    expect(calls[lookup]!.query).toMatchObject({
+      q:
+        "'folder_1' in parents and appProperties has { key='mentorshipIdempotencyKey' and " +
+        "value='saga:abc:4:0' } and trashed = false",
+      orderBy: "createdTime",
+    });
+  });
+
+  // Bug #8: the first attempt created the doc and the process died before
+  // `document.rendered` committed, so the retry arrives with no doc id and
+  // the same key.
+  it.each([
+    ["from the guideline", { ...CONFIG, guidelineDocId: "guideline_1" }],
+    ["blank", CONFIG],
+  ])("a retried first render (%s) adopts the doc its first attempt created", async (_, config) => {
+    const { call, calls, files } = stubTransport({ docText: "\n" });
+    const render = {
+      docRef: null,
+      title: "Arjun & Priya — session notes",
+      markdown: "x",
+      collaborators: PAIR,
+      idempotencyKey: "saga:abc:4:0",
+    };
+
+    const first = await new GoogleDriveDocumentAdapter(call, config).renderManagedRegion(render);
+    // A fresh adapter: a restarted worker has none of the first one's memory.
+    const retry = await new GoogleDriveDocumentAdapter(call, config).renderManagedRegion(render);
+
+    expect(retry.docRef).toBe(first.docRef);
+    expect(files()).toHaveLength(1);
+    expect(calls.filter((c) => c.call === "files.copy" || c.call === "files.create")).toHaveLength(1);
+    // And the pair is not sent Drive's access email a second time.
+    expect(calls.filter((c) => c.call === "permissions.create")).toHaveLength(2);
+  });
+
+  it("never adopts another pair's doc just because it has the same name", async () => {
+    const { call, calls } = stubTransport({
+      docText: "\n",
+      existingFiles: [
+        {
+          id: "other_pairs_doc",
+          name: "Arjun & Priya",
+          appProperties: { mentorshipIdempotencyKey: "saga:other:4:0" },
+        },
+      ],
+    });
 
     const result = await new GoogleDriveDocumentAdapter(call, CONFIG).renderManagedRegion({
       docRef: null,
       title: "Arjun & Priya",
       markdown: "x",
       collaborators: PAIR,
-      idempotencyKey: "k1",
+      idempotencyKey: "saga:abc:4:0",
     });
 
-    expect(result.docRef).toBe("already_there");
-    expect(calls.some((c) => c.path.endsWith("/copy"))).toBe(false);
-    expect(calls.some((c) => c.api === "docs" && c.path === "/documents")).toBe(false);
+    expect(result.docRef).not.toBe("other_pairs_doc");
+    expect(calls.some((c) => c.call === "files.create")).toBe(true);
+  });
+
+  it("hashes a key too long for a Drive app property rather than failing the create", async () => {
+    const { call, calls } = stubTransport();
+    const longKey = `saga:${"x".repeat(200)}:4:0`;
+
+    await new GoogleDriveDocumentAdapter(call, CONFIG).renderManagedRegion({
+      docRef: null,
+      title: "t",
+      markdown: "x",
+      collaborators: [],
+      idempotencyKey: longKey,
+    });
+
+    const tag = (calls.find((c) => c.call === "files.create")!.body as {
+      appProperties: Record<string, string>;
+    }).appProperties["mentorshipIdempotencyKey"]!;
+    expect(tag).toMatch(/^sha256:[0-9a-f]{64}$/);
+    // Drive's limit: key + value at most 124 bytes.
+    expect(Buffer.byteLength(`mentorshipIdempotencyKey${tag}`)).toBeLessThanOrEqual(124);
+    expect(String(calls.find((c) => c.call === "files.list")!.query!["q"])).toContain(tag);
   });
 
   it("seeds the markers at the end of a doc that has none", async () => {

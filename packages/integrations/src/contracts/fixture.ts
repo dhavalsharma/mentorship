@@ -116,7 +116,18 @@ const GOOGLE_ROUTES: Route[] = [
   { vendor: "google-calendar", method: "POST", template: "/calendars/{calendarId}/events", call: "events.insert" },
   { vendor: "google-calendar", method: "GET", template: "/calendars/{calendarId}/events/{eventId}", call: "events.get" },
   // Drive — shared by the document and sheet adapters.
-  { vendor: "google-drive", api: "drive", method: "GET", template: "/files", call: "files.list" },
+  {
+    vendor: "google-drive",
+    api: "drive",
+    method: "GET",
+    template: "/files",
+    call: "files.list",
+    // The document adapter's create-once lookup (by the render's idempotency
+    // key) and the sheet adapter's find-by-name are one call with different
+    // questions; one capture must not clobber the other.
+    variant: (r) => (r.query?.["q"]?.includes("appProperties has") ? "app-properties" : undefined),
+  },
+  { vendor: "google-drive", api: "drive", method: "POST", template: "/files", call: "files.create" },
   {
     vendor: "google-drive",
     api: "drive",
@@ -131,7 +142,6 @@ const GOOGLE_ROUTES: Route[] = [
   { vendor: "google-drive", api: "drive", method: "POST", template: "/files/{fileId}/permissions", call: "permissions.create" },
   { vendor: "google-drive", api: "drive", method: "GET", template: "/files/{fileId}/revisions", call: "revisions.list" },
   // Docs
-  { vendor: "google-docs", api: "docs", method: "POST", template: "/documents", call: "documents.create" },
   { vendor: "google-docs", api: "docs", method: "GET", template: "/documents/{documentId}", call: "documents.get" },
   { vendor: "google-docs", api: "docs", method: "POST", template: "/documents/{documentId}:batchUpdate", call: "documents.batchUpdate" },
   // Sheets. `values.clear` before `values.update`: the update template would

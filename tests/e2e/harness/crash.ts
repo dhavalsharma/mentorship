@@ -277,11 +277,18 @@ export const P2_KNOWN_BUGS = {
  *   step — including the one the step itself emitted — finishes that step
  *   first and is then offered to the state it landed in, so `confirming`'s
  *   own auto-confirm is no longer read back as a verdict.
+ * - `secondDocumentCreated` (#8): a doc is created under its render's
+ *   idempotency key — `GoogleDriveDocumentAdapter` tags the file's
+ *   `appProperties` in the create call and looks the key up in the folder
+ *   first; `FakeDocument` mirrors that — so the retry of a first render,
+ *   which replays the same pending step and so the same key, lands in the
+ *   doc the crashed attempt created.
  */
 export const P2_FIXED_BUGS: ReadonlySet<string> = new Set<keyof typeof P2_KNOWN_BUGS>([
   "reEmittedOnRetry",
   "strandedAtStart",
   "timeoutStepConsumesItsOwnEvent",
+  "secondDocumentCreated",
 ]);
 
 export function explain(f: CrashFinding, expected?: Outcome): keyof typeof P2_KNOWN_BUGS | null {
