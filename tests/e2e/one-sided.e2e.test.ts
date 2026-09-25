@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runJourney } from "./harness/journey.js";
 import { escalations, named, ofKind, threadMessages } from "./harness/observe.js";
-import { describeProperties, KNOWN_BUGS } from "./harness/properties.js";
+import { describeProperties } from "./harness/properties.js";
 import type { Stage, StageEvent } from "./harness/stage.js";
 import { oneSided } from "./journeys/one-sided.js";
 
@@ -41,6 +41,4 @@ describe("journey: one-sided", () => {
   });
 });
 
-describeProperties(oneSided, {
-  known: { P1: KNOWN_BUGS.redeliveredActivationRestartsPausedSaga },
-});
+describeProperties(oneSided);

@@ -62,6 +62,7 @@ describe.skipIf(!DATABASE_URL)("PostgresSagaStore", () => {
       completedEffects: {},
       history: [],
       status: "running",
+      pendingStep: null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       ...over,
@@ -87,6 +88,29 @@ describe.skipIf(!DATABASE_URL)("PostgresSagaStore", () => {
 
     const loaded = await store.get(original.id);
     expect(loaded).toEqual(original);
+  });
+
+  it("round-trips a pending step, and clears it", async () => {
+    const pendingStep = {
+      inputKey: `event:${randomUUID()}`,
+      input: "session.cancelled",
+      at: "2026-09-15T10:00:00.000Z",
+      from: "armed",
+      effects: [
+        { type: "ensure_thread" as const, title: "Mentoring" },
+        { type: "emit" as const, name: "agreement.opened" as const, payload: { agreementId: "agr_1" } },
+      ],
+      next: { name: "proposing", agreementId: "agr_1" },
+      waitFor: { names: ["agreement.responded" as const], subjectRef: "agreement:agr_1" },
+      timeoutAt: "2026-09-20T10:00:00.000Z",
+      done: false,
+    };
+    const original = instance({ pendingStep });
+    await store.create(original);
+    expect((await store.get(original.id))!.pendingStep).toEqual(pendingStep);
+
+    await store.save({ ...original, version: 1, pendingStep: null }, 0);
+    expect((await store.get(original.id))!.pendingStep).toBeNull();
   });
 
   it("rejects a duplicate id the way the memory store does", async () => {
@@ -346,6 +370,9 @@ describe.skipIf(!DATABASE_URL)("memory and Postgres stores agree", () => {
           timeoutAt: parked.timeoutAt,
           stepIndex: parked.stepIndex,
           ledger: Object.keys(parked.completedEffects).length,
+          // The failed step's write-ahead record survives the park, so a
+          // reviewer sees exactly what was being attempted.
+          pending: parked.pendingStep,
           failures: parked.history
             .filter((h) => h.error !== undefined)
             .map((h) => ({ attempt: h.attempt, error: h.error, done: h.done, timeoutAt: h.timeoutAt })),
@@ -357,7 +384,12 @@ describe.skipIf(!DATABASE_URL)("memory and Postgres stores agree", () => {
     expect(outcomes["memory"]).toMatchObject({
       first: { fired: 2, advanced: 1, failed: 1, parked: 0 },
       second: { fired: 1, advanced: 0, failed: 0, parked: 1 },
-      parked: { status: "failed", timeoutAt: null },
+      parked: {
+        status: "failed",
+        timeoutAt: null,
+        ledger: 1,
+        pending: { input: "timeout", from: "waiting", done: true },
+      },
       good: "done",
     });
   });

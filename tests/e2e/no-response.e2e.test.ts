@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runJourney } from "./harness/journey.js";
 import { escalations, named, ofKind, threadMessages } from "./harness/observe.js";
-import { describeProperties, KNOWN_BUGS } from "./harness/properties.js";
+import { describeProperties } from "./harness/properties.js";
 import type { Stage, StageEvent } from "./harness/stage.js";
 import { noResponse } from "./journeys/no-response.js";
 
@@ -31,6 +31,4 @@ describe("journey: no-response", () => {
   });
 });
 
-describeProperties(noResponse, {
-  known: { P1: KNOWN_BUGS.redeliveredActivationRestartsPausedSaga },
-});
+describeProperties(noResponse);

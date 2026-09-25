@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runJourney } from "./harness/journey.js";
 import { agreementsOpened, named, ofKind } from "./harness/observe.js";
-import { describeProperties, KNOWN_BUGS } from "./harness/properties.js";
+import { describeProperties } from "./harness/properties.js";
 import type { Stage, StageEvent } from "./harness/stage.js";
 import { noMutualAvailability, WORKING_OFFSETS } from "./journeys/no-mutual-availability.js";
 
@@ -50,6 +50,4 @@ describe("journey: no-mutual-availability", () => {
   });
 });
 
-describeProperties(noMutualAvailability, {
-  known: { P1: KNOWN_BUGS.redeliveredActivationRestartsPausedSaga },
-});
+describeProperties(noMutualAvailability);

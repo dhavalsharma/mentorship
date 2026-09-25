@@ -136,8 +136,37 @@ export interface SagaInstance<S = unknown> {
   completedEffects: Record<string, unknown>;
   history: SagaHistoryEntry[];
   status: "running" | "done" | "failed";
+  /**
+   * A step that has been decided but not yet committed: `step()` ran, its
+   * effects are being (or were partly) executed, and the instance has not yet
+   * moved to `next`. Written *before* the first effect runs, so a retry — after
+   * a thrown effect or a killed process — replays exactly this effect list
+   * rather than calling `step()` again, and no other input can run a
+   * different effect list under the same `stepIndex` keys. See `advance()` in
+   * `packages/workflows/src/engine.ts`. Optional (absent reads as `null`) so
+   * rows and fixtures written before it existed stay valid.
+   */
+  pendingStep?: SagaPendingStep | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SagaPendingStep {
+  /**
+   * Identity of the input that produced this step — `start`, `timeout` or
+   * `event:<id>` — so a redelivery of the *same* input replays it, and any
+   * other input finishes it first and is then re-offered to the new state.
+   */
+  inputKey: string;
+  /** The history label for the input (`describeInput`). */
+  input: string;
+  at: string;
+  from: string;
+  effects: Effect[];
+  next: unknown;
+  waitFor: EventPattern | null;
+  timeoutAt: string | null;
+  done: boolean;
 }
 
 export interface SagaHistoryEntry {

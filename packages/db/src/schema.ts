@@ -440,6 +440,12 @@ export const sagaInstances = pgTable(
     completedEffects: jsonb("completed_effects").notNull().default({}),
     history: jsonb("history").notNull().default([]),
     status: text("status").notNull().default("running"),
+    /**
+     * The step decided but not yet committed — its input, effects and next
+     * state, written before the first effect runs so a retry replays it
+     * rather than re-deciding (migration 0015, `SagaPendingStep` in core).
+     */
+    pendingStep: jsonb("pending_step"),
   },
   (t) => [
     index("saga_due_idx").on(t.status, t.timeoutAt),
