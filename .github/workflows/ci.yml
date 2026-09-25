@@ -53,6 +53,11 @@ jobs:
 
       - uses: ./.github/actions/setup
 
+      # Cheap and first: a job that needs Postgres but has no service would
+      # otherwise only surface as a red nightly, hours after merge.
+      - name: Workflow sanity (db services, YAML parses)
+        run: node scripts/check-workflows.mjs
+
       - name: Typecheck
         run: pnpm typecheck
 

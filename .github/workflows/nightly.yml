@@ -92,6 +92,23 @@ jobs:
       # set, it spends money against the real model — which is why this lives
       # here and never in the PR gate.
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    # evals/run.ts reads ai_runs verdicts when DATABASE_URL is set, and
+    # db:migrate needs something on :5432 — without this block the job
+    # failed every night on connection refused.
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mentorship
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup

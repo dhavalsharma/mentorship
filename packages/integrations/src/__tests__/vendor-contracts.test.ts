@@ -49,6 +49,19 @@ describe("tests/fixtures/vendor", () => {
     }
   });
 
+  // A hand-written or hand-edited fixture never went through the recording
+  // transport, so nothing else checks it: redacting it again must be a no-op.
+  it("is already redacted — re-redacting every fixture changes nothing", () => {
+    const changed = fixtures
+      .filter((f) => {
+        const { request, ...rest } = f as unknown as Record<string, unknown>;
+        const payload = { request, response: rest.response, error: rest.error };
+        return JSON.stringify(redact(payload)) !== JSON.stringify(payload);
+      })
+      .map((f) => `${f.vendor}/${f.call}${f.variant ? `--${f.variant}` : ""}`);
+    expect(changed).toEqual([]);
+  });
+
   it("has a fixture for every Google route an adapter can call", () => {
     const have = new Set(fixtures.map((f) => `${f.vendor}/${f.call}`));
     const missing = knownGoogleCalls()
@@ -111,6 +124,84 @@ describe("redact", () => {
     expect(out.user_id).toMatch(/^UREDACTED/);
     // A pagination cursor is not a credential.
     expect(out.nextPageToken).toBe("page-2");
+  });
+
+  // Ids and credentials embedded in prose, not standing alone as a value — a
+  // live chat.postMessage echoes its `text` and `blocks` back, so a mention in
+  // a message would otherwise land verbatim in tests/fixtures/vendor/.
+  describe("inside text", () => {
+    it("redacts user and bot mentions, keeping the mention syntax, stable per id", () => {
+      const out = redact({
+        text: "<@U07ABCDEF1> and <@W07ABCDEF2> — ping <@U07ABCDEF1> again",
+        user: "U07ABCDEF1",
+        bot: "said <@B07ABCDEF3>",
+      });
+      expect(out.text).toBe("<@UREDACTED01> and <@WREDACTED02> — ping <@UREDACTED01> again");
+      // The same map as a whole-string id: one person, one placeholder.
+      expect(out.user).toBe("UREDACTED01");
+      expect(out.bot).toBe("said <@BREDACTED03>");
+    });
+
+    it("drops the display-name label on a labelled mention", () => {
+      const out = redact({ text: "hi <@U07ABCDEF1|priya.sharma>" });
+      expect(out.text).toBe(`hi <@UREDACTED01|${REDACTED}>`);
+    });
+
+    it("redacts ids inside URLs and bare in prose", () => {
+      const out = redact({
+        url: "https://app.slack.com/team/T07WORKSP1/user/U07ABCDEF1?x=1",
+        note: "user U07ABCDEF1 in team T07WORKSP1 (enterprise E07ENTERP1)",
+      });
+      expect(out.url).toBe("https://app.slack.com/team/TREDACTED01/user/UREDACTED02?x=1");
+      expect(out.note).toBe("user UREDACTED02 in team TREDACTED01 (enterprise EREDACTED03)");
+    });
+
+    it("redacts ids inside Block Kit text, deep in the structure", () => {
+      const out = redact({
+        blocks: [{ type: "section", text: { type: "mrkdwn", text: "*<@U07ABCDEF1>* picked 3pm" } }],
+      });
+      expect(out.blocks[0]!.text.text).toBe("*<@UREDACTED01>* picked 3pm");
+    });
+
+    it("leaves channel ids, channel mentions and uppercase words alone", () => {
+      const out = redact({
+        channel: "D07CHANNEL1",
+        text: "see <#C07CHANNEL1|general> — TRANSCRIPTION, WEDNESDAYS, E2E at 2026-09-23T10:00:00Z",
+        mode: "PREVIEW_SUGGESTIONS_INLINE",
+      });
+      expect(out.channel).toBe("D07CHANNEL1");
+      expect(out.text).toBe("see <#C07CHANNEL1|general> — TRANSCRIPTION, WEDNESDAYS, E2E at 2026-09-23T10:00:00Z");
+      expect(out.mode).toBe("PREVIEW_SUGGESTIONS_INLINE");
+    });
+
+    it("is idempotent — a redacted fixture re-redacted is unchanged", () => {
+      const once = redact({ text: "<@U07ABCDEF1> and U07ABCDEF2", user: "U07ABCDEF3", to: ["a@corp.com", "b+x@corp.com"] });
+      expect(redact(once)).toEqual(once);
+    });
+
+    it("redacts emails in mailto links and prose", () => {
+      const out = redact({
+        text: "Contact <mailto:Priya@Corp.com|priya@corp.com> or sam@corp.com",
+      });
+      expect(out.text).toBe("Contact <mailto:user1@example.com|user1@example.com> or user2@example.com");
+    });
+
+    it("redacts tokens embedded in text and URLs", () => {
+      const out = redact({
+        a: "Authorization: Bearer abc.def-ghi failed",
+        b: "https://slack.com/api/auth.test?token=xoxp-1-2-3",
+        c: "socket mode with xapp-1-A07-123-abc",
+        d: "https://www.googleapis.com/x?access_token=opaque123&alt=json",
+        e: "https://hooks.slack.com/services/T07WORKSP1/B07ABCDEF3/sEcReTpAtH",
+        f: "maps key AIzaSyA1234567890abcdefghijklmnopqrstuv",
+      });
+      expect(out.a).toBe(`Authorization: ${REDACTED} failed`);
+      expect(out.b).toBe(`https://slack.com/api/auth.test?token=${REDACTED}`);
+      expect(out.c).toBe(`socket mode with ${REDACTED}`);
+      expect(out.d).toBe(`https://www.googleapis.com/x?access_token=${REDACTED}&alt=json`);
+      expect(out.e).toBe(`https://hooks.slack.com/services/${REDACTED}`);
+      expect(out.f).toBe(`maps key ${REDACTED}`);
+    });
   });
 });
 

@@ -14,7 +14,7 @@
     "items": [
       {
         "kind": "calendar#calendarListEntry",
-        "id": "sandbox-calendar@group.calendar.google.com",
+        "id": "user1@example.com",
         "summary": "Mentorship sandbox",
         "accessRole": "owner"
       }
