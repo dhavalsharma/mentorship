@@ -19,6 +19,7 @@ import {
   type ProgramPolicy,
   type ResponseKind,
   type SagaResolvers,
+  type SessionSourceStore,
   type SlotName,
 } from "@mentorship/core";
 import type { EventLog } from "@mentorship/events";
@@ -91,7 +92,7 @@ interface StoredSession {
   state: string;
 }
 
-export class World implements SagaResolvers, RosterSink {
+export class World implements SagaResolvers, SessionSourceStore, RosterSink {
   readonly users = new Map<string, StoredUser>();
   readonly participants = new Map<string, StoredParticipant>();
   readonly pairings = new Map<string, StoredPairing>();
@@ -107,6 +108,8 @@ export class World implements SagaResolvers, RosterSink {
   playbookUrl: string | null = null;
   private readonly extractionPairings = new Map<string, string>();
   private readonly submittedNoteIds = new Set<string>();
+  /** The `session_notes` rows of kind 'transcript', keyed by (session, ref). */
+  private readonly transcripts = new Map<string, string>();
   private readonly ids: IdFactory;
 
   constructor(
@@ -188,6 +191,24 @@ export class World implements SagaResolvers, RosterSink {
 
   async capabilities(slot: SlotName) {
     return this.registry.capabilities(slot);
+  }
+
+  // -------------------------------------------------------------------------
+  // SessionSourceStore — `session_notes`, transcripts only
+  // -------------------------------------------------------------------------
+
+  async recordTranscript(input: {
+    sessionId: string;
+    ref: string;
+    body: string;
+  }): Promise<void> {
+    const key = `${input.sessionId}\u0000${input.ref}`;
+    // First write wins, like `ON CONFLICT DO NOTHING` on the 0016 index.
+    if (!this.transcripts.has(key)) this.transcripts.set(key, input.body);
+  }
+
+  async transcript(input: { sessionId: string; ref: string }): Promise<string | null> {
+    return this.transcripts.get(`${input.sessionId}\u0000${input.ref}`) ?? null;
   }
 
   // -------------------------------------------------------------------------

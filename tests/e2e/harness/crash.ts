@@ -233,9 +233,8 @@ export const P2_KNOWN_BUGS = {
     ),
 
   /**
-   * `fetch_transcript` keeps the transcript text in the effect runner's
-   * memory (`transcripts` in effects.ts — "in production these live on …
-   * `session_notes`", which they do not yet) and emits only its ref. The
+   * (Fixed, #9 — kept so a regression is named.) `fetch_transcript` kept the
+   * transcript text in the effect runner's memory and emitted only its ref. The
    * extraction runs when the relay delivers `transcript.available`, which is
    * the *next* pass. A worker restarted in between extracts from an empty
    * string: the write-up says no transcript was available, for a session
@@ -277,11 +276,15 @@ export const P2_KNOWN_BUGS = {
  *   step — including the one the step itself emitted — finishes that step
  *   first and is then offered to the state it landed in, so `confirming`'s
  *   own auto-confirm is no longer read back as a verdict.
+ * - `transcriptLostOnRestart` (#9): `fetch_transcript` writes the text to
+ *   `session_notes` (migration 0016) before announcing `transcript.available`,
+ *   and `run_extraction` reads it back from there, not from process memory.
  */
 export const P2_FIXED_BUGS: ReadonlySet<string> = new Set<keyof typeof P2_KNOWN_BUGS>([
   "reEmittedOnRetry",
   "strandedAtStart",
   "timeoutStepConsumesItsOwnEvent",
+  "transcriptLostOnRestart",
 ]);
 
 export function explain(f: CrashFinding, expected?: Outcome): keyof typeof P2_KNOWN_BUGS | null {

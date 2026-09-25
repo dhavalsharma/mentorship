@@ -92,6 +92,7 @@ describe("createEffectRunner — a retried effect does not re-emit", () => {
       registry,
       log,
       resolvers,
+      sources: { recordTranscript: async () => {}, transcript: async () => null },
       intel: heuristicSessionIntel(ids),
       ids,
     });

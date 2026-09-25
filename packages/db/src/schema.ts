@@ -217,15 +217,28 @@ export const sessions = pgTable(
 );
 
 /** Raw, untrusted, never mutated by extraction. */
-export const sessionNotes = pgTable("session_notes", {
-  ...orgScoped,
-  sessionId: uuid("session_id").notNull(),
-  /** 'transcript' | 'typed' | 'upload' */
-  kind: text("kind").notNull(),
-  authorParticipantId: uuid("author_participant_id"),
-  externalRef: text("external_ref"),
-  body: text("body").notNull(),
-});
+export const sessionNotes = pgTable(
+  "session_notes",
+  {
+    ...orgScoped,
+    sessionId: uuid("session_id").notNull(),
+    /** 'transcript' | 'typed' | 'upload' */
+    kind: text("kind").notNull(),
+    authorParticipantId: uuid("author_participant_id"),
+    externalRef: text("external_ref"),
+    body: text("body").notNull(),
+  },
+  (t) => [
+    /**
+     * One stored transcript per session and vendor ref (migration 0016): a
+     * `fetch_transcript` retried after a crash lands here and inserts nothing
+     * (invariant 6). Partial on `kind` — typed notes carry no such identity.
+     */
+    uniqueIndex("session_notes_transcript_ref_unique")
+      .on(t.orgId, t.sessionId, t.externalRef)
+      .where(sql`${t.kind} = 'transcript'`),
+  ],
+);
 
 export const extractions = pgTable("extractions", {
   ...orgScoped,

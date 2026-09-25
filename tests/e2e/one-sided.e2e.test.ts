@@ -29,15 +29,14 @@ describe("journey: one-sided", () => {
     expect(named(log, "session.scheduled")).toEqual([]);
   });
 
-  // KNOWN BUG — session-lifecycle.ts, `proposing`: the `partial_response`
-  // branch escalates on the *first* timeout, ahead of the renudge check, so a
-  // one-sided silence gets zero renudges where a two-sided one gets one.
-  // Invariant 11 ("renudge once, then escalate") and the strategy doc's
-  // catalogue ("exactly one renudge -> paused: one_sided_response") both say
-  // the silent party is owed one. Flip to `it` when fixed.
-  it.fails("renudges the silent party exactly once before pausing (invariant 11)", () => {
+  // Was KNOWN BUG #1: the `partial_response` branch escalated on the *first*
+  // timeout, ahead of the renudge check, so a one-sided silence got zero
+  // renudges where a two-sided one got one. Invariant 11 and the strategy
+  // doc's catalogue ("exactly one renudge -> paused: one_sided_response").
+  it("renudges the silent party exactly once before pausing (invariant 11)", () => {
     const nudges = threadMessages(s.calls()).filter((b) => b.startsWith("Nudging gently"));
     expect(nudges).toHaveLength(1);
+    expect(nudges[0]).toContain("Priya Menon");
   });
 });
 

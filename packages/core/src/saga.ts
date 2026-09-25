@@ -56,7 +56,17 @@ export type Effect =
       withTranscription: boolean;
     }
   | { type: "verify_calendar_event"; eventId: string }
-  | { type: "fetch_transcript"; calendarEventId: string }
+  | {
+      type: "fetch_transcript";
+      calendarEventId: string;
+      /**
+       * The session the transcript belongs to. The fetched text is stored
+       * against it (`SessionSourceStore`) before `transcript.available` is
+       * announced, so the extraction that follows — possibly in another
+       * process — reads it back rather than relying on this one's memory.
+       */
+      sessionId: string;
+    }
   | {
       type: "run_extraction";
       sessionId: string;
@@ -65,7 +75,9 @@ export type Effect =
        * Notes arrive inline on the event that ends `awaiting_artifact` — there
        * is no adapter to fetch them back from, unlike a transcript. Carried
        * here rather than re-read from the log, so the effect stays a
-       * self-contained descriptor (invariant 4).
+       * self-contained descriptor (invariant 4). Absent for a transcript,
+       * which is read back from `SessionSourceStore` by `sessionId` +
+       * `sourceRef`.
        */
       text?: string;
     }

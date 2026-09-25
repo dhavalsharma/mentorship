@@ -7,6 +7,7 @@ import type {
   IdFactory,
   PairContext,
   SagaResolvers,
+  SessionSourceStore,
   ThreadRef,
   TranscriptAdapter,
 } from "@mentorship/core";
@@ -47,6 +48,12 @@ export interface EffectRunnerOptions {
   registry: IntegrationRegistry;
   log: EventSink;
   resolvers: SagaResolvers;
+  /**
+   * Durable home of fetched transcript text (e2e bug #9) — required, not
+   * defaulted to a map, because a default is exactly the process memory
+   * that lost the transcript across a restart.
+   */
+  sources: SessionSourceStore;
   intel: SessionIntel;
   ids?: IdFactory;
   onWarn?: (message: string, detail?: Record<string, unknown>) => void;
@@ -65,9 +72,8 @@ export interface EffectRunnerOptions {
 export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
   const ids = opts.ids ?? uuidIds;
   const threads = new Map<string, ThreadRef>();
-  // In production these two live on the `pairings` row and in `session_notes`.
+  // In production this lives on the `pairings` row.
   const docRefs = new Map<string, string>();
-  const transcripts = new Map<string, string>();
 
   const warn = (m: string, d?: Record<string, unknown>) =>
     opts.onWarn?.(m, d);
@@ -384,13 +390,41 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           calendarEventId: effect.calendarEventId,
         });
         if (!found) return { found: false };
-        transcripts.set(found.ref, found.text);
+        // Durable before announced: the extraction runs when the relay
+        // delivers `transcript.available`, on a later pass and possibly in a
+        // different process. The event carries the reference only.
+        if (effect.sessionId) {
+          await opts.sources.recordTranscript({
+            sessionId: effect.sessionId,
+            ref: found.ref,
+            body: found.text,
+          });
+        } else {
+          // A step decided before `sessionId` was on this effect, replayed
+          // from its pending record. Nothing to key the row on.
+          warn("fetch_transcript without a sessionId; transcript not stored", {
+            calendarEventId: effect.calendarEventId,
+          });
+        }
         await emit("transcript.available", { ref: found.ref });
         return { found: true, ref: found.ref };
       }
 
       case "run_extraction": {
-        const text = effect.text ?? transcripts.get(effect.sourceRef) ?? "";
+        let text = effect.text;
+        if (text === undefined) {
+          const stored = await opts.sources.transcript({
+            sessionId: effect.sessionId,
+            ref: effect.sourceRef,
+          });
+          if (stored === null) {
+            warn("no stored source for extraction; extracting from nothing", {
+              sessionId: effect.sessionId,
+              sourceRef: effect.sourceRef,
+            });
+          }
+          text = stored ?? "";
+        }
         const result = await opts.intel.extract({
           sessionId: effect.sessionId,
           sourceRef: effect.sourceRef,

@@ -18,6 +18,7 @@ import {
   PostgresProjector,
   PostgresSagaResolvers,
   PostgresSagaStore,
+  PostgresSessionSourceStore,
   probeAndCacheCapabilities,
   relayOnce,
   type ProbeCapabilitiesResult,
@@ -208,6 +209,10 @@ export function createWorker(options: WorkerOptions): Worker {
       registry: options.registry,
       log: sink,
       resolvers,
+      sources: new PostgresSessionSourceStore(options.db, {
+        orgId: options.orgId,
+        ...scoped,
+      }),
       intel,
       ids,
       ...(options.onWarn ? { onWarn: options.onWarn } : {}),

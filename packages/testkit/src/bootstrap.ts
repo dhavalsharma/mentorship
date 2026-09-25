@@ -137,6 +137,7 @@ export function bootstrap(opts: BootstrapOptions = {}) {
       registry,
       log,
       resolvers: world,
+      sources: world,
       intel,
       ids,
       onWarn: opts.onWarn,

@@ -2,6 +2,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { DeterministicProvider, NullAiRunSink } from "@mentorship/ai";
 import { commitRosterImport, planRosterImport } from "@mentorship/roster";
 import {
+  createEffectRunner,
+  createSessionLifecycle,
+  heuristicSessionIntel,
+  SagaEngine,
+} from "@mentorship/workflows";
+import {
   advanceToNextTimer,
   bootstrap,
   type BootstrapOptions,
@@ -243,7 +249,10 @@ describe("agreement outcomes", () => {
     ).toHaveLength(1);
   });
 
-  it("escalates rather than guessing when only one party replies", async () => {
+  // e2e bug #1. This test used to assert `paused` straight after the first
+  // timeout — which was the bug: a one-sided silence got no renudge at all,
+  // where a two-sided one got one (invariant 11).
+  it("renudges the silent party once when only one party replies, then escalates rather than guessing", async () => {
     const ctx = await setup();
     const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
     await ctx.h.world.respond(
@@ -255,7 +264,113 @@ describe("agreement outcomes", () => {
     await ctx.h.dispatcher.settle();
     expect(await stateOf(ctx.h)).toMatchObject({ name: "proposing" });
 
+    const nudges = () =>
+      ctx.h.recorder
+        .of("thread.message")
+        .map((c) => String(c.detail["body"]))
+        .filter((b) => b.startsWith("Nudging gently"));
+
+    await advanceToNextTimer(ctx.h); // response window closes: one renudge
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "proposing" });
+    expect(nudges()).toHaveLength(1);
+    // Addressed to the one who is silent, and says what the other picked.
+    expect(nudges()[0]).toContain("Priya");
+    expect(nudges()[0]).toContain(`Arjun picked ${agreement.options[0]!.label}`);
+    const [instance] = await ctx.h.engine.instances();
+    // Its own explicit timeout (invariant 7), from policy (ADR-0001).
+    expect(Date.parse(instance!.timeoutAt!) - ctx.h.clock.now().getTime()).toBe(
+      ctx.h.policy.agreement.renudgeAfterHours * 3_600_000,
+    );
+
+    await advanceToNextTimer(ctx.h); // still silent: a human, not a third attempt
+    expect(await stateOf(ctx.h)).toMatchObject({
+      name: "paused",
+      reason: "one_sided_response",
+    });
+    expect(nudges()).toHaveLength(1);
+    expect(
+      ctx.h.log
+        .all()
+        .filter((e) => e.name === "saga.escalated")
+        .map((e) => e.payload["reason"]),
+    ).toEqual(["one_sided_response"]);
+    expect(ctx.h.recorder.of("calendar.created")).toEqual([]);
+  });
+
+  it("does not escalate early when the one who already picked clicks again during the renudge window", async () => {
+    const ctx = await setup();
+    const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+    const [first] = agreement.participantIds;
+    await ctx.h.world.respond(agreement.id, first!, "accept", agreement.options[0]!.optionId);
+    await ctx.h.dispatcher.settle();
+    await advanceToNextTimer(ctx.h); // renudged
+
+    await ctx.h.world.respond(agreement.id, first!, "accept", agreement.options[0]!.optionId);
+    await ctx.h.dispatcher.settle();
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "proposing" });
+
+    // The silent party answers within the renudge window: booked.
+    await ctx.h.world.respond(
+      agreement.id,
+      agreement.participantIds[1]!,
+      "accept",
+      agreement.options[0]!.optionId,
+    );
+    await ctx.h.dispatcher.settle();
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "armed" });
+  });
+
+  it("never renudges the same one-sided silence twice, even when the renudge step crashes after posting", async () => {
+    const ctx = await setup();
+    const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+    await ctx.h.world.respond(
+      agreement.id,
+      agreement.participantIds[0]!,
+      "accept",
+      agreement.options[0]!.optionId,
+    );
+    await ctx.h.dispatcher.settle();
+
+    // A second "process" over the same store, whose runner dies right after
+    // the vendor accepted the renudge — before the step could commit.
+    const real = createEffectRunner({
+      registry: ctx.h.registry,
+      log: ctx.h.log,
+      resolvers: ctx.h.world,
+      sources: ctx.h.world,
+      intel: heuristicSessionIntel(ctx.h.ids),
+      ids: ctx.h.ids,
+    });
+    let crashed = false;
+    const crashing = new SagaEngine({
+      store: ctx.h.store,
+      resolvers: ctx.h.world,
+      ids: ctx.h.ids,
+      now: ctx.h.clock.now,
+      runEffect: async (effect, ectx) => {
+        const value = await real(effect, ectx);
+        if (!crashed && effect.type === "post_message" && effect.body.startsWith("Nudging gently")) {
+          crashed = true;
+          throw new Error("worker killed");
+        }
+        return value;
+      },
+    });
+    crashing.register(createSessionLifecycle());
+    ctx.h.clock.advanceTo((await ctx.h.engine.nextTimeout())!);
+    await crashing.tick();
+    expect(crashed).toBe(true);
+
+    // The replacement process picks the instance up: it must finish the
+    // recorded step (same effect, same key), not decide a second renudge.
+    await ctx.h.dispatcher.settle();
     await advanceToNextTimer(ctx.h);
+    await advanceToNextTimer(ctx.h);
+
+    const nudges = ctx.h.recorder
+      .of("thread.message")
+      .filter((c) => String(c.detail["body"]).startsWith("Nudging gently"));
+    expect(nudges).toHaveLength(1);
     expect(await stateOf(ctx.h)).toMatchObject({
       name: "paused",
       reason: "one_sided_response",
@@ -334,6 +449,65 @@ describe("capability and consent branches", () => {
       ctx.h.log.all().filter((e) => e.name === "session.undocumented"),
     ).toHaveLength(1);
     expect(await stateOf(ctx.h)).toMatchObject({ name: "cooling" });
+  });
+
+  // e2e bug #9: the fetched transcript lived only in the effect runner's
+  // memory, so a worker replaced between the fetch and the extraction
+  // extracted from an empty string.
+  it("extracts from the fetched transcript even when the worker restarts between fetch and extract", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1 });
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h); // reminder
+
+    // The pass that fetches: fire the post-meeting timer only. Its
+    // `transcript.available` is committed but not yet delivered.
+    ctx.h.clock.advanceTo((await ctx.h.engine.nextTimeout())!);
+    await ctx.h.engine.tick();
+    const available = ctx.h.log.all().filter((e) => e.name === "transcript.available");
+    expect(available).toHaveLength(1);
+    expect(ctx.h.log.all().filter((e) => e.name === "extraction.completed")).toEqual([]);
+
+    // A fresh process: new runner, new memory, same durable state.
+    const restarted = new SagaEngine({
+      store: ctx.h.store,
+      resolvers: ctx.h.world,
+      ids: ctx.h.ids,
+      now: ctx.h.clock.now,
+      runEffect: createEffectRunner({
+        registry: ctx.h.registry,
+        log: ctx.h.log,
+        resolvers: ctx.h.world,
+        sources: ctx.h.world,
+        intel: heuristicSessionIntel(ctx.h.ids),
+        ids: ctx.h.ids,
+      }),
+    });
+    restarted.register(createSessionLifecycle());
+    await restarted.deliver(available[0]!);
+
+    const [completed] = ctx.h.log.all().filter((e) => e.name === "extraction.completed");
+    expect(completed).toBeDefined();
+    const markdown = String(completed!.payload["markdown"]);
+    expect(markdown).not.toContain("No notes or transcript were available");
+    expect(markdown).toContain("exchanges captured from `transcript_");
+    // The transcript was fetched exactly once — the restart read it back, it
+    // did not go to the vendor again.
+    expect(ctx.h.recorder.of("transcript.fetch")).toHaveLength(1);
+  });
+
+  it("stops polling for a transcript once recording consent is withdrawn mid-poll (invariant 12)", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 2 });
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h); // reminder
+    await advanceToNextTimer(ctx.h); // meeting ends: first poll, nothing yet
+    expect(ctx.h.recorder.of("transcript.fetch")).toHaveLength(1);
+
+    for (const p of ctx.h.world.participants.values()) p.consent.recording = false;
+    await advanceToNextTimer(ctx.h); // the next poll must not happen
+
+    expect(ctx.h.recorder.of("transcript.fetch")).toHaveLength(1);
+    expect(ctx.h.log.all().filter((e) => e.name === "transcript.available")).toEqual([]);
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "awaiting_artifact", mode: "manual_notes" });
   });
 
   it("accepts typed notes when there is no transcript", async () => {

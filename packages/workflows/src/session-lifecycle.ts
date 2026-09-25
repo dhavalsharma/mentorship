@@ -47,6 +47,14 @@ export type SessionLifecycleState =
       round: number;
       firstProposedAt: string;
       renudged: boolean;
+      /**
+       * When the renudge's own wait runs out. The agreement's `timeoutAt` has
+       * already passed by then, so without this a response that resolves
+       * nothing (the one who already picked clicking again) would re-arm on a
+       * deadline in the past. Absent before a renudge, and on rows written
+       * before the one-sided renudge existed.
+       */
+      renudgeExpiresAt?: string;
     }
   | {
       name: "scheduling";
@@ -311,7 +319,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
               names: ["agreement.responded"],
               subjectRef: subjectRef("agreement", state.agreementId),
             },
-            timeoutAt: agreement.timeoutAt,
+            timeoutAt: state.renudgeExpiresAt ?? agreement.timeoutAt,
           };
 
           switch (resolution.status) {
@@ -415,68 +423,85 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
             }
 
             case "stalled":
+              // Only the clock decides that a silence has lasted. An event
+              // that leaves the agreement stalled — the one who already picked
+              // clicking again — is not a second silence to act on.
+              if (input.kind === "event") return keepWaiting;
               break;
           }
 
           // Timeout / stalled handling. Renudge once, then a human — never a
-          // third attempt.
+          // third attempt (invariant 11). A one-sided silence is owed the same
+          // one renudge as a two-sided one (e2e bug #1: it used to escalate on
+          // the first timeout, ahead of the renudge check); it differs only in
+          // who is addressed and in the escalation reason. Nothing is booked
+          // on one party's say-so under `require_both` (invariant 9) — the
+          // renudge asks, it does not assume.
+          //
+          // Once only, across a crash too: the renudge is decided in one step
+          // whose next state carries `renudged: true`, and the engine writes
+          // that step ahead of its effects (`pending_step`), so a retry
+          // replays the same post under the same key rather than deciding a
+          // second renudge.
           const elapsed = hoursBetween(state.firstProposedAt, now);
-          if (
+          const oneSided =
             resolution.status === "stalled" &&
-            resolution.reason === "partial_response"
+            resolution.reason === "partial_response";
+          const reason = oneSided ? "one_sided_response" : "no_response";
+
+          if (
+            !state.renudged &&
+            elapsed < pair.policy.agreement.escalateAfterHours
           ) {
+            // The delay is policy (ADR-0001) — the same field the two-sided
+            // renudge has always used, so no new knob. Kept on the state as
+            // well as on the timer, so a later non-resolving event re-arms
+            // the same deadline rather than one already past.
+            const renudgeExpiresAt = addHours(
+              now,
+              pair.policy.agreement.renudgeAfterHours,
+            );
+            // In the joint thread, like the two-sided renudge: the buttons it
+            // points at live there, and who picked what is already posted
+            // there. Rejected: a DM to the silent party. It would be more
+            // pointed, but it carries nothing private — so invariant 13 does
+            // not ask for it — and on a tenant with no `dm` slot it would be
+            // dropped rather than degraded, turning the one renudge the
+            // silent party is owed into none.
+            const latest = latestResponses(agreement);
+            const body = oneSided
+              ? `Nudging gently, ${displayNames(
+                  pair,
+                  agreement.participantIds.filter((p) => !latest.has(p)),
+                ).join(" and ")} — ${picksSoFar(pair, agreement)
+                  .map((p) => `${p.name} picked ${p.label}.`)
+                  .join(" ")} Does that work for you too? Pick it, or suggest another.`
+              : "Nudging gently — any of those times work? Reply with another if not.";
             return {
-              next: { name: "paused", reason: "one_sided_response" },
-              done: true,
-              effects: [
-                {
-                  type: "escalate",
-                  reason: "one_sided_response",
-                  detail: "one party replied, the other did not",
-                },
-              ],
-            };
-          }
-
-          if (elapsed >= pair.policy.agreement.escalateAfterHours) {
-            return {
-              next: { name: "paused", reason: "no_response" },
-              done: true,
-              effects: [
-                {
-                  type: "escalate",
-                  reason: "no_response",
-                  detail: `${Math.round(elapsed)}h with no reply from either party`,
-                },
-              ],
-            };
-          }
-
-          if (!state.renudged) {
-            return {
-              next: { ...state, renudged: true },
+              next: { ...state, renudged: true, renudgeExpiresAt },
               waitFor: {
                 names: ["agreement.responded"],
                 subjectRef: subjectRef("agreement", state.agreementId),
               },
-              timeoutAt: addHours(now, pair.policy.agreement.renudgeAfterHours),
-              effects: [
-                {
-                  type: "post_message",
-                  body: "Nudging gently — any of those times work? Reply with another if not.",
-                },
-              ],
+              timeoutAt: renudgeExpiresAt,
+              effects: [{ type: "post_message", body }],
             };
           }
 
           return {
-            next: { name: "paused", reason: "no_response" },
+            next: { name: "paused", reason },
             done: true,
             effects: [
               {
                 type: "escalate",
-                reason: "no_response",
-                detail: "renudged once, still silent",
+                reason,
+                detail: oneSided
+                  ? state.renudged
+                    ? "one party replied; the other was renudged once and is still silent"
+                    : `one party replied, the other has not in ${Math.round(elapsed)}h`
+                  : state.renudged
+                    ? "renudged once, still silent"
+                    : `${Math.round(elapsed)}h with no reply from either party`,
               },
             ],
           };
@@ -629,6 +654,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
               {
                 type: "fetch_transcript",
                 calendarEventId: state.calendarEventId,
+                sessionId: state.sessionId,
               },
             ],
           };
@@ -636,6 +662,32 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
 
         // -------------------------------------------------------------------
         case "awaiting_artifact": {
+          // Recording consent is read again on every poll and on arrival, not
+          // only once when the meeting ended: a withdrawal mid-poll must stop
+          // the next fetch, and a transcript that lands after one must not be
+          // extracted (invariant 12). Notes are a different artifact, with no
+          // recording in them, and are still welcome.
+          if (
+            state.mode === "polling" &&
+            !transcriptionPermitted(pair) &&
+            !(input.kind === "event" && input.event.name === "notes.submitted")
+          ) {
+            return {
+              next: { ...state, mode: "manual_notes" },
+              waitFor: { names: ["notes.submitted"], subjectRef: ctx.subjectRef },
+              timeoutAt: addHours(
+                now,
+                pair.policy.artifact.manualNotesWindowHours,
+              ),
+              effects: [
+                {
+                  type: "post_message",
+                  body: "Could either of you drop a few notes here? Even three lines is enough for me to pull out the action items.",
+                },
+              ],
+            };
+          }
+
           if (input.kind === "event") {
             const ref =
               (input.event.payload["ref"] as string | undefined) ??
@@ -696,6 +748,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
                 {
                   type: "fetch_transcript",
                   calendarEventId: state.calendarEventId,
+                  sessionId: state.sessionId,
                 },
               ],
             };
