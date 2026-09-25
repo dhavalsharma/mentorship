@@ -33,12 +33,11 @@ describe("journey: extraction-timeout", () => {
     );
   });
 
-  // KNOWN BUG — session-lifecycle.ts, `confirming` timeout: the "unverified"
-  // marker is rendered as the *whole* managed region, so it replaces the
-  // write-up it is meant to qualify. After an auto-confirm the pair's doc says
-  // "treat as unverified" about nothing — the action items are gone. Marking
-  // a guess unverified must not erase it (invariant 19 says mark, not drop).
-  it.fails("keeps the extracted write-up in the document alongside the unverified marker", () => {
+  // Was bug #3: the "unverified" marker was rendered as the *whole* managed
+  // region, replacing the write-up it is meant to qualify. Marking a guess
+  // unverified must not erase it (invariant 19 says mark, not drop) — the
+  // banner now sits above the write-up (`renderWriteUp` in core).
+  it("keeps the extracted write-up in the document alongside the unverified marker", () => {
     const [first] = named(log, "document.rendered");
     const doc = s.vendor.document!.read(String(first!.payload["docRef"]))!;
     expect(doc).toContain("## Action items");

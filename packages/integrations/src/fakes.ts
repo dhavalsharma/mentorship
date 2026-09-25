@@ -334,6 +334,18 @@ export class FakeDocument implements DocumentAdapter {
   // tests, or a real editor in the corresponding vendor adapter).
   private readonly lastRendered = new Map<string, string>();
   private readonly revisionAuthor = new Map<string, "service" | "human">();
+  // Keyed renders already applied: which doc the key created or wrote, what
+  // the doc held afterwards, and what the call returned. In-memory like
+  // `FakeCalendar.byKey` — the real adapter keeps the create half of this on
+  // the Drive file itself (`appProperties`), so it survives a restart.
+  private readonly byKey = new Map<
+    string,
+    {
+      docRef: string;
+      content: string;
+      result: { docRef: string; url: string; revisionId: string; pinned: boolean };
+    }
+  >();
 
   constructor(readonly recorder: Recorder) {}
 
@@ -348,7 +360,33 @@ export class FakeDocument implements DocumentAdapter {
     collaborators: { email: string }[];
     idempotencyKey: string;
   }): Promise<{ docRef: string; url: string; revisionId: string; pinned: boolean }> {
-    const docRef = input.docRef ?? `doc_${this.docs.size + 1}`;
+    // Invariant 6, mirroring `GoogleDriveDocumentAdapter`: a doc is created
+    // under its render's idempotency key, and a render with no doc id first
+    // looks for a doc created under that key. That is exactly the retry a
+    // crash between "vendor created the doc" and "`document.rendered`
+    // committed" produces (bug #8) — before this, the retry made `doc_2`.
+    const replayed = this.byKey.get(input.idempotencyKey);
+    const docRef =
+      input.docRef ??
+      replayed?.docRef ??
+      `doc_${this.docs.size + 1}`;
+
+    // The same keyed render applied again, with the region still holding what
+    // it wrote: nothing to do, and nothing a participant could see changes.
+    // Returning the original result (same revision) is what makes the
+    // runner's re-emitted `document.rendered` identical to the first. The
+    // real adapter re-writes identical bytes here instead — a new revision in
+    // Drive's history, and no visible change — so the fake does not record
+    // a second render. If the region changed since (a human edit), fall
+    // through: that is a new decision for `resolveManagedRegionWrite`.
+    if (
+      replayed !== undefined &&
+      replayed.docRef === docRef &&
+      this.docs.get(docRef) === replayed.content
+    ) {
+      return replayed.result;
+    }
+
     const existing = this.docs.get(docRef) ?? null;
     const currentRegionText = existing === null ? null : readManagedRegion(existing);
     const isEcho = this.revisionAuthor.get(docRef) === "service";
@@ -387,12 +425,18 @@ export class FakeDocument implements DocumentAdapter {
       collaborators: [...shared],
       pinned,
     });
-    return {
+    const result = {
       docRef,
       url: `https://docs.example/${docRef}`,
       revisionId: `rev_${this.revision}`,
       pinned,
     };
+    this.byKey.set(input.idempotencyKey, {
+      docRef,
+      content: this.docs.get(docRef)!,
+      result,
+    });
+    return result;
   }
 
   read(docRef: string): string | undefined {

@@ -8,6 +8,7 @@ import {
   nextDueAt,
   proposeSlots,
   renderNamingTemplate,
+  renderWriteUp,
   resolveAgreement,
   roundsExhausted,
   subjectRef,
@@ -84,6 +85,13 @@ export type SessionLifecycleState =
       sourceRef: string;
       stage: "extract" | "render";
       extractionId?: string;
+      /**
+       * The write-up rendered at `stage: "render"`, carried on so the
+       * confirmation timeout can re-render it *marked* unverified rather than
+       * replace it (invariant 19, bug #3). Optional only because an instance
+       * persisted before this field existed will not have it.
+       */
+      markdown?: string;
     }
   | {
       name: "confirming";
@@ -91,6 +99,8 @@ export type SessionLifecycleState =
       extractionId: string;
       docUrl: string;
       verdicts: Record<string, "confirmed" | "edited">;
+      /** See `extracting.markdown`. */
+      markdown?: string;
     }
   | { name: "feedback"; sessionId: string; pending: string[] }
   | { name: "cooling"; lastSessionAt: string }
@@ -819,7 +829,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
             }
 
             return {
-              next: { ...state, stage: "render", extractionId },
+              next: { ...state, stage: "render", extractionId, markdown },
               waitFor: {
                 names: ["document.rendered"],
                 subjectRef: ctx.subjectRef,
@@ -846,6 +856,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
               extractionId,
               docUrl,
               verdicts: {},
+              ...(state.markdown !== undefined ? { markdown: state.markdown } : {}),
             },
             waitFor: {
               names: ["extraction.confirmed", "extraction.edited"],
@@ -933,12 +944,26 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
                 name: "extraction.confirmed",
                 payload: { extractionId: state.extractionId, unverified: true },
               },
-              {
-                type: "render_document",
-                title: documentTitle(pair),
-                markdown:
-                  "> Not reviewed by either participant — treat as unverified.\n",
-              },
+              // Mark, never replace: the banner goes above the write-up it
+              // qualifies (bug #3 was the banner rendered as the whole
+              // region). A participant's own edit to the region still wins —
+              // `resolveManagedRegionWrite` pins it, banner or not. An
+              // instance that reached `confirming` before the write-up was
+              // carried on has nothing to re-render with; re-rendering the
+              // bare banner would erase the doc again, so it is skipped and
+              // the `unverified` flag on the event above is the mark.
+              ...(state.markdown !== undefined
+                ? [
+                    {
+                      type: "render_document" as const,
+                      title: documentTitle(pair),
+                      markdown: renderWriteUp({
+                        markdown: state.markdown,
+                        unverified: true,
+                      }),
+                    },
+                  ]
+                : []),
               ...(onward.effects ?? []),
             ],
           };

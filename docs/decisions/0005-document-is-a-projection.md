@@ -136,7 +136,10 @@ sync both.
 ## Action Items
 
 1. [x] Managed-region markers; render from DB state
-2. [x] Unverified marking on confirmation timeout
+2. [x] Unverified marking on confirmation timeout — a banner *above* the
+       write-up (`renderWriteUp`, `packages/core/src/document-projection.ts`);
+       it first shipped replacing the write-up, found by the journey suite
+       (bug #3)
 3. [x] Internal-page fallback when no document slot is bound
 4. [x] Echo suppression via service-account revision identity —
        `resolveManagedRegionWrite` (`packages/core/src/document-projection.ts`)

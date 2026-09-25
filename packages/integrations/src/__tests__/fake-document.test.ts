@@ -181,3 +181,54 @@ describe("FakeDocument echo suppression and pinning", () => {
     expect(doc.read(docRef)).toBe(wrapManaged("human override"));
   });
 });
+
+/**
+ * Invariant 6 for the document slot (journey-suite bug #8): a first render
+ * retried after a crash — same key, still no doc id, because the
+ * `document.rendered` that would have carried it never committed — must land
+ * in the doc the first attempt created, mirroring the Drive adapter's
+ * key-tagged lookup.
+ */
+describe("FakeDocument creation is idempotent by key", () => {
+  const first = {
+    docRef: null,
+    title: "Arjun & Priya — session notes",
+    markdown: "## Session 1",
+    collaborators: PAIR,
+    idempotencyKey: "saga:1:4:0",
+  };
+
+  it("a retried first render reuses the doc it already created", async () => {
+    const recorder = new Recorder();
+    const doc = new FakeDocument(recorder);
+
+    const a = await doc.renderManagedRegion(first);
+    const b = await doc.renderManagedRegion(first);
+
+    expect(b).toEqual(a);
+    // Nothing a participant could see happened twice: one doc, one render.
+    expect(recorder.of("document.rendered")).toHaveLength(1);
+    expect(doc.read("doc_2")).toBeUndefined();
+  });
+
+  it("a different key is a different render, and a different pair's first render a different doc", async () => {
+    const doc = new FakeDocument(new Recorder());
+
+    const a = await doc.renderManagedRegion(first);
+    const b = await doc.renderManagedRegion({ ...first, idempotencyKey: "saga:2:4:0" });
+
+    expect(b.docRef).not.toBe(a.docRef);
+  });
+
+  it("a replayed key does not paper over a human edit made since", async () => {
+    const doc = new FakeDocument(new Recorder());
+    const a = await doc.renderManagedRegion(first);
+    doc.humanEdit(a.docRef, "human override");
+
+    const b = await doc.renderManagedRegion({ ...first, docRef: a.docRef });
+
+    expect(b.docRef).toBe(a.docRef);
+    expect(b.pinned).toBe(true);
+    expect(doc.read(a.docRef)).toBe(wrapManaged("human override"));
+  });
+});

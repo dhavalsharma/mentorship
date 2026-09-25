@@ -214,13 +214,14 @@ export interface SheetAdapter extends Adapter {
    * engine can pass `ctx.key` uniformly (invariant 6's "belt and braces"),
    * and an adapter backed by a vendor API that *can* dedupe by key (like
    * `FakeCalendar`) does. Neither Drive nor Sheets accepts an idempotency
-   * key, though, so a real implementation cannot use it for this call any
-   * more than `GoogleDriveDocumentAdapter.createDoc` can — the vendor-level
-   * fallback both share is adopting an existing file of the same name
-   * rather than creating a second one, which is a narrower guarantee than
-   * true key-based idempotency (two concurrent callers racing before either
-   * has created anything can still each create one). Do not read this
-   * signature as promising more than that.
+   * key, though. `GoogleDriveDocumentAdapter.createDoc` works around that by
+   * tagging the file with the key (`appProperties`) in the create call and
+   * looking the key up first; `GoogleSheetsAdapter` still falls back to
+   * adopting an existing file of the same name, a narrower guarantee (two
+   * concurrent callers racing before either has created anything can still
+   * each create one) that is tolerable for one spreadsheet per org and would
+   * not be for one doc per pair. Do not read this signature as promising
+   * more than that.
    */
   ensureSpreadsheet(input: {
     spreadsheetId: string | null;

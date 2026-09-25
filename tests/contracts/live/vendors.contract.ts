@@ -205,6 +205,19 @@ describe("Google Drive + Docs", () => {
     docRef = first.docRef;
     expect(first.url).toContain(docRef);
 
+    // Bug #8's premise: a first render retried with no doc id and the same
+    // key finds the file its first attempt created (the `appProperties`
+    // lookup), rather than making a second one. Seconds apart, so this also
+    // records whether Drive search sees a just-created file.
+    const retried = await document().renderManagedRegion({
+      docRef: null,
+      title: `[contract run ${stamp}] doc`,
+      markdown: "## Contract run\n- first render",
+      collaborators: collaborators(),
+      idempotencyKey: `contract:${stamp}:doc:1`,
+    });
+    expect(retried.docRef).toBe(docRef);
+
     const second = await document().renderManagedRegion({
       docRef,
       title: `[contract run ${stamp}] doc`,

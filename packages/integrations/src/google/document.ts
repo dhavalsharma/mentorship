@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AdapterCapabilities, DocumentAdapter } from "@mentorship/core";
 import { AdapterCapabilitiesSchema, resolveManagedRegionWrite } from "@mentorship/core";
@@ -127,7 +128,8 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
     collaborators: { email: string }[];
     idempotencyKey: string;
   }): Promise<{ docRef: string; url: string; revisionId: string; pinned: boolean }> {
-    const documentId = input.docRef ?? (await this.createDoc(input.title));
+    const documentId =
+      input.docRef ?? (await this.createDoc(input.title, input.idempotencyKey));
     // Before the write, not after: a render that fails half way should still
     // have left the pair able to open the doc. Neither the folder's own
     // sharing nor `files.copy` grants them anything — Drive does not carry a
@@ -198,15 +200,59 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
     }
   }
 
-  private async createDoc(title: string): Promise<string> {
-    // Neither Drive nor Docs accepts an idempotency key, so a retry between
-    // "file created" and "effect ledger written" would leave the pair with two
-    // running docs — the document-slot equivalent of the duplicate invite
-    // invariant 6 exists to prevent. Name-within-folder is the closest thing
-    // to a natural key available, so an existing match is adopted instead of a
-    // second file being created.
-    const existing = await this.findByName(title);
+  /**
+   * Invariant 6 on the one call here that is not naturally idempotent.
+   *
+   * A pair's first render has no doc id. If the worker dies after Drive has
+   * created the file but before `document.rendered` commits (the id reaches
+   * the saga only as that event — invariant 5), the retry arrives with the
+   * same idempotency key and still no id. Without a key-based lookup it made
+   * a second doc and re-sent both access emails (journey-suite bug #8).
+   *
+   * Drive takes no client idempotency key, so the key is written onto the
+   * file itself, *in the same call that creates it*, as a private
+   * `appProperties` entry, and looked up in the folder before any create.
+   * Both writes being one atomic call is the point: there is no instant at
+   * which the doc exists without its key, so there is no crash window left
+   * in which a retry cannot find it.
+   *
+   * Rejected alternatives:
+   *   - **Adopt a file of the same name in the folder** (what this did
+   *     before). It covers the retry, but a name is not an identity: two
+   *     pairs whose naming template renders the same title would share one
+   *     doc — and the second pair would be *granted edit access to the first
+   *     pair's notes*. A doc a participant renamed was also never found.
+   *   - **Persist the created id durably before writing** (emit a
+   *     "document.created" event between create and render). That moves the
+   *     window, it does not close it: the crash between Drive creating the
+   *     file and our event committing is exactly bug #8.
+   *   - **`files.generateIds` + `files.create` with that id**, the Drive
+   *     analogue of the Calendar adapter's key-as-event-id. The id has to be
+   *     minted by Google, so it would need its own effect and its own saga
+   *     state to carry it back (invariant 5) before the create — a new state
+   *     in `session-lifecycle` for one vendor's quirk — and `files.copy`
+   *     does not document accepting one.
+   *   - **`documents.create` then move into the folder** (the old blank
+   *     path). Three calls, and a crash after the first leaves a keyless doc
+   *     in the service account's My Drive root that nothing will ever find.
+   *     `files.create` with the Docs mime type makes the same empty Doc,
+   *     already in the folder, already keyed.
+   *
+   * Scope: `drive.file` covers all of it — the adapter only ever lists,
+   * reads and tags files it created itself, and `appProperties` are private
+   * to the creating OAuth client. That is from Drive's documentation and
+   * reasoning, **not verified live**; nor is how soon a just-created file
+   * becomes visible to `files.list` (Drive search is not documented as
+   * read-your-writes — a retry within the index lag would still create a
+   * second file). `orderBy: createdTime` means that, should two ever exist,
+   * every retry settles on the same, oldest one.
+   */
+  private async createDoc(title: string, idempotencyKey: string): Promise<string> {
+    const tag = idempotencyTag(idempotencyKey);
+    const existing = await this.findByKey(tag);
     if (existing !== null) return existing;
+
+    const appProperties = { [IDEMPOTENCY_PROPERTY]: tag };
 
     if (this.config.guidelineDocId !== undefined) {
       const copied = await this.call(
@@ -215,45 +261,34 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
         {
           method: "POST",
           query: { supportsAllDrives: "true", fields: "id" },
-          body: { name: title, parents: [this.config.folderId] },
+          body: { name: title, parents: [this.config.folderId], appProperties },
         },
       );
       return String(copied["id"]);
     }
 
-    // `documents.create` cannot place a file: a new Doc always lands in the
-    // creator's My Drive root, so it is moved in a second call.
-    const created = await this.call("docs", "/documents", {
+    const created = await this.call("drive", "/files", {
       method: "POST",
-      body: { title },
-    });
-    const documentId = String(created["documentId"]);
-
-    const meta = await this.call("drive", `/files/${documentId}`, {
-      method: "GET",
-      query: { fields: "parents", supportsAllDrives: "true" },
-    });
-    const parents = (meta["parents"] as string[] | undefined) ?? [];
-
-    await this.call("drive", `/files/${documentId}`, {
-      method: "PATCH",
-      query: {
-        addParents: this.config.folderId,
-        ...(parents.length > 0 ? { removeParents: parents.join(",") } : {}),
-        supportsAllDrives: "true",
-        fields: "id",
+      query: { supportsAllDrives: "true", fields: "id" },
+      body: {
+        name: title,
+        mimeType: GOOGLE_DOC_MIME_TYPE,
+        parents: [this.config.folderId],
+        appProperties,
       },
     });
-    return documentId;
+    return String(created["id"]);
   }
 
-  private async findByName(title: string): Promise<string | null> {
-    const escaped = title.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  private async findByKey(tag: string): Promise<string | null> {
     const res = await this.call("drive", "/files", {
       method: "GET",
       query: {
-        q: `'${this.config.folderId}' in parents and name = '${escaped}' and trashed = false`,
+        q:
+          `'${this.config.folderId}' in parents and appProperties has { key='${IDEMPOTENCY_PROPERTY}' and ` +
+          `value='${driveQueryEscape(tag)}' } and trashed = false`,
         fields: "files(id)",
+        orderBy: "createdTime",
         pageSize: "1",
         supportsAllDrives: "true",
         includeItemsFromAllDrives: "true",
@@ -380,6 +415,27 @@ export class GoogleDriveDocumentAdapter implements DocumentAdapter {
     } while (pageToken);
     return last?.lastModifyingUser?.me === true;
   }
+}
+
+/** The private `appProperties` entry a created doc carries its render's key in. */
+export const IDEMPOTENCY_PROPERTY = "mentorshipIdempotencyKey";
+
+const GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document";
+
+/**
+ * Drive caps one app property at 124 bytes, key and value together. The
+ * engine's keys (`{instance id}:{step}:{index}`) fit with room to spare; a
+ * longer key is hashed rather than truncated, since two truncated keys can
+ * collide and a hash (for this purpose) cannot.
+ */
+export function idempotencyTag(idempotencyKey: string): string {
+  const limit = 124 - Buffer.byteLength(IDEMPOTENCY_PROPERTY);
+  if (Buffer.byteLength(idempotencyKey) <= limit) return idempotencyKey;
+  return `sha256:${createHash("sha256").update(idempotencyKey).digest("hex")}`;
+}
+
+function driveQueryEscape(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
 export function documentUrl(documentId: string): string {

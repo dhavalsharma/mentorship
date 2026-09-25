@@ -70,10 +70,10 @@ live session (it precedes a call that did) but was never named as checked.
 | Call | Used by | Last verified live | Fixture |
 | --- | --- | --- | --- |
 | `files.get` (folder probe) | `probe()` | not recorded | hand-written |
-| `files.list` (adopt by name) | `createDoc` | not recorded | hand-written |
-| `files.copy` | create-from-guideline | verified live — date unknown | hand-written |
-| `documents.create` | blank-doc path | **never** (live runs used a guideline) | hand-written |
-| `files.get?fields=parents` + `files.update` (move into folder) | blank-doc path | **never** | hand-written |
+| `files.list` — `appProperties has { key='mentorshipIdempotencyKey' … }`, `orderBy: createdTime` (create-once lookup, bug #8) | `createDoc` | **never** — nor whether a file created seconds earlier is already searchable | hand-written (`--app-properties`) |
+| `files.copy` | create-from-guideline | verified live — date unknown, **without** the `appProperties` body field it now sends | hand-written |
+| `files.create` (`mimeType: application/vnd.google-apps.document`, `parents`, `appProperties`) | blank-doc path, replacing `documents.create` + move | **never** | hand-written |
+| `appProperties` under the `drive.file` scope | both create paths + the lookup | **never** — from Drive's docs and reasoning only | — |
 | `documents.get` | managed-region read | verified live — date unknown | hand-written |
 | `documents.batchUpdate` | managed-region write | verified live — date unknown | hand-written |
 | `permissions.list` | `grantEditAccess` | not recorded | hand-written |
@@ -86,9 +86,9 @@ live session (it precedes a call that did) but was never named as checked.
 | Call | Used by | Last verified live | Fixture |
 | --- | --- | --- | --- |
 | `files.get` (folder probe) | `probe()` | **never** | hand-written (shared with Drive) |
-| `files.list` (adopt by name) | `ensureSpreadsheet` | **never** | hand-written (shared with Drive) |
+| `files.list` (adopt by name) | `ensureSpreadsheet` | **never** | hand-written (the document adapter no longer uses it) |
 | `spreadsheets.create` | `ensureSpreadsheet` | **never** | hand-written |
-| `files.get?fields=parents` + `files.update` | move into folder | **never** | hand-written (shared with Drive) |
+| `files.get?fields=parents` + `files.update` | move into folder | **never** | hand-written (the document adapter no longer uses them) |
 | `spreadsheets.get` | `writeTab` | **never** | hand-written |
 | `spreadsheets.batchUpdate` (`addSheet`) | `writeTab` | **never** | hand-written |
 | `spreadsheets.values.clear` | `writeTab` | **never** | hand-written |

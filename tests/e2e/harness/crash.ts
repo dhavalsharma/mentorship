@@ -279,12 +279,19 @@ export const P2_KNOWN_BUGS = {
  * - `transcriptLostOnRestart` (#9): `fetch_transcript` writes the text to
  *   `session_notes` (migration 0016) before announcing `transcript.available`,
  *   and `run_extraction` reads it back from there, not from process memory.
+ * - `secondDocumentCreated` (#8): a doc is created under its render's
+ *   idempotency key — `GoogleDriveDocumentAdapter` tags the file's
+ *   `appProperties` in the create call and looks the key up in the folder
+ *   first; `FakeDocument` mirrors that — so the retry of a first render,
+ *   which replays the same pending step and so the same key, lands in the
+ *   doc the crashed attempt created.
  */
 export const P2_FIXED_BUGS: ReadonlySet<string> = new Set<keyof typeof P2_KNOWN_BUGS>([
   "reEmittedOnRetry",
   "strandedAtStart",
   "timeoutStepConsumesItsOwnEvent",
   "transcriptLostOnRestart",
+  "secondDocumentCreated",
 ]);
 
 export function explain(f: CrashFinding, expected?: Outcome): keyof typeof P2_KNOWN_BUGS | null {
