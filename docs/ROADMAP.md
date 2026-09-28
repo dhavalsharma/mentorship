@@ -9,8 +9,9 @@ auth wired end to end into `apps/api`, enrolment/invite/identity-verification,
 an audit log with its first writer, migrations applied and RLS verified),
 phase 1 mostly done (saga engine, session lifecycle, integration profile,
 Slack interaction endpoint, and now the Postgres store, relay and resolvers).
-Every piece of the Postgres path exists and is tested; no process runs them
-together yet. Phase 4's dashboard has a real first slice too: `apps/web`, a
+Every piece of the Postgres path exists and is tested, and `tests/e2e/` runs
+`apps/api` and `apps/worker` together against one Postgres on every PR. Slack
+and Google Calendar have run against a sandbox workspace. Phase 4's dashboard has a real first slice too: `apps/web`, a
 Next.js admin app authenticated against the same magic-link flow, rendering
 the risk-findings and nudges tables live from `apps/api`.
 
@@ -99,9 +100,10 @@ The load-bearing wall. Everything after this assumes it.
       platform's deadline, write `agreement.responded`, advance asynchronously.
       `packages/integrations/src/slack/interactions.ts`; tested against a real
       HMAC signature and against the actual `SessionLifecycle` saga, not just
-      mocks (`packages/testkit/src/__tests__/slack-webhook.test.ts`). The
-      "suggest another" button acks but does not open a modal yet — see
-      ADR-0004's open gap.
+      mocks (`packages/testkit/src/__tests__/slack-webhook.test.ts`). "Suggest
+      another" now opens a real `datepicker` + `timepicker` modal, synchronously
+      in the click's request, and its submission becomes a structured
+      `AgreementResponse.counter`.
 - [x] Mount it behind a real HTTP server — `apps/api` (`node:http`, no
       framework: the route needs the exact raw bytes Slack signed, and a
       body-parser that touches them first breaks signature verification).
@@ -112,8 +114,8 @@ The load-bearing wall. Everything after this assumes it.
       for the clicking user, and the response recorded alongside its
       `agreement.responded` event in one transaction
       (`apps/api/src/postgres-ports.ts`). The route did not change — that is
-      what the ports were for. **Nothing advances the saga on that path yet**,
-      because the relay below is not built.
+      what the ports were for. The worker's relay drains the click and advances
+      the saga — the two-process arrangement every `tests/e2e/` journey runs.
 - [x] Pairs choose their own session length and rhythm (ADR-0009) — a
       "Session preferences" button on every proposal opens a Slack modal
       whose menu is `policy.pairPreferences` (default 15/30/45 minutes, every
@@ -124,11 +126,16 @@ The load-bearing wall. Everything after this assumes it.
       in-memory and on Postgres; **not yet run against a live workspace**.
 - [ ] Surface pair preference changes to admins — nothing reads
       `pair.preferences_updated` outside the saga yet (ADR-0009 action 7).
-- [ ] Google Calendar adapter against a live tenant
-- [ ] Slack adapter against a live workspace
-      Both are blocked only on credentials now: `docs/live-tenant-testing.md`
-      has the isolation plan, and `SandboxGuard` refuses any recipient not on
-      an allowlist so a stray row cannot reach a colleague.
+- [x] Google Calendar adapter against a live tenant — `events.insert` with an
+      idempotency-keyed id, a real (unmailed) invite, the reminder's
+      calendar-verify path. Sandbox calendar, under `SandboxGuard`.
+- [x] Slack adapter against a live workspace — `conversations.open`, proposals,
+      reminders, pick status, booked confirmations and the "Suggest another"
+      modal, in a sandbox workspace (`docs/live-tenant-testing.md`).
+- [ ] What has still never run live: the Slack Events listener (notes capture
+      and its `im:history`/`mpim:history` scopes), the Session preferences
+      modal, Drive `isEchoRevision`, and keyed document creation via
+      `appProperties`. `pnpm test:contracts:live` has never been run either.
 - [x] Monitoring: saga instances not advanced in N days; dead-letter review —
       `listStuckSagaInstances`/`listDeadLetteredEvents`
       (`packages/workflows/src/postgres-reads.ts`, org-scoped, run inside
@@ -228,8 +235,7 @@ risk, and it is the only one that *generates* the labelled data the others need.
       coverage at least matching a greedy baseline across 40 randomized,
       seeded cohorts. Runs as part of the default `pnpm test` (also runnable
       alone via `pnpm test:matching-invariants`), and so inside
-      `.github/workflows/ci.yml`'s test step — which has not yet run on
-      GitHub.
+      `.github/workflows/ci.yml`'s test step.
 - [x] Commit a round into real pairings — `runMatchingRound`/
       `commitMatchingRound` (`round.ts`) turn assignments into `pair.activated`
       through the same sink shape `RosterSink` already uses; `World` satisfies
@@ -252,8 +258,8 @@ blocked while this waits.
       `requiresHuman` flag, and now a home: `runProgressSweep` +
       `PostgresRiskFindingsSink` persist every finding to a new
       `risk_findings` table (migration `0006`/`0007`, RLS included). It is a
-      durable log, not a queue, and there is still no admin view to read the
-      table from — but something now schedules the sweep: see Phase 5.
+      durable log, not a queue, read-only at `/dashboard/risk-findings` (no
+      acknowledgement workflow), and scheduled by the worker: see Phase 5.
 - [ ] Structured goals; model-drafted, human-edited SMART framing
 - [x] Read models for the dashboard; the same model serves the scheduled digest.
       A first slice exists end to end: `GET /orgs/:orgId/risk-findings` and
@@ -327,7 +333,7 @@ blocked while this waits.
 - [x] `dependency-cruiser` enforcing the boundary rule — `.dependency-cruiser.cjs`
       + `pnpm deps:check`, verified both directions (clean against the real
       codebase, catches a deliberate violation). A step in
-      `.github/workflows/ci.yml`; that workflow has not yet run on GitHub.
+      `.github/workflows/ci.yml`, which passes on GitHub.
 - [ ] Full Apache-2.0 licence text
 - [ ] A custom-primitive walkthrough, and the eval harness front and centre so
       contributors can change prompts safely
@@ -364,17 +370,16 @@ These are not a phase; they are things that go stale if ignored.
 - CI now exists — `.github/workflows/ci.yml` (PR gate: typecheck,
   `deps:check`, migrations, the full suite with `DATABASE_URL` through
   `scripts/assert-no-skipped.mjs` so a skipped test fails, `test:e2e`, the web
-  build), `nightly.yml` and `live-contracts.yml` (manual only). **It has not
-  yet run on GitHub**: every step was run by hand locally, but the first
-  green run on a real PR is still outstanding, and until then `deps:check`,
-  the RLS leak test and the matching invariants are written into a gate
-  nobody has watched close. Once it has run, make `Gate` a required status
-  check on `main` — a workflow that can be merged past guards nothing. See
+  build), `nightly.yml` and `live-contracts.yml` (manual only). `ci.yml` has
+  run green on GitHub — on PR #13 and on the merge to `main`. Still
+  outstanding: `nightly.yml` has never run (trigger it once by hand), and
+  `Gate` is not a required status check on `main`, because GitHub refuses
+  branch protection on a private repo without a paid plan. Until it is, the
+  gate can be merged past — a workflow that can be merged past guards nothing. See
   "CI — the gate" in [e2e-testing-strategy.md](./e2e-testing-strategy.md).
-- No test runs `apps/api` and `apps/worker` together against one Postgres.
-  Both composition bugs that have escaped so far (the projector's `pairing_id`,
-  `findDue`'s missing org scope) were exactly that shape and were found by a
-  human running the system. See the same document's tier 2.
+- Keep the journey suite (`tests/e2e/`, tier 2) growing with every new flow.
+  It is the only thing that runs `apps/api` and `apps/worker` together against
+  one Postgres, which is the shape every escaped composition bug has had.
 - Keep the status table in `CLAUDE.md` and `README.md` honest. It is the first
   thing a contributor reads and the fastest way to lose their trust.
 - Add an ADR when a decision could reasonably have gone the other way. Record
