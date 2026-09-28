@@ -1,3 +1,4 @@
+import { and, eq, isNotNull, sql } from "drizzle-orm";
 import type { DomainEvent } from "@mentorship/core";
 import { events, withTenant, type Db } from "@mentorship/db";
 import type { EmitInput, EventSink } from "@mentorship/events";
@@ -25,18 +26,44 @@ export class PostgresEventSink implements EventSink {
       this.db,
       input.orgId,
       async (tx) => {
-        const [inserted] = await tx
-          .insert(events)
-          .values({
-            orgId: input.orgId,
-            name: input.name,
-            subjectRef: input.subjectRef,
-            payload: input.payload ?? {},
-            occurredAt,
-          })
-          .returning();
-        if (!inserted) throw new Error(`failed to append ${input.name}`);
-        return inserted;
+        const key = input.idempotencyKey ?? null;
+        const insert = tx.insert(events).values({
+          orgId: input.orgId,
+          name: input.name,
+          subjectRef: input.subjectRef,
+          payload: input.payload ?? {},
+          occurredAt,
+          idempotencyKey: key,
+        });
+        // Keyed: a retried effect's second emit lands on the partial unique
+        // index (migration 0014) and inserts nothing. Targeted at that index
+        // only, so any *other* uniqueness violation (the notes dedupe, 0011)
+        // still surfaces rather than being silently absorbed here.
+        const [inserted] = await (key === null
+          ? insert
+          : insert.onConflictDoNothing({
+              target: [events.orgId, events.idempotencyKey],
+              where: sql`${events.idempotencyKey} IS NOT NULL`,
+            })
+        ).returning();
+        if (inserted) return inserted;
+        if (key !== null) {
+          // The row the first attempt committed. Returned rather than thrown
+          // so the retried effect reads back the ids it minted last time.
+          const [existing] = await tx
+            .select()
+            .from(events)
+            .where(
+              and(
+                eq(events.orgId, input.orgId),
+                isNotNull(events.idempotencyKey),
+                eq(events.idempotencyKey, key),
+              ),
+            )
+            .limit(1);
+          if (existing) return existing;
+        }
+        throw new Error(`failed to append ${input.name}`);
       },
       role === undefined ? {} : { role },
     );
@@ -49,6 +76,7 @@ export class PostgresEventSink implements EventSink {
       occurredAt: row.occurredAt.toISOString(),
       version: row.version,
       payload: row.payload as Record<string, unknown>,
+      ...(row.idempotencyKey ? { idempotencyKey: row.idempotencyKey } : {}),
     };
   }
 }

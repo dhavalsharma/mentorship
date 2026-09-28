@@ -1,0 +1,127 @@
+# Nightly — the slow and the nondeterministic, kept out of the PR gate on
+# purpose (docs/e2e-testing-strategy.md, "CI — the gate").
+#
+# Each suite is its own job so one red result never hides another: an eval
+# whose accuracy moved is a conversation, not a reason to skip Playwright.
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # 03:17 UTC — off the top of the hour, when shared runners queue
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  e2e-nightly:
+    name: Journeys + crash resume (P2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/mentorship
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mentorship
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pnpm db:migrate
+      - run: pnpm test:e2e:nightly
+
+  browser:
+    name: Playwright (apps/web)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/mentorship
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mentorship
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pnpm db:migrate
+      - name: Install Playwright browser
+        run: pnpm --filter @mentorship/web exec playwright install --with-deps chromium
+      - run: pnpm test:browser
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  eval:
+    name: Evals
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/mentorship
+      # Optional. Unset, the eval scores the deterministic fallback path only;
+      # set, it spends money against the real model — which is why this lives
+      # here and never in the PR gate.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    # evals/run.ts reads ai_runs verdicts when DATABASE_URL is set, and
+    # db:migrate needs something on :5432 — without this block the job
+    # failed every night on connection refused.
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mentorship
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pnpm db:migrate
+      - run: pnpm eval
+
+  demo:
+    name: Demo smoke run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      # In-memory by design (testkit's World) — no service and no
+      # DATABASE_URL, so this proves the no-infrastructure path still runs.
+      - run: pnpm demo

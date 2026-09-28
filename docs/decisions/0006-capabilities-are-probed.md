@@ -141,4 +141,8 @@ waiting a day for a transcript that never comes.
 3. [x] Saga branches on transcription capability and consent together
 4. [x] Private messages never fall back to the joint thread
 5. [ ] Onboarding flow that establishes transcript entitlement explicitly
-6. [ ] Re-probe on failure; decide whether a periodic refresh is needed
+6. [ ] Re-probe on failure; decide whether a periodic refresh is needed —
+   *partly done:* on Postgres the probe runs at worker boot and on a
+   periodic scheduler refresh (`packages/workflows/src/postgres-capabilities.ts`,
+   which also records the rejected alternatives); re-probe on an operation
+   failure is not built.

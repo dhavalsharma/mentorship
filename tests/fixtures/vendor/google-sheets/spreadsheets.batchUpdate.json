@@ -1,0 +1,42 @@
+{
+  "vendor": "google-sheets",
+  "call": "spreadsheets.batchUpdate",
+  "capturedOn": "2026-09-23",
+  "source": "hand-written",
+  "notes": "Hand-written from the stub it replaced and the vendor's published reference. This call has NEVER run against a live account (CLAUDE.md status table). Replace it with a capture from pnpm test:contracts:live.",
+  "request": {
+    "api": "sheets",
+    "method": "POST",
+    "path": "/spreadsheets/{spreadsheetId}:batchUpdate",
+    "body": {
+      "requests": [
+        {
+          "addSheet": {
+            "properties": {
+              "title": "Risk findings"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "response": {
+    "spreadsheetId": "SPREADSHEET_ID",
+    "replies": [
+      {
+        "addSheet": {
+          "properties": {
+            "sheetId": 1234567,
+            "title": "Risk findings",
+            "index": 1,
+            "sheetType": "GRID",
+            "gridProperties": {
+              "rowCount": 1000,
+              "columnCount": 26
+            }
+          }
+        }
+      }
+    ]
+  }
+}

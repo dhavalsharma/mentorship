@@ -217,15 +217,28 @@ export const sessions = pgTable(
 );
 
 /** Raw, untrusted, never mutated by extraction. */
-export const sessionNotes = pgTable("session_notes", {
-  ...orgScoped,
-  sessionId: uuid("session_id").notNull(),
-  /** 'transcript' | 'typed' | 'upload' */
-  kind: text("kind").notNull(),
-  authorParticipantId: uuid("author_participant_id"),
-  externalRef: text("external_ref"),
-  body: text("body").notNull(),
-});
+export const sessionNotes = pgTable(
+  "session_notes",
+  {
+    ...orgScoped,
+    sessionId: uuid("session_id").notNull(),
+    /** 'transcript' | 'typed' | 'upload' */
+    kind: text("kind").notNull(),
+    authorParticipantId: uuid("author_participant_id"),
+    externalRef: text("external_ref"),
+    body: text("body").notNull(),
+  },
+  (t) => [
+    /**
+     * One stored transcript per session and vendor ref (migration 0016): a
+     * `fetch_transcript` retried after a crash lands here and inserts nothing
+     * (invariant 6). Partial on `kind` — typed notes carry no such identity.
+     */
+    uniqueIndex("session_notes_transcript_ref_unique")
+      .on(t.orgId, t.sessionId, t.externalRef)
+      .where(sql`${t.kind} = 'transcript'`),
+  ],
+);
 
 export const extractions = pgTable("extractions", {
   ...orgScoped,
@@ -334,6 +347,14 @@ export const events = pgTable(
      * block the events behind it, and must never be retried forever either.
      */
     deadLetteredAt: timestamp("dead_lettered_at", { withTimezone: true }),
+    /**
+     * The saga effect key (`saga:{id}:{step}:{index}`, plus the event name)
+     * for an event a saga effect produced; null for everything else. A step
+     * retried after a crash re-runs its effects, and this is what makes the
+     * re-emit a no-op rather than a second `session.scheduled` (migration
+     * 0014, invariant 6).
+     */
+    idempotencyKey: text("idempotency_key"),
   },
   (t) => [
     index("events_subject_idx").on(t.orgId, t.subjectRef, t.occurredAt),
@@ -348,6 +369,13 @@ export const events = pgTable(
     uniqueIndex("events_note_submitted_unique")
       .on(t.orgId, t.subjectRef, sql`(${t.payload} ->> 'noteId')`)
       .where(sql`${t.name} = 'notes.submitted'`),
+    /**
+     * Effect-emit dedupe. Partial because only effect-produced events carry a
+     * key; per org because the key is only unique within one tenant's sagas.
+     */
+    uniqueIndex("events_idempotency_key_unique")
+      .on(t.orgId, t.idempotencyKey)
+      .where(sql`${t.idempotencyKey} IS NOT NULL`),
   ],
 );
 
@@ -425,6 +453,12 @@ export const sagaInstances = pgTable(
     completedEffects: jsonb("completed_effects").notNull().default({}),
     history: jsonb("history").notNull().default([]),
     status: text("status").notNull().default("running"),
+    /**
+     * The step decided but not yet committed — its input, effects and next
+     * state, written before the first effect runs so a retry replays it
+     * rather than re-deciding (migration 0015, `SagaPendingStep` in core).
+     */
+    pendingStep: jsonb("pending_step"),
   },
   (t) => [
     index("saga_due_idx").on(t.status, t.timeoutAt),

@@ -1,6 +1,4 @@
 import { createClient } from "@mentorship/db";
-import { PostgresAiRunSink } from "@mentorship/ai/postgres";
-import { PostgresMagicLinkStore } from "@mentorship/auth/postgres";
 import type { MagicLinkStore } from "@mentorship/auth";
 import { commitRosterImport, planRosterImport } from "@mentorship/roster";
 import { bootstrap } from "@mentorship/testkit";
@@ -8,26 +6,7 @@ import {
   httpSlackTransport,
   SlackWebApiModalOpener,
 } from "@mentorship/integrations";
-import {
-  PostgresAgreementResponder,
-  PostgresChatIdentityResolver,
-  PostgresCounterContextResolver,
-  PostgresExtractionResponder,
-  PostgresNotesSink,
-  PostgresPairingLocator,
-  PostgresPairPreferencesStore,
-} from "./postgres-ports.js";
-import {
-  getMatchingRoundCandidates,
-  listDeadLetters,
-  listOpenRiskFindings,
-  listRecentNudges,
-  listStuckSagas,
-} from "./postgres-reads.js";
-import {
-  PostgresDocumentSettingsStore,
-  PostgresSheetSettingsStore,
-} from "./postgres-settings.js";
+import { buildPostgresApiDeps } from "./postgres-deps.js";
 import {
   createServer,
   notImplementedMatchingReads,
@@ -40,10 +19,12 @@ import {
  *
  * With DATABASE_URL set it runs on Postgres: verified `identity_links` for the
  * clicking user, and a response recorded alongside its `agreement.responded`
- * event in one transaction. The saga advances when the relay drains that event
- * — and the relay is not built yet (ROADMAP phase 1, pg-boss), so on this path
- * the click is durably recorded and nothing moves until it is. That is the
- * honest state, and it is better than a relay that looks like it works.
+ * event in one transaction. The saga advances when the outbox relay drains
+ * that event. The relay is built (`relayOnce`, run by `createWorker`), but this
+ * process does not run one: a click only moves a saga while `pnpm serve:worker`
+ * is running against the same database. Without it the click is durably
+ * recorded and waits. `tests/e2e/` runs exactly this pair of processes — this
+ * wiring (`buildPostgresApiDeps`) plus a worker — against one Postgres.
  *
  * Without one it runs on the in-memory testkit world, seeded with a pair, so
  * the endpoint can be curled with no infrastructure at all.
@@ -104,11 +85,6 @@ function postgresDeps(url: string): ApiServerDeps {
     process.exit(1);
   }
   const { db } = createClient(url);
-  const options = {
-    db,
-    orgId: ORG_ID,
-    ...(TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE }),
-  };
 
   console.log(`Backed by Postgres, org ${ORG_ID}.`);
   if (!TENANT_ROLE) {
@@ -117,77 +93,24 @@ function postgresDeps(url: string): ApiServerDeps {
     );
   }
   console.log(
-    "Responses land in `agreements` and `events`; no relay is running, so no " +
-      "saga will advance until one is.\n",
+    "Responses land in `agreements` and `events`. This process runs no relay: " +
+      "a saga advances only while `pnpm serve:worker` drains the same database.\n",
   );
 
-  const magicLinkStore = new PostgresMagicLinkStore(
+  return buildPostgresApiDeps({
     db,
-    TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE },
-  );
-
-  return {
+    orgId: ORG_ID,
     slackSigningSecret: SIGNING_SECRET!,
-    identity: new PostgresChatIdentityResolver(options),
-    responder: new PostgresAgreementResponder(options),
-    extractions: new PostgresExtractionResponder(
-      options,
-      new PostgresAiRunSink(
-        db,
-        TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE },
-      ),
-    ),
-    ...(SLACK_BOT_TOKEN
-      ? (() => {
-          const modals = new SlackWebApiModalOpener(
-            httpSlackTransport(SLACK_BOT_TOKEN),
-          );
-          return {
-            counterModal: {
-              modals,
-              counters: new PostgresCounterContextResolver(options),
-            },
-            preferences: {
-              modals,
-              store: new PostgresPairPreferencesStore(options),
-            },
-          };
-        })()
-      : {}),
-    slackEvents: {
-      locator: new PostgresPairingLocator(options),
-      notes: new PostgresNotesSink(options),
-    },
+    ...(TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE }),
+    ...(SLACK_BOT_TOKEN ? { slackTransport: httpSlackTransport(SLACK_BOT_TOKEN) } : {}),
     onUnhandled,
-    admin: {
-      riskFindings: (orgId, limit) =>
-        listOpenRiskFindings(db, orgId, limit, TENANT_ROLE),
-      nudges: (orgId, limit) => listRecentNudges(db, orgId, limit, TENANT_ROLE),
-      stuckSagas: (orgId, limit, olderThanDays) =>
-        listStuckSagas(db, orgId, limit, olderThanDays, TENANT_ROLE),
-      deadLetters: (orgId, limit) => listDeadLetters(db, orgId, limit, TENANT_ROLE),
-      matchingRoundCandidates: (orgId, runId) =>
-        getMatchingRoundCandidates(db, orgId, runId, TENANT_ROLE),
+    // No email-sending infrastructure in this repo — print it for a human
+    // to paste manually, the same pattern
+    // `apps/worker/src/seed-live-pair.ts` uses elsewhere.
+    onMagicLinkIssued: (email, rawToken) => {
+      console.log(`[auth] magic link for ${email}: ${rawToken}`);
     },
-    documentSettings: new PostgresDocumentSettingsStore(
-      db,
-      TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE },
-    ),
-    sheetSettings: new PostgresSheetSettingsStore(
-      db,
-      TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE },
-    ),
-    auth: {
-      store: magicLinkStore,
-      orgId: ORG_ID,
-      // No email-sending infrastructure in this repo — print it for a human
-      // to paste manually, the same pattern
-      // `apps/worker/src/seed-live-pair.ts` uses elsewhere.
-      onMagicLinkIssued: (email, rawToken) => {
-        console.log(`[auth] magic link for ${email}: ${rawToken}`);
-      },
-    },
-  };
+  });
 }
 
 /**

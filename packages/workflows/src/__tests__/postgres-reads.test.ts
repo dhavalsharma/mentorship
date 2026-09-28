@@ -115,9 +115,8 @@ describe.skipIf(!DATABASE_URL)("admin monitoring reads", () => {
       expect(rows.map((r) => (r as { id: string }).id)).toEqual([veryStale, stale]);
     });
 
-    it("excludes done and failed instances even when very old", async () => {
+    it("excludes done instances even when very old", async () => {
       await seedSaga(orgId, "done", new Date("2026-01-01T00:00:00.000Z"));
-      await seedSaga(orgId, "failed", new Date("2026-01-01T00:00:00.000Z"));
 
       const rows = await listStuckSagaInstances(handle.db, orgId, {
         olderThanDays: 3,
@@ -126,6 +125,20 @@ describe.skipIf(!DATABASE_URL)("admin monitoring reads", () => {
       });
 
       expect(rows).toEqual([]);
+    });
+
+    // `failed` is the engine's parking marker (a timer step that kept
+    // throwing), so it is stuck by definition — however recently it parked.
+    it("includes failed (parked) instances regardless of age", async () => {
+      const parked = await seedSaga(orgId, "failed", new Date("2026-09-22T23:00:00.000Z"));
+
+      const rows = await listStuckSagaInstances(handle.db, orgId, {
+        olderThanDays: 3,
+        limit: 50,
+        now: () => NOW,
+      });
+
+      expect(rows.map((r) => (r as { id: string }).id)).toEqual([parked]);
     });
 
     it("never returns another org's instances", async () => {

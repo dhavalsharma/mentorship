@@ -61,7 +61,7 @@ export class MemorySagaStore implements SagaStore {
         (i) =>
           i.status === "running" &&
           i.orgId === event.orgId &&
-          matchesPattern(event, i.awaitingEvent),
+          awaits(i, event),
       )
       .map((i) => structuredClone(i));
   }
@@ -92,4 +92,26 @@ export class MemorySagaStore implements SagaStore {
   async list(): Promise<SagaInstance[]> {
     return [...this.rows.values()].map((i) => structuredClone(i));
   }
+}
+
+/**
+ * Whether `event` wakes `instance`: what it waits for now, or what the step
+ * it has in flight will wait for. The second half matters because a step can
+ * emit the very event its next state waits on and then fail on a later
+ * effect — `create_calendar_event` emits `session.scheduled`, then the
+ * booked confirmation fails to send. The relay delivers that event while the
+ * instance still waits for the step's *input* pattern; matching only
+ * `awaitingEvent` dropped it as unwanted, the step was later finished by its
+ * own retry, and the saga sat in `scheduling` for an event that had already
+ * gone by until it paused `calendar_never_confirmed` on a booked session.
+ * Matched on the pending step too, the event finishes that step (the engine
+ * always does, before anything else) and is then offered to the state it
+ * landed in — which is waiting for it. Shared with `PostgresSagaStore` so the
+ * two stores cannot disagree about which sagas an event wakes.
+ */
+export function awaits(instance: SagaInstance, event: DomainEvent): boolean {
+  return (
+    matchesPattern(event, instance.awaitingEvent) ||
+    matchesPattern(event, instance.pendingStep?.waitFor ?? null)
+  );
 }

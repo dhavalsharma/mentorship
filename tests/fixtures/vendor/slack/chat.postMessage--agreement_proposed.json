@@ -1,0 +1,106 @@
+{
+  "vendor": "slack",
+  "call": "chat.postMessage",
+  "variant": "agreement_proposed",
+  "capturedOn": "2026-09-23",
+  "source": "hand-written",
+  "notes": "Hand-written from the stub it replaced and the vendor's published reference. This call has run against a live sandbox (CLAUDE.md status table), but no response was captured and the date of that run was not recorded, so this is still an assumption, not an observation. Replace it with a capture from pnpm test:contracts:live.",
+  "request": {
+    "method": "POST",
+    "path": "chat.postMessage",
+    "body": {
+      "channel": "C0EXAMPLE01",
+      "text": "Two times that work for you both:",
+      "blocks": [
+        {
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "text": "Two times that work for you both:"
+          }
+        },
+        {
+          "type": "actions",
+          "elements": [
+            {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Option 1"
+              },
+              "action_id": "agree:agr_1:opt_1",
+              "value": "{\"agreementId\":\"agr_1\",\"optionId\":\"opt_1\",\"kind\":\"accept\"}"
+            },
+            {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Suggest another"
+              },
+              "action_id": "counter:agr_1",
+              "value": "{\"agreementId\":\"agr_1\",\"kind\":\"counter\"}"
+            }
+          ]
+        }
+      ],
+      "metadata": {
+        "event_type": "agreement_proposed",
+        "event_payload": {
+          "agreement_id": "agr_1"
+        }
+      }
+    }
+  },
+  "response": {
+    "ok": true,
+    "channel": "C0EXAMPLE01",
+    "ts": "1726400000.000200",
+    "message": {
+      "type": "message",
+      "text": "Two times that work for you both:",
+      "user": "UREDACTED01",
+      "bot_id": "BREDACTED01",
+      "app_id": "AEXAMPLE01",
+      "ts": "1726400000.000200",
+      "team": "TREDACTED01",
+      "blocks": [
+        {
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "text": "Two times that work for you both:"
+          }
+        },
+        {
+          "type": "actions",
+          "elements": [
+            {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Option 1"
+              },
+              "action_id": "agree:agr_1:opt_1",
+              "value": "{\"agreementId\":\"agr_1\",\"optionId\":\"opt_1\",\"kind\":\"accept\"}"
+            },
+            {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Suggest another"
+              },
+              "action_id": "counter:agr_1",
+              "value": "{\"agreementId\":\"agr_1\",\"kind\":\"counter\"}"
+            }
+          ]
+        }
+      ],
+      "metadata": {
+        "event_type": "agreement_proposed",
+        "event_payload": {
+          "agreement_id": "agr_1"
+        }
+      }
+    }
+  }
+}

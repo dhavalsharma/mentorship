@@ -86,6 +86,16 @@ const worker = createWorker({
   },
 });
 
+// Boot is connect time (ADR-0006): these adapters are fixed for the life of
+// the process, so ask them once now, before the first pass reads the cache.
+// A failing probe is warned about and recorded, not fatal.
+const probe = await worker.probeCapabilities();
+console.log(
+  "capabilities probed: " +
+    probe.probed.map((r) => `${r.slot}${r.ok ? "" : " (FAILED)"}`).join(", ") +
+    (probe.cleared.length > 0 ? `; cleared unbound: ${probe.cleared.join(", ")}` : ""),
+);
+
 console.log(`LIVE worker started for org ${ORG_ID}, polling every ${INTERVAL_MS}ms`);
 console.log(
   "adapters: real Slack + Google, guarded by SandboxGuard — transcript is " +
@@ -125,12 +135,14 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 let seen = 0;
 while (!controller.signal.aborted) {
   try {
-    const { relay, timers } = await worker.pass();
+    const { relay, timers, tick } = await worker.pass();
     if (relay.delivered > 0 || timers > 0 || relay.failed > 0) {
       console.log(
         `pass: ${relay.delivered} delivered, ${timers} timers` +
           (relay.failed > 0 ? `, ${relay.failed} failed` : "") +
-          (relay.deadLettered > 0 ? `, ${relay.deadLettered} parked` : ""),
+          (relay.deadLettered > 0 ? `, ${relay.deadLettered} parked` : "") +
+          (tick.failed > 0 ? `, ${tick.failed} timer steps failed` : "") +
+          (tick.parked > 0 ? `, ${tick.parked} sagas parked` : ""),
       );
     }
     for (const call of recorder.calls.slice(seen)) {

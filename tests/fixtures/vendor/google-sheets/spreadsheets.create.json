@@ -1,0 +1,41 @@
+{
+  "vendor": "google-sheets",
+  "call": "spreadsheets.create",
+  "capturedOn": "2026-09-23",
+  "source": "hand-written",
+  "notes": "Hand-written from the stub it replaced and the vendor's published reference. This call has NEVER run against a live account (CLAUDE.md status table). Replace it with a capture from pnpm test:contracts:live. Note that a real new spreadsheet always comes with a default `Sheet1` tab.",
+  "request": {
+    "api": "sheets",
+    "method": "POST",
+    "path": "/spreadsheets",
+    "body": {
+      "properties": {
+        "title": "Mentorship reports"
+      }
+    }
+  },
+  "response": {
+    "spreadsheetId": "NEW_SPREADSHEET_ID",
+    "properties": {
+      "title": "Mentorship reports",
+      "locale": "en_US",
+      "autoRecalc": "ON_CHANGE",
+      "timeZone": "Etc/GMT"
+    },
+    "sheets": [
+      {
+        "properties": {
+          "sheetId": 0,
+          "title": "Sheet1",
+          "index": 0,
+          "sheetType": "GRID",
+          "gridProperties": {
+            "rowCount": 1000,
+            "columnCount": 26
+          }
+        }
+      }
+    ],
+    "spreadsheetUrl": "https://docs.google.com/spreadsheets/d/NEW_SPREADSHEET_ID/edit"
+  }
+}

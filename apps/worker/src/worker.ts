@@ -10,6 +10,7 @@ import {
   SagaEngine,
   SESSION_LIFECYCLE,
   type SessionIntel,
+  type TickResult,
   type TraceLine,
 } from "@mentorship/workflows";
 import {
@@ -17,7 +18,10 @@ import {
   PostgresProjector,
   PostgresSagaResolvers,
   PostgresSagaStore,
+  PostgresSessionSourceStore,
+  probeAndCacheCapabilities,
   relayOnce,
+  type ProbeCapabilitiesResult,
   type DocumentConfigFallback,
   type RelayResult,
 } from "@mentorship/workflows/postgres";
@@ -90,6 +94,14 @@ export interface WorkerOptions {
      * configured" shape every other sweep here has.
      */
     reportSync?: { intervalMs: number; spreadsheetTitle?: string };
+    /**
+     * Re-probe every bound adapter and refresh `integration_bindings
+     * .capabilities` (ADR-0006: "cached capabilities go stale silently").
+     * Complements the boot probe — `probeCapabilities()` — rather than
+     * replacing it: the first scheduler tick comes after the first pass, and
+     * a pass run on an empty cache degrades every proposal it makes.
+     */
+    capabilityProbe?: { intervalMs: number };
   };
   /**
    * Env-only fallback for the `sheet` destination, read only when no
@@ -102,8 +114,22 @@ export interface WorkerOptions {
 
 export interface Worker {
   engine: SagaEngine;
-  /** One pass: drain the outbox, then fire due timers. */
-  pass(): Promise<{ relay: RelayResult; timers: number }>;
+  /**
+   * Probe every adapter bound in `registry` and cache the result on this
+   * org's `integration_bindings` rows — the only place the Postgres resolvers
+   * read capabilities from. Call once at boot, before the first `pass()`:
+   * this process's adapters are fixed at construction, so boot is ADR-0006's
+   * "connect time". Never throws for a failing probe (it is recorded and
+   * warned); a database error does throw, as any other boot failure would.
+   */
+  probeCapabilities(): Promise<ProbeCapabilitiesResult>;
+  /**
+   * One pass: drain the outbox, then fire due timers. `timers` is how many
+   * were due; `tick` breaks that down — a timer step that threw is counted in
+   * `tick.failed` (retried after backoff) or `tick.parked` (given up on, and
+   * listed by `stuck-sagas`), never thrown out of the pass.
+   */
+  pass(): Promise<{ relay: RelayResult; timers: number; tick: TickResult }>;
   /**
    * One scheduler check: any configured sweep that is due runs, scoped to
    * this worker's own org. A no-op when `schedules` was never configured.
@@ -137,7 +163,17 @@ export function createWorker(options: WorkerOptions): Worker {
     ...(options.documentConfigFallback
       ? { documentConfigFallback: options.documentConfigFallback }
       : {}),
+    ...(options.onWarn ? { onWarn: options.onWarn } : {}),
   });
+  const probeCapabilities = (): Promise<ProbeCapabilitiesResult> =>
+    probeAndCacheCapabilities({
+      db: options.db,
+      orgId: options.orgId,
+      registry: options.registry,
+      ...scoped,
+      now,
+      ...(options.onWarn ? { onWarn: options.onWarn } : {}),
+    });
   const sink = new PostgresEventSink(options.db, { ...scoped, now });
   const projector = new PostgresProjector(options.db, scoped);
   const store = new PostgresSagaStore(options.db);
@@ -151,10 +187,32 @@ export function createWorker(options: WorkerOptions): Worker {
     // and neither needs to know the other exists.
     starters: [{ on: ["pair.activated"], sagaName: SESSION_LIFECYCLE }],
     ...(options.onTrace ? { onTrace: options.onTrace } : {}),
+    // One throwing instance is recorded and backed off rather than aborting
+    // the pass; this is where an operator hears about it.
+    ...(options.onWarn
+      ? {
+          onStepFailed: (failure) =>
+            options.onWarn?.(
+              failure.parked ? "saga step failed; instance parked" : "saga step failed; will retry",
+              {
+                instanceId: failure.instanceId,
+                subjectRef: failure.subjectRef,
+                state: failure.state,
+                attempts: failure.attempts,
+                retryAt: failure.retryAt,
+                error: failure.error.message,
+              },
+            ),
+        }
+      : {}),
     runEffect: createEffectRunner({
       registry: options.registry,
       log: sink,
       resolvers,
+      sources: new PostgresSessionSourceStore(options.db, {
+        orgId: options.orgId,
+        ...scoped,
+      }),
       intel,
       ids,
       ...(options.onWarn ? { onWarn: options.onWarn } : {}),
@@ -217,6 +275,13 @@ export function createWorker(options: WorkerOptions): Worker {
       run: (): Promise<SyncReportsResult | null> => run(),
     });
   }
+  if (options.schedules?.capabilityProbe) {
+    jobs.push({
+      name: "capability-probe",
+      intervalMs: options.schedules.capabilityProbe.intervalMs,
+      run: probeCapabilities,
+    });
+  }
   const scheduler = new Scheduler({
     jobs,
     now,
@@ -225,6 +290,7 @@ export function createWorker(options: WorkerOptions): Worker {
 
   return {
     engine,
+    probeCapabilities,
     async pass() {
       const relay = await relayOnce(options.db, engine, {
         // Scoped: this worker's resolvers belong to one tenant.
@@ -241,8 +307,8 @@ export function createWorker(options: WorkerOptions): Worker {
             }
           : {}),
       });
-      const timers = await engine.tick(options.orgId);
-      return { relay, timers };
+      const tick = await engine.tick(options.orgId);
+      return { relay, timers: tick.fired, tick };
     },
     sweep() {
       return scheduler.tick();

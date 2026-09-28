@@ -18,6 +18,9 @@ journal about files it did not generate costs more than reading a directory.
 | `0003_grants.sql` | DML for the two roles; no DDL, no BYPASSRLS | hand |
 | `0004_admin_policy.sql` | The admin role's cross-tenant policy, for the relay | hand |
 | `0013_cooling_preferences_wait.sql` | Data backfill: running `SessionLifecycle` instances already in `cooling` start waiting on `pair.preferences_updated` (ADR-0009) | hand |
+| `0014_events_idempotency_key.sql` | `events.idempotency_key` + a partial unique index on `(org_id, idempotency_key)`: a saga effect's events dedupe by effect key across a crash-retry (invariant 6) | `drizzle-kit generate`, commented by hand |
+| `0015_saga_pending_step.sql` | `saga_instances.pending_step`: the engine's write-ahead record of a decided-but-uncommitted step, so a retry replays the same effects under the same keys instead of re-running `step()` | `drizzle-kit generate`, commented by hand |
+| `0016_session_notes_transcript.sql` | Partial unique index on `session_notes (org_id, session_id, external_ref) WHERE kind = 'transcript'`: a fetched transcript is stored once, before `transcript.available`, so a restarted worker extracts from it rather than from memory (e2e bug #9) | `drizzle-kit generate`, commented by hand |
 
 ## Adding a structural migration
 

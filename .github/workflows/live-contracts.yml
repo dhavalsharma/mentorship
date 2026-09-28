@@ -1,0 +1,71 @@
+# Live vendor contract tests — tier 4 of docs/e2e-testing-strategy.md.
+#
+# Manual only, and never on a pull_request, on purpose: these need real
+# credentials, they mutate real sandbox state, and a red build caused by an
+# expired Google refresh token teaches a team to ignore red builds. Read
+# docs/live-tenant-testing.md before running this — it touches a real Slack
+# workspace and a real Google account.
+#
+# Secrets are scoped to the `live-sandbox` environment so they can be put
+# behind required reviewers in the repo settings; nothing else in this repo
+# references them. SANDBOX_ALLOWLIST is what SandboxGuard checks before any
+# recipient reaches a vendor transport.
+name: Live contracts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One live run at a time — two runs against the same sandbox workspace
+  # would interleave messages and invites and prove nothing.
+  group: live-contracts
+  cancel-in-progress: false
+
+jobs:
+  contracts:
+    name: Slack + Google (sandbox)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: live-sandbox
+    env:
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+      GOOGLE_CALENDAR_ID: ${{ secrets.GOOGLE_CALENDAR_ID }}
+      SANDBOX_ALLOWLIST: ${{ secrets.SANDBOX_ALLOWLIST }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      # Fail loudly on a missing secret rather than letting a contract test
+      # skip itself, or worse, run with SandboxGuard given an empty allowlist.
+      - name: Check secrets are present
+        run: |
+          missing=0
+          for name in SLACK_BOT_TOKEN SLACK_SIGNING_SECRET GOOGLE_CLIENT_ID \
+                      GOOGLE_CLIENT_SECRET GOOGLE_REFRESH_TOKEN GOOGLE_CALENDAR_ID \
+                      SANDBOX_ALLOWLIST; do
+            if [ -z "${!name}" ]; then
+              echo "::error::secret $name is not set"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - run: pnpm test:contracts:live
+
+      # Fixture capture (strategy doc, tier 4, mechanism 1): whatever the run
+      # wrote is kept as a dated observation for review, never auto-committed.
+      - name: Upload captured vendor fixtures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vendor-fixtures
+          path: tests/fixtures/vendor/
+          if-no-files-found: ignore
+          retention-days: 30

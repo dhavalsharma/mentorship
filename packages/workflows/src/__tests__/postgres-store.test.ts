@@ -3,10 +3,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { DomainEvent, SagaInstance } from "@mentorship/core";
+import { bareUuidIds, type DomainEvent, type SagaInstance } from "@mentorship/core";
 import { MIGRATIONS_DIR, organizations, sagaInstances } from "@mentorship/db";
 import { connectTestDb, DATABASE_URL, type TestDb } from "@mentorship/db/testing";
-import { MemorySagaStore, SagaConflictError, type SagaStore } from "@mentorship/workflows";
+import { MemorySagaStore, SagaConflictError, SagaEngine, type SagaStore } from "@mentorship/workflows";
 import { PostgresSagaStore } from "@mentorship/workflows/postgres";
 
 /**
@@ -62,6 +62,7 @@ describe.skipIf(!DATABASE_URL)("PostgresSagaStore", () => {
       completedEffects: {},
       history: [],
       status: "running",
+      pendingStep: null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       ...over,
@@ -87,6 +88,29 @@ describe.skipIf(!DATABASE_URL)("PostgresSagaStore", () => {
 
     const loaded = await store.get(original.id);
     expect(loaded).toEqual(original);
+  });
+
+  it("round-trips a pending step, and clears it", async () => {
+    const pendingStep = {
+      inputKey: `event:${randomUUID()}`,
+      input: "session.cancelled",
+      at: "2026-09-15T10:00:00.000Z",
+      from: "armed",
+      effects: [
+        { type: "ensure_thread" as const, title: "Mentoring" },
+        { type: "emit" as const, name: "agreement.opened" as const, payload: { agreementId: "agr_1" } },
+      ],
+      next: { name: "proposing", agreementId: "agr_1" },
+      waitFor: { names: ["agreement.responded" as const], subjectRef: "agreement:agr_1" },
+      timeoutAt: "2026-09-20T10:00:00.000Z",
+      done: false,
+    };
+    const original = instance({ pendingStep });
+    await store.create(original);
+    expect((await store.get(original.id))!.pendingStep).toEqual(pendingStep);
+
+    await store.save({ ...original, version: 1, pendingStep: null }, 0);
+    expect((await store.get(original.id))!.pendingStep).toBeNull();
   });
 
   it("rejects a duplicate id the way the memory store does", async () => {
@@ -290,6 +314,84 @@ describe.skipIf(!DATABASE_URL)("memory and Postgres stores agree", () => {
       );
       expect(missed.map((i) => i.id).includes(id), name).toBe(false);
     }
+  });
+
+  // e2e bug #4: the engine records a failed timer step, and later parks it,
+  // entirely through `save`/`findDue` — no new column. Both stores must
+  // round-trip that bookkeeping identically, or the attempt count read back
+  // from history (and so the park decision) would differ between them.
+  it("agree on an isolated, backed-off and finally parked timer step", async () => {
+    const outcomes: Record<string, unknown> = {};
+    for (const [name, store] of await bothStores()) {
+      let now = new Date("2026-09-12T06:00:00.000Z");
+      const engine = new SagaEngine({
+        store,
+        resolvers: {} as never,
+        ids: bareUuidIds,
+        now: () => now,
+        maxStepAttempts: 2,
+        runEffect: async (effect, ctx) => {
+          if (effect.type === "dm" && ctx.instance.subjectRef.startsWith("pairing:bad")) {
+            throw new Error("dm outage: 503");
+          }
+          return null;
+        },
+      });
+      engine.register({
+        name: "Parity",
+        initial: () => ({ name: "start" }),
+        step: (state: { name: string }) =>
+          state.name === "start"
+            ? { next: { name: "waiting" }, timeoutAt: "2026-09-12T06:00:00.000Z" }
+            : {
+                next: { name: "finished" },
+                done: true,
+                effects: [
+                  { type: "post_message", body: "shared" },
+                  { type: "dm", participantId: "p", body: "private" },
+                ],
+              },
+      });
+      const bad = await engine.start({ sagaName: "Parity", orgId, subjectRef: `pairing:bad-${randomUUID()}` });
+      const good = await engine.start({ sagaName: "Parity", orgId, subjectRef: `pairing:good-${randomUUID()}` });
+      ids.push(bad.id, good.id);
+
+      const first = await engine.tick(orgId);
+      now = new Date("2026-09-12T07:00:00.000Z");
+      const second = await engine.tick(orgId);
+
+      const parked = (await store.get(bad.id))!;
+      const done = (await store.get(good.id))!;
+      outcomes[name] = {
+        first,
+        second,
+        parked: {
+          status: parked.status,
+          timeoutAt: parked.timeoutAt,
+          stepIndex: parked.stepIndex,
+          ledger: Object.keys(parked.completedEffects).length,
+          // The failed step's write-ahead record survives the park, so a
+          // reviewer sees exactly what was being attempted.
+          pending: parked.pendingStep,
+          failures: parked.history
+            .filter((h) => h.error !== undefined)
+            .map((h) => ({ attempt: h.attempt, error: h.error, done: h.done, timeoutAt: h.timeoutAt })),
+        },
+        good: done.status,
+      };
+    }
+    expect(outcomes["postgres"]).toEqual(outcomes["memory"]);
+    expect(outcomes["memory"]).toMatchObject({
+      first: { fired: 2, advanced: 1, failed: 1, parked: 0 },
+      second: { fired: 1, advanced: 0, failed: 0, parked: 1 },
+      parked: {
+        status: "failed",
+        timeoutAt: null,
+        ledger: 1,
+        pending: { input: "timeout", from: "waiting", done: true },
+      },
+      good: "done",
+    });
   });
 });
 

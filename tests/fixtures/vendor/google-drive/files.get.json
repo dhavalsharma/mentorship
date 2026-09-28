@@ -1,0 +1,20 @@
+{
+  "vendor": "google-drive",
+  "call": "files.get",
+  "capturedOn": "2026-09-23",
+  "source": "hand-written",
+  "notes": "Hand-written from the stub it replaced and the vendor's published reference. This call has run against a live sandbox (CLAUDE.md status table), but no response was captured and the date of that run was not recorded, so this is still an assumption, not an observation. Replace it with a capture from pnpm test:contracts:live. The folder probe; the response carries only what `fields` asked for.",
+  "request": {
+    "api": "drive",
+    "method": "GET",
+    "path": "/files/{fileId}",
+    "query": {
+      "fields": "id,mimeType",
+      "supportsAllDrives": "true"
+    }
+  },
+  "response": {
+    "id": "FOLDER_ID",
+    "mimeType": "application/vnd.google-apps.folder"
+  }
+}

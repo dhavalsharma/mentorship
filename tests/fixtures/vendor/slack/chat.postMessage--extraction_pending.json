@@ -1,0 +1,110 @@
+{
+  "vendor": "slack",
+  "call": "chat.postMessage",
+  "variant": "extraction_pending",
+  "capturedOn": "2026-09-23",
+  "source": "hand-written",
+  "notes": "Hand-written from the stub it replaced and the vendor's published reference. The Confirm/Edit message shape has NEVER run against a live account (CLAUDE.md status table). Replace it with a capture from pnpm test:contracts:live.",
+  "request": {
+    "method": "POST",
+    "path": "chat.postMessage",
+    "body": {
+      "channel": "C0EXAMPLE01",
+      "text": "Here is what I captured.",
+      "blocks": [
+        {
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "text": "Here is what I captured."
+          }
+        },
+        {
+          "type": "actions",
+          "elements": [
+            {
+              "type": "button",
+              "style": "primary",
+              "text": {
+                "type": "plain_text",
+                "text": "Confirm"
+              },
+              "action_id": "confirm_extraction:ext_1",
+              "value": "{\"extractionId\":\"ext_1\",\"kind\":\"confirm\"}"
+            },
+            {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Edit"
+              },
+              "action_id": "edit_extraction:ext_1",
+              "value": "{\"extractionId\":\"ext_1\",\"kind\":\"edit\"}",
+              "url": "https://docs.google.com/document/d/DOC_ID/edit"
+            }
+          ]
+        }
+      ],
+      "metadata": {
+        "event_type": "extraction_pending",
+        "event_payload": {
+          "extraction_id": "ext_1"
+        }
+      }
+    }
+  },
+  "response": {
+    "ok": true,
+    "channel": "C0EXAMPLE01",
+    "ts": "1726400000.000300",
+    "message": {
+      "type": "message",
+      "text": "Here is what I captured.",
+      "user": "UREDACTED01",
+      "bot_id": "BREDACTED01",
+      "app_id": "AEXAMPLE01",
+      "ts": "1726400000.000300",
+      "team": "TREDACTED01",
+      "blocks": [
+        {
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "text": "Here is what I captured."
+          }
+        },
+        {
+          "type": "actions",
+          "elements": [
+            {
+              "type": "button",
+              "style": "primary",
+              "text": {
+                "type": "plain_text",
+                "text": "Confirm"
+              },
+              "action_id": "confirm_extraction:ext_1",
+              "value": "{\"extractionId\":\"ext_1\",\"kind\":\"confirm\"}"
+            },
+            {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Edit"
+              },
+              "action_id": "edit_extraction:ext_1",
+              "value": "{\"extractionId\":\"ext_1\",\"kind\":\"edit\"}",
+              "url": "https://docs.google.com/document/d/DOC_ID/edit"
+            }
+          ]
+        }
+      ],
+      "metadata": {
+        "event_type": "extraction_pending",
+        "event_payload": {
+          "extraction_id": "ext_1"
+        }
+      }
+    }
+  }
+}

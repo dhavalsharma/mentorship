@@ -1,0 +1,29 @@
+{
+  "vendor": "google-drive",
+  "call": "files.create",
+  "capturedOn": "2026-09-25",
+  "source": "hand-written",
+  "notes": "Hand-written from the vendor's published reference; has NEVER run against a live account. The blank-doc path: an empty Google Doc created by mime type, directly inside the folder, carrying the render's idempotency key as a private appProperties entry in the same call (journey-suite bug #8). Metadata-only create, so no upload endpoint. Unverified: that drive.file scope suffices and that appProperties set here are immediately queryable. Replace it with a capture from pnpm test:contracts:live.",
+  "request": {
+    "api": "drive",
+    "method": "POST",
+    "path": "/files",
+    "query": {
+      "supportsAllDrives": "true",
+      "fields": "id"
+    },
+    "body": {
+      "name": "Priya & Sam: session notes",
+      "mimeType": "application/vnd.google-apps.document",
+      "parents": [
+        "FOLDER_ID"
+      ],
+      "appProperties": {
+        "mentorshipIdempotencyKey": "SAGA_INSTANCE_ID:4:0"
+      }
+    }
+  },
+  "response": {
+    "id": "BLANK_DOC_ID"
+  }
+}

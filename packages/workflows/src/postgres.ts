@@ -9,3 +9,5 @@ export * from "./postgres-resolvers.js";
 export * from "./postgres-sink.js";
 export * from "./postgres-projector.js";
 export * from "./postgres-reads.js";
+export * from "./postgres-capabilities.js";
+export * from "./postgres-sources.js";

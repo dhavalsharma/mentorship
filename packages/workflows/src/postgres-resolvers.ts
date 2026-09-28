@@ -1,6 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import {
+  AdapterCapabilitiesSchema,
   StoredProgramPolicySchema,
   resolveCadence,
   type AdapterCapabilities,
@@ -74,9 +75,14 @@ export interface PostgresResolverOptions {
   role?: string;
   /** Used only when the document binding row is absent or has no guideline doc. */
   documentConfigFallback?: DocumentConfigFallback;
+  /** Where a capability cache miss on a bound slot is reported. */
+  onWarn?: (message: string, detail?: Record<string, unknown>) => void;
 }
 
 export class PostgresSagaResolvers implements SagaResolvers {
+  /** Slots already warned about, so a miss is loud once, not on every step. */
+  private readonly warnedMisses = new Set<SlotName>();
+
   constructor(private readonly options: PostgresResolverOptions) {}
 
   private read<T>(fn: (tx: Db) => Promise<T>): Promise<T> {
@@ -279,14 +285,19 @@ export class PostgresSagaResolvers implements SagaResolvers {
   }
 
   async capabilities(slot: SlotName): Promise<AdapterCapabilities | null> {
-    const { orgId } = this.options;
+    const { orgId, registry } = this.options;
     // The *probed* capabilities cached on the binding, not what the adapter
     // class claims (ADR-0006): whether a tenant can actually get a transcript
     // depends on their edition and their admin's settings, which is knowable
-    // only by asking, and is asked once at connect time.
-    return this.read(async (tx) => {
-      const [row] = await tx
-        .select({ capabilities: integrationBindings.capabilities })
+    // only by asking. `probeAndCacheCapabilities` does the asking, at worker
+    // boot and on a refresh interval; this only ever reads the answer.
+    const row = await this.read(async (tx) => {
+      const [found] = await tx
+        .select({
+          adapterId: integrationBindings.adapterId,
+          capabilities: integrationBindings.capabilities,
+          lastError: integrationBindings.lastError,
+        })
         .from(integrationBindings)
         .where(
           and(
@@ -295,9 +306,39 @@ export class PostgresSagaResolvers implements SagaResolvers {
           ),
         )
         .limit(1);
-      if (!row?.capabilities) return null;
-      return row.capabilities as AdapterCapabilities;
+      return found ?? null;
     });
+
+    // A miss on a slot this process has an adapter for is not "the tenant
+    // lacks it" — it is "nobody found out". The answer is still null, i.e.
+    // degrade, never assume: the ADR's pessimistic default, and the one
+    // that cannot book or poll for something the tenant is not entitled to.
+    // But it is said out loud, because a silently degraded tenant looks
+    // exactly like a working one with fewer features — which is how this
+    // cache went unwritten, unnoticed, until the journey suite seeded it.
+    const bound = registry.get(slot);
+    const parsed = row?.capabilities
+      ? AdapterCapabilitiesSchema.safeParse(row.capabilities)
+      : null;
+    let reason: string | null = null;
+    if (!parsed) reason = row ? (row.lastError ?? "never probed") : "no binding row";
+    else if (!parsed.success) reason = "cached capabilities fail the schema";
+    else if (bound && row && row.adapterId !== bound.id) {
+      reason = `cached for adapter "${row.adapterId}", but "${bound.id}" is bound`;
+    }
+
+    if (reason === null && parsed?.success) {
+      this.warnedMisses.delete(slot);
+      return parsed.data;
+    }
+    if (bound && !this.warnedMisses.has(slot)) {
+      this.warnedMisses.add(slot);
+      this.options.onWarn?.(
+        "capabilities unknown for a bound slot — degrading as if absent",
+        { orgId, slot, adapterId: bound.id, reason },
+      );
+    }
+    return null;
   }
 }
 

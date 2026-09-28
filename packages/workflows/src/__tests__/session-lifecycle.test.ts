@@ -2,6 +2,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { DeterministicProvider, NullAiRunSink } from "@mentorship/ai";
 import { commitRosterImport, planRosterImport } from "@mentorship/roster";
 import {
+  createEffectRunner,
+  createSessionLifecycle,
+  heuristicSessionIntel,
+  SagaEngine,
+} from "@mentorship/workflows";
+import {
   advanceToNextTimer,
   bootstrap,
   type BootstrapOptions,
@@ -243,7 +249,10 @@ describe("agreement outcomes", () => {
     ).toHaveLength(1);
   });
 
-  it("escalates rather than guessing when only one party replies", async () => {
+  // e2e bug #1. This test used to assert `paused` straight after the first
+  // timeout — which was the bug: a one-sided silence got no renudge at all,
+  // where a two-sided one got one (invariant 11).
+  it("renudges the silent party once when only one party replies, then escalates rather than guessing", async () => {
     const ctx = await setup();
     const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
     await ctx.h.world.respond(
@@ -255,7 +264,139 @@ describe("agreement outcomes", () => {
     await ctx.h.dispatcher.settle();
     expect(await stateOf(ctx.h)).toMatchObject({ name: "proposing" });
 
+    const nudges = () =>
+      ctx.h.recorder
+        .of("thread.message")
+        .map((c) => String(c.detail["body"]))
+        .filter((b) => b.startsWith("Nudging gently"));
+
+    await advanceToNextTimer(ctx.h); // response window closes: one renudge
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "proposing" });
+    expect(nudges()).toHaveLength(1);
+    // Addressed to the one who is silent, and says what the other picked.
+    expect(nudges()[0]).toContain("Priya");
+    expect(nudges()[0]).toContain(`Arjun picked ${agreement.options[0]!.label}`);
+    const [instance] = await ctx.h.engine.instances();
+    // Its own explicit timeout (invariant 7), from policy (ADR-0001).
+    expect(Date.parse(instance!.timeoutAt!) - ctx.h.clock.now().getTime()).toBe(
+      ctx.h.policy.agreement.renudgeAfterHours * 3_600_000,
+    );
+
+    await advanceToNextTimer(ctx.h); // still silent: a human, not a third attempt
+    expect(await stateOf(ctx.h)).toMatchObject({
+      name: "paused",
+      reason: "one_sided_response",
+    });
+    expect(nudges()).toHaveLength(1);
+    expect(
+      ctx.h.log
+        .all()
+        .filter((e) => e.name === "saga.escalated")
+        .map((e) => e.payload["reason"]),
+    ).toEqual(["one_sided_response"]);
+    expect(ctx.h.recorder.of("calendar.created")).toEqual([]);
+  });
+
+  it("does not escalate early when the one who already picked clicks again during the renudge window", async () => {
+    const ctx = await setup();
+    const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+    const [first] = agreement.participantIds;
+    await ctx.h.world.respond(agreement.id, first!, "accept", agreement.options[0]!.optionId);
+    await ctx.h.dispatcher.settle();
+    await advanceToNextTimer(ctx.h); // renudged
+
+    await ctx.h.world.respond(agreement.id, first!, "accept", agreement.options[0]!.optionId);
+    await ctx.h.dispatcher.settle();
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "proposing" });
+
+    // The silent party answers within the renudge window: booked.
+    await ctx.h.world.respond(
+      agreement.id,
+      agreement.participantIds[1]!,
+      "accept",
+      agreement.options[0]!.optionId,
+    );
+    await ctx.h.dispatcher.settle();
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "armed" });
+  });
+
+  it("re-arms a renudge written before renudgeExpiresAt existed on its own deadline, not the agreement's past one", async () => {
+    const ctx = await setup();
+    const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+    const [first] = agreement.participantIds;
+    await ctx.h.world.respond(agreement.id, first!, "accept", agreement.options[0]!.optionId);
+    await ctx.h.dispatcher.settle();
+    await advanceToNextTimer(ctx.h); // renudged
+
+    // A row renudged before the field shipped: `renudged: true`, no deadline.
+    const [renudged] = await ctx.h.engine.instances();
+    const { renudgeExpiresAt: _dropped, ...legacy } = renudged!.state as Record<string, unknown>;
+    await ctx.h.store.save(
+      { ...renudged!, state: legacy, version: renudged!.version + 1 },
+      renudged!.version,
+    );
+
+    await ctx.h.world.respond(agreement.id, first!, "accept", agreement.options[0]!.optionId);
+    await ctx.h.dispatcher.settle();
+    const [instance] = await ctx.h.engine.instances();
+    expect(instance!.state).toMatchObject({ name: "proposing", renudged: true });
+    expect(Date.parse(instance!.timeoutAt!)).toBe(
+      Date.parse(agreement.timeoutAt) + ctx.h.policy.agreement.renudgeAfterHours * 3_600_000,
+    );
+    expect(Date.parse(instance!.timeoutAt!)).toBeGreaterThan(ctx.h.clock.now().getTime());
+  });
+
+  it("never renudges the same one-sided silence twice, even when the renudge step crashes after posting", async () => {
+    const ctx = await setup();
+    const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+    await ctx.h.world.respond(
+      agreement.id,
+      agreement.participantIds[0]!,
+      "accept",
+      agreement.options[0]!.optionId,
+    );
+    await ctx.h.dispatcher.settle();
+
+    // A second "process" over the same store, whose runner dies right after
+    // the vendor accepted the renudge — before the step could commit.
+    const real = createEffectRunner({
+      registry: ctx.h.registry,
+      log: ctx.h.log,
+      resolvers: ctx.h.world,
+      sources: ctx.h.world,
+      intel: heuristicSessionIntel(ctx.h.ids),
+      ids: ctx.h.ids,
+    });
+    let crashed = false;
+    const crashing = new SagaEngine({
+      store: ctx.h.store,
+      resolvers: ctx.h.world,
+      ids: ctx.h.ids,
+      now: ctx.h.clock.now,
+      runEffect: async (effect, ectx) => {
+        const value = await real(effect, ectx);
+        if (!crashed && effect.type === "post_message" && effect.body.startsWith("Nudging gently")) {
+          crashed = true;
+          throw new Error("worker killed");
+        }
+        return value;
+      },
+    });
+    crashing.register(createSessionLifecycle());
+    ctx.h.clock.advanceTo((await ctx.h.engine.nextTimeout())!);
+    await crashing.tick();
+    expect(crashed).toBe(true);
+
+    // The replacement process picks the instance up: it must finish the
+    // recorded step (same effect, same key), not decide a second renudge.
+    await ctx.h.dispatcher.settle();
     await advanceToNextTimer(ctx.h);
+    await advanceToNextTimer(ctx.h);
+
+    const nudges = ctx.h.recorder
+      .of("thread.message")
+      .filter((c) => String(c.detail["body"]).startsWith("Nudging gently"));
+    expect(nudges).toHaveLength(1);
     expect(await stateOf(ctx.h)).toMatchObject({
       name: "paused",
       reason: "one_sided_response",
@@ -334,6 +475,65 @@ describe("capability and consent branches", () => {
       ctx.h.log.all().filter((e) => e.name === "session.undocumented"),
     ).toHaveLength(1);
     expect(await stateOf(ctx.h)).toMatchObject({ name: "cooling" });
+  });
+
+  // e2e bug #9: the fetched transcript lived only in the effect runner's
+  // memory, so a worker replaced between the fetch and the extraction
+  // extracted from an empty string.
+  it("extracts from the fetched transcript even when the worker restarts between fetch and extract", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1 });
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h); // reminder
+
+    // The pass that fetches: fire the post-meeting timer only. Its
+    // `transcript.available` is committed but not yet delivered.
+    ctx.h.clock.advanceTo((await ctx.h.engine.nextTimeout())!);
+    await ctx.h.engine.tick();
+    const available = ctx.h.log.all().filter((e) => e.name === "transcript.available");
+    expect(available).toHaveLength(1);
+    expect(ctx.h.log.all().filter((e) => e.name === "extraction.completed")).toEqual([]);
+
+    // A fresh process: new runner, new memory, same durable state.
+    const restarted = new SagaEngine({
+      store: ctx.h.store,
+      resolvers: ctx.h.world,
+      ids: ctx.h.ids,
+      now: ctx.h.clock.now,
+      runEffect: createEffectRunner({
+        registry: ctx.h.registry,
+        log: ctx.h.log,
+        resolvers: ctx.h.world,
+        sources: ctx.h.world,
+        intel: heuristicSessionIntel(ctx.h.ids),
+        ids: ctx.h.ids,
+      }),
+    });
+    restarted.register(createSessionLifecycle());
+    await restarted.deliver(available[0]!);
+
+    const [completed] = ctx.h.log.all().filter((e) => e.name === "extraction.completed");
+    expect(completed).toBeDefined();
+    const markdown = String(completed!.payload["markdown"]);
+    expect(markdown).not.toContain("No notes or transcript were available");
+    expect(markdown).toContain("exchanges captured from `transcript_");
+    // The transcript was fetched exactly once — the restart read it back, it
+    // did not go to the vendor again.
+    expect(ctx.h.recorder.of("transcript.fetch")).toHaveLength(1);
+  });
+
+  it("stops polling for a transcript once recording consent is withdrawn mid-poll (invariant 12)", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 2 });
+    await bothAccept(ctx);
+    await advanceToNextTimer(ctx.h); // reminder
+    await advanceToNextTimer(ctx.h); // meeting ends: first poll, nothing yet
+    expect(ctx.h.recorder.of("transcript.fetch")).toHaveLength(1);
+
+    for (const p of ctx.h.world.participants.values()) p.consent.recording = false;
+    await advanceToNextTimer(ctx.h); // the next poll must not happen
+
+    expect(ctx.h.recorder.of("transcript.fetch")).toHaveLength(1);
+    expect(ctx.h.log.all().filter((e) => e.name === "transcript.available")).toEqual([]);
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "awaiting_artifact", mode: "manual_notes" });
   });
 
   it("accepts typed notes when there is no transcript", async () => {
@@ -529,6 +729,133 @@ describe("capability and consent branches", () => {
     expect(
       ctx.warnings.some((w) => /private message not sent/.test(w)),
     ).toBe(true);
+  });
+
+  // e2e bug #4: a dm slot that is bound but *failing* used to wedge the
+  // reminder step forever. Now it is retried once, then degrades — escalated,
+  // never re-routed to the thread — and the session carries on.
+  it("retries a failing dm once, then degrades without the thread and still holds the session", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1 });
+    ctx.h.registry.bind({
+      slot: "dm",
+      id: "down-dm",
+      probe: async () => ({}) as never,
+      send: async () => {
+        throw new Error("dm outage: 503");
+      },
+    } as never);
+    await bothAccept(ctx);
+
+    const threadBefore = ctx.h.recorder.calls.filter((c) => c.kind.startsWith("thread.")).length;
+    await advanceToNextTimer(ctx.h); // the reminder: shared post ok, DMs throw
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "armed" });
+    const [instance] = await ctx.h.engine.instances();
+    expect(instance!.history.at(-1)).toMatchObject({ attempt: 1, error: "dm outage: 503" });
+
+    await advanceToNextTimer(ctx.h); // the retry: DMs degrade, step completes
+    await advanceToNextTimer(ctx.h);
+    expect(ctx.h.log.all().filter((e) => e.name === "session.held")).toHaveLength(1);
+
+    const reminders = ctx.h.recorder.calls.filter(
+      (c) => c.kind.startsWith("thread.") && String(c.detail["body"]).startsWith("Reminder:"),
+    );
+    expect(reminders).toHaveLength(1); // the ledger kept it from being re-posted
+    expect(
+      ctx.h.recorder.calls
+        .filter((c) => c.kind.startsWith("thread."))
+        .slice(threadBefore)
+        .filter((c) => String(c.detail["body"]).startsWith("Heads up:")),
+    ).toEqual([]);
+    const escalations = ctx.h.log
+      .all()
+      .filter((e) => e.name === "saga.escalated" && e.payload["reason"] === "dm_undeliverable");
+    expect(escalations).toHaveLength(2); // one per participant
+    expect(ctx.warnings.some((w) => /dm failed after retry/.test(w))).toBe(true);
+  });
+
+  // PR #13 review: with no thread, the *shared* message is a DM to each
+  // party (`broadcast`), and that path used to call `dm.send` bare — a DM
+  // outage threw on every attempt until `tick()` parked the pair. It now
+  // follows the same retry-once-then-degrade policy as a private DM.
+  it("degrades a failing dm on a tenant with no thread the same way, rather than parking the pair", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1, omitSlots: ["conversation"] });
+    await bothAccept(ctx);
+    const workingDm = ctx.h.registry.get("dm")!;
+    ctx.h.registry.bind({
+      slot: "dm",
+      id: "down-dm",
+      probe: async () => ({}) as never,
+      send: async () => {
+        throw new Error("dm outage: 503");
+      },
+    } as never);
+
+    await advanceToNextTimer(ctx.h); // the reminder: every DM throws
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "armed" });
+    const [first] = await ctx.h.engine.instances();
+    expect(first!.history.at(-1)).toMatchObject({ attempt: 1, error: "dm outage: 503" });
+
+    await advanceToNextTimer(ctx.h); // the retry: degrades, step completes
+    const [retried] = await ctx.h.engine.instances();
+    expect(retried!.history.at(-1)).not.toHaveProperty("error");
+    expect(retried!.history.at(-1)).toMatchObject({ from: "armed", to: "armed" });
+    expect(retried!.status).toBe("running");
+    expect(ctx.h.log.all().filter((e) => e.name === "session.reminded")).toHaveLength(1);
+
+    // Still live, not parked: once the outage ends the pair carries on.
+    ctx.h.registry.bind(workingDm);
+    await advanceToNextTimer(ctx.h);
+    expect(ctx.h.log.all().filter((e) => e.name === "session.held")).toHaveLength(1);
+    expect(await statusOf(ctx.h)).toBe("running");
+
+    const escalations = ctx.h.log
+      .all()
+      .filter((e) => e.name === "saga.escalated" && e.payload["reason"] === "dm_undeliverable");
+    // The shared reminder to each party, plus each party's private heads-up.
+    expect(escalations).toHaveLength(4);
+    expect(
+      escalations.filter((e) => String(e.payload["detail"]).startsWith("shared message")),
+    ).toHaveLength(2);
+    expect(ctx.warnings.some((w) => /shared message not sent/.test(w))).toBe(true);
+  });
+
+  it("delivers the shared message to the reachable party exactly once when only the other's dm fails", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1, omitSlots: ["conversation"] });
+    await bothAccept(ctx);
+    // Like Slack's chat.postMessage: no server-side dedupe on the key, so
+    // only the engine can stop a retry re-sending to the one who got it.
+    const sent: { to: string; body: string }[] = [];
+    ctx.h.registry.bind({
+      slot: "dm",
+      id: "half-down-dm",
+      probe: async () => ({}) as never,
+      send: async (input: { memberRef: string; body: string }) => {
+        if (input.memberRef === "U-PRIYA") throw new Error("dm outage: 503");
+        sent.push({ to: input.memberRef, body: input.body });
+        return { messageRef: `m${sent.length}` };
+      },
+    } as never);
+
+    await advanceToNextTimer(ctx.h); // reminder: Arjun gets it, Priya throws
+    await advanceToNextTimer(ctx.h); // retry: Arjun skipped, Priya degrades
+    const [instance] = await ctx.h.engine.instances();
+    expect(instance!.status).toBe("running");
+    expect(instance!.history.at(-1)).not.toHaveProperty("error");
+    expect(ctx.h.log.all().filter((e) => e.name === "session.reminded")).toHaveLength(1);
+
+    const reminders = sent.filter((m) => m.body.startsWith("Reminder:"));
+    expect(reminders).toEqual([expect.objectContaining({ to: "U-ARJUN" })]);
+    const headsUps = sent.filter((m) => m.body.startsWith("Heads up:"));
+    expect(headsUps).toEqual([expect.objectContaining({ to: "U-ARJUN" })]);
+    const escalations = ctx.h.log
+      .all()
+      .filter((e) => e.name === "saga.escalated" && e.payload["reason"] === "dm_undeliverable");
+    const pairing = await ctx.h.world.pairContext(ctx.pairingId);
+    const priya = pairing.participants.find((p) => p.memberRef === "U-PRIYA")!;
+    expect(escalations.map((e) => e.payload["participantId"])).toEqual([
+      priya.participantId, // the shared reminder
+      priya.participantId, // her private heads-up
+    ]);
   });
 });
 

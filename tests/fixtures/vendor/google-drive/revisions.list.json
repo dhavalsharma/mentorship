@@ -1,0 +1,30 @@
+{
+  "vendor": "google-drive",
+  "call": "revisions.list",
+  "capturedOn": "2026-09-23",
+  "source": "hand-written",
+  "notes": "Hand-written. THE open question for echo suppression (ADR-0005): does Drive's revisions.list really report `lastModifyingUser.me: true` for the authenticated caller's own write? Never verified against a live account (CLAUDE.md). `isEchoRevision` depends on exactly this field. Shape follows Drive v3's User resource, restricted by `fields`: oldest first, the last entry is the current revision.",
+  "request": {
+    "api": "drive",
+    "method": "GET",
+    "path": "/files/{fileId}/revisions",
+    "query": {
+      "fields": "nextPageToken, revisions(lastModifyingUser(me))",
+      "pageSize": "1000"
+    }
+  },
+  "response": {
+    "revisions": [
+      {
+        "lastModifyingUser": {
+          "me": false
+        }
+      },
+      {
+        "lastModifyingUser": {
+          "me": true
+        }
+      }
+    ]
+  }
+}

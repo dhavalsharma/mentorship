@@ -1,8 +1,12 @@
 import { and, desc, eq, isNotNull, lte, sql } from "drizzle-orm";
-import type { DomainEvent, EventPattern, SagaInstance } from "@mentorship/core";
-import { matchesPattern } from "@mentorship/core";
+import type {
+  DomainEvent,
+  EventPattern,
+  SagaInstance,
+  SagaPendingStep,
+} from "@mentorship/core";
 import { sagaInstances, type Db } from "@mentorship/db";
-import { SagaConflictError, type SagaStore } from "./store.js";
+import { awaits, SagaConflictError, type SagaStore } from "./store.js";
 
 /**
  * The Postgres `SagaStore` — a thin translation of `MemorySagaStore`'s six
@@ -72,7 +76,7 @@ export class PostgresSagaStore implements SagaStore {
 
   async findAwaiting(event: DomainEvent): Promise<SagaInstance[]> {
     // Narrowed in SQL so the work stays on the index, then re-checked in JS
-    // with the same `matchesPattern` the memory store uses — the two stores
+    // with the same `awaits` the memory store uses — the two stores
     // must not be able to disagree about which sagas an event wakes.
     const rows = await this.db
       .select()
@@ -81,12 +85,12 @@ export class PostgresSagaStore implements SagaStore {
         and(
           eq(sagaInstances.status, "running"),
           eq(sagaInstances.orgId, event.orgId),
-          sql`jsonb_exists(${sagaInstances.awaitingEvent} -> 'names', ${event.name})`,
+          // Either what it waits for now, or what its in-flight step will
+          // wait for — see `awaits` in ./store.ts.
+          sql`(jsonb_exists(${sagaInstances.awaitingEvent} -> 'names', ${event.name}) or jsonb_exists(${sagaInstances.pendingStep} -> 'waitFor' -> 'names', ${event.name}))`,
         ),
       );
-    return rows
-      .map(toInstance)
-      .filter((i) => matchesPattern(event, i.awaitingEvent));
+    return rows.map(toInstance).filter((i) => awaits(i, event));
   }
 
   async findDue(now: Date, orgId?: string): Promise<SagaInstance[]> {
@@ -144,6 +148,7 @@ function toRow(instance: SagaInstance): typeof sagaInstances.$inferInsert {
     completedEffects: instance.completedEffects,
     history: instance.history,
     status: instance.status,
+    pendingStep: instance.pendingStep ?? null,
     createdAt: new Date(instance.createdAt),
     updatedAt: new Date(instance.updatedAt),
   };
@@ -163,6 +168,7 @@ function toInstance(row: Row): SagaInstance {
     completedEffects: row.completedEffects as Record<string, unknown>,
     history: row.history as SagaInstance["history"],
     status: row.status as SagaInstance["status"],
+    pendingStep: (row.pendingStep as SagaPendingStep | null) ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

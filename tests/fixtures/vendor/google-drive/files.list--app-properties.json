@@ -1,0 +1,24 @@
+{
+  "vendor": "google-drive",
+  "call": "files.list",
+  "variant": "app-properties",
+  "capturedOn": "2026-09-25",
+  "source": "hand-written",
+  "notes": "Hand-written from the vendor's published reference (the appProperties has { key and value } search term); has NEVER run against a live account. The document adapter's create-once lookup: before creating a pair's doc, find one in the folder already tagged with this render's idempotency key (journey-suite bug #8). Empty means the first attempt never created one. Unverified: whether Drive search sees a file created seconds earlier (search is not documented as read-your-writes). Replace it with a capture from pnpm test:contracts:live.",
+  "request": {
+    "api": "drive",
+    "method": "GET",
+    "path": "/files",
+    "query": {
+      "q": "'FOLDER_ID' in parents and appProperties has { key='mentorshipIdempotencyKey' and value='SAGA_INSTANCE_ID:4:0' } and trashed = false",
+      "fields": "files(id)",
+      "orderBy": "createdTime",
+      "pageSize": "1",
+      "supportsAllDrives": "true",
+      "includeItemsFromAllDrives": "true"
+    }
+  },
+  "response": {
+    "files": []
+  }
+}

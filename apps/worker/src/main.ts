@@ -49,6 +49,12 @@ const DIGEST_INTERVAL_MS = Number(process.env["DIGEST_INTERVAL_MS"] ?? 60 * 60_0
 // that needs sub-minute freshness, so this defaults to the same hourly
 // cadence as the digest rather than the 15-minute nudge/progress sweeps.
 const REPORT_SYNC_INTERVAL_MS = Number(process.env["REPORT_SYNC_INTERVAL_MS"] ?? 60 * 60_000);
+// Entitlements change when an admin changes a setting, and nothing tells us
+// (ADR-0006). Six hours: a probe is a vendor call per slot, and a stale
+// answer degrades a proposal rather than breaking one.
+const CAPABILITY_PROBE_INTERVAL_MS = Number(
+  process.env["CAPABILITY_PROBE_INTERVAL_MS"] ?? 6 * 60 * 60_000,
+);
 
 if (!DATABASE_URL || !ORG_ID) {
   console.error("DATABASE_URL and ORG_ID are both required");
@@ -91,12 +97,25 @@ const worker = createWorker({
     ...(PROGRESS_SWEEP_INTERVAL_MS > 0 ? { progress: { intervalMs: PROGRESS_SWEEP_INTERVAL_MS } } : {}),
     ...(DIGEST_INTERVAL_MS > 0 ? { digest: { intervalMs: DIGEST_INTERVAL_MS } } : {}),
     ...(REPORT_SYNC_INTERVAL_MS > 0 ? { reportSync: { intervalMs: REPORT_SYNC_INTERVAL_MS } } : {}),
+    ...(CAPABILITY_PROBE_INTERVAL_MS > 0
+      ? { capabilityProbe: { intervalMs: CAPABILITY_PROBE_INTERVAL_MS } }
+      : {}),
   },
   reportSyncEnv: {
     GOOGLE_SHEETS_FOLDER_ID: process.env["GOOGLE_SHEETS_FOLDER_ID"],
     GOOGLE_SHEETS_SPREADSHEET_ID: process.env["GOOGLE_SHEETS_SPREADSHEET_ID"],
   },
 });
+
+// Boot is connect time (ADR-0006): these adapters are fixed for the life of
+// the process, so ask them once now, before the first pass reads the cache.
+// A failing probe is warned about and recorded, not fatal.
+const probe = await worker.probeCapabilities();
+console.log(
+  "capabilities probed: " +
+    probe.probed.map((r) => `${r.slot}${r.ok ? "" : " (FAILED)"}`).join(", ") +
+    (probe.cleared.length > 0 ? `; cleared unbound: ${probe.cleared.join(", ")}` : ""),
+);
 
 console.log(`worker started for org ${ORG_ID}, polling every ${INTERVAL_MS}ms`);
 console.log("adapters: fakes — Slack and Google have never run live");
@@ -127,12 +146,14 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 let seen = 0;
 while (!controller.signal.aborted) {
   try {
-    const { relay, timers } = await worker.pass();
+    const { relay, timers, tick } = await worker.pass();
     if (relay.delivered > 0 || timers > 0 || relay.failed > 0) {
       console.log(
         `pass: ${relay.delivered} delivered, ${timers} timers` +
           (relay.failed > 0 ? `, ${relay.failed} failed` : "") +
-          (relay.deadLettered > 0 ? `, ${relay.deadLettered} parked` : ""),
+          (relay.deadLettered > 0 ? `, ${relay.deadLettered} parked` : "") +
+          (tick.failed > 0 ? `, ${tick.failed} timer steps failed` : "") +
+          (tick.parked > 0 ? `, ${tick.parked} sagas parked` : ""),
       );
     }
     const { ran } = await worker.sweep();

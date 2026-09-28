@@ -36,6 +36,27 @@
       "when": 1789985751408,
       "tag": "0012_ai_run_subject_id",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1790160557169,
+      "tag": "0014_events_idempotency_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1790334285353,
+      "tag": "0015_saga_pending_step",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1790346381114,
+      "tag": "0016_session_notes_transcript",
+      "breakpoints": true
     }
   ]
 }

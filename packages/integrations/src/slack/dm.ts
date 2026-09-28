@@ -42,5 +42,8 @@ export class SlackDmAdapter implements DmAdapter {
  * client-supplied token, so a retried `dm` effect sent straight to Slack would
  * double-send. The engine's completed-effect ledger (invariant 6) is the
  * actual guard for that case; this adapter has no second one of its own the
- * way `FakeDm` does for tests.
+ * way `FakeDm` does for tests. The ledger is saved when a step fails or
+ * commits, so it guards a thrown retry, not a worker killed between this call
+ * returning and that save: there, the resumed step sends the DM again.
+ * Nightly P2 cannot see that duplicate, because it runs on `FakeDm`.
  */

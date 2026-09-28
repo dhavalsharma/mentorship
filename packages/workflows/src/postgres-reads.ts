@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, lt } from "drizzle-orm";
+import { and, desc, eq, isNotNull, lt, or } from "drizzle-orm";
 import { events, sagaInstances, withTenant, type Db } from "@mentorship/db";
 
 /**
@@ -26,10 +26,13 @@ export interface StuckSagaQueryOptions {
 }
 
 /**
- * `running` saga instances whose `updatedAt` is older than `olderThanDays`.
- * `done`/`failed` instances are never stuck by definition — only `running`
- * ever waits on a timer or an event, so only `running` can be wedged.
- * Oldest-first, since the longest-stuck instance is the most urgent one.
+ * `running` saga instances whose `updatedAt` is older than `olderThanDays`,
+ * plus every `failed` instance regardless of age. `failed` is what the engine
+ * writes when it *parks* an instance whose timer step kept throwing
+ * (`SagaEngine.tick`, after `maxStepAttempts`) — the durable "a human needs to
+ * look at this" marker, so hiding it behind an age threshold would hide it for
+ * three days. `done` is never stuck. Oldest-first, since the longest-stuck
+ * instance is the most urgent one.
  */
 export async function listStuckSagaInstances(
   db: Db,
@@ -50,8 +53,13 @@ export async function listStuckSagaInstances(
         .where(
           and(
             eq(sagaInstances.orgId, orgId),
-            eq(sagaInstances.status, "running"),
-            lt(sagaInstances.updatedAt, threshold),
+            or(
+              and(
+                eq(sagaInstances.status, "running"),
+                lt(sagaInstances.updatedAt, threshold),
+              ),
+              eq(sagaInstances.status, "failed"),
+            ),
           ),
         )
         .orderBy(sagaInstances.updatedAt)

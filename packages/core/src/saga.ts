@@ -56,7 +56,17 @@ export type Effect =
       withTranscription: boolean;
     }
   | { type: "verify_calendar_event"; eventId: string }
-  | { type: "fetch_transcript"; calendarEventId: string }
+  | {
+      type: "fetch_transcript";
+      calendarEventId: string;
+      /**
+       * The session the transcript belongs to. The fetched text is stored
+       * against it (`SessionSourceStore`) before `transcript.available` is
+       * announced, so the extraction that follows — possibly in another
+       * process — reads it back rather than relying on this one's memory.
+       */
+      sessionId: string;
+    }
   | {
       type: "run_extraction";
       sessionId: string;
@@ -65,7 +75,9 @@ export type Effect =
        * Notes arrive inline on the event that ends `awaiting_artifact` — there
        * is no adapter to fetch them back from, unlike a transcript. Carried
        * here rather than re-read from the log, so the effect stays a
-       * self-contained descriptor (invariant 4).
+       * self-contained descriptor (invariant 4). Absent for a transcript,
+       * which is read back from `SessionSourceStore` by `sessionId` +
+       * `sourceRef`.
        */
       text?: string;
     }
@@ -136,8 +148,37 @@ export interface SagaInstance<S = unknown> {
   completedEffects: Record<string, unknown>;
   history: SagaHistoryEntry[];
   status: "running" | "done" | "failed";
+  /**
+   * A step that has been decided but not yet committed: `step()` ran, its
+   * effects are being (or were partly) executed, and the instance has not yet
+   * moved to `next`. Written *before* the first effect runs, so a retry — after
+   * a thrown effect or a killed process — replays exactly this effect list
+   * rather than calling `step()` again, and no other input can run a
+   * different effect list under the same `stepIndex` keys. See `advance()` in
+   * `packages/workflows/src/engine.ts`. Optional (absent reads as `null`) so
+   * rows and fixtures written before it existed stay valid.
+   */
+  pendingStep?: SagaPendingStep | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SagaPendingStep {
+  /**
+   * Identity of the input that produced this step — `start`, `timeout` or
+   * `event:<id>` — so a redelivery of the *same* input replays it, and any
+   * other input finishes it first and is then re-offered to the new state.
+   */
+  inputKey: string;
+  /** The history label for the input (`describeInput`). */
+  input: string;
+  at: string;
+  from: string;
+  effects: Effect[];
+  next: unknown;
+  waitFor: EventPattern | null;
+  timeoutAt: string | null;
+  done: boolean;
 }
 
 export interface SagaHistoryEntry {
@@ -148,6 +189,27 @@ export interface SagaHistoryEntry {
   to: string;
   effects: string[];
   note?: string;
+  /**
+   * What the step left the instance waiting on. The instance row only ever
+   * shows the *current* state's wait, so without these a state that was
+   * entered with no `waitFor`, no `timeoutAt` and no `done` — stuck forever,
+   * invariant 7 — leaves no trace once the instance has moved past it or been
+   * stranded in it. Optional because history written before they existed does
+   * not carry them.
+   */
+  waitFor?: string[] | null;
+  timeoutAt?: string | null;
+  done?: boolean;
+  /**
+   * Set only on a *failed* attempt at a step: the step threw, the instance
+   * stayed in `from` (so `from === to` and `stepIndex` did not move), and
+   * `timeoutAt` is when the engine will retry it. `attempt` counts consecutive
+   * failures at this `stepIndex`; it is how the engine knows when to park.
+   * Kept in history rather than new columns so a failure is visible exactly
+   * where every other step is, with no migration.
+   */
+  error?: string;
+  attempt?: number;
 }
 
 /** A readable state name for history and debugging. */

@@ -3,10 +3,12 @@ import type {
   ConversationAdapter,
   DmAdapter,
   DocumentAdapter,
+  DomainEvent,
   Effect,
   IdFactory,
   PairContext,
   SagaResolvers,
+  SessionSourceStore,
   ThreadRef,
   TranscriptAdapter,
 } from "@mentorship/core";
@@ -36,10 +38,30 @@ export interface SessionIntel {
   }>;
 }
 
+/**
+ * Step retries a failing DM gets before it degrades to "not sent, escalated".
+ * One, in the spirit of invariant 11 — see `sendPrivate` below. Must stay
+ * below the engine's `maxStepAttempts`, or the saga parks before it degrades.
+ */
+export const DM_RETRIES = 1;
+
+type EffectEmit = (
+  name: EmitInput["name"],
+  payload?: Record<string, unknown>,
+  subject?: string,
+  part?: string,
+) => Promise<DomainEvent>;
+
 export interface EffectRunnerOptions {
   registry: IntegrationRegistry;
   log: EventSink;
   resolvers: SagaResolvers;
+  /**
+   * Durable home of fetched transcript text (e2e bug #9) — required, not
+   * defaulted to a map, because a default is exactly the process memory
+   * that lost the transcript across a restart.
+   */
+  sources: SessionSourceStore;
   intel: SessionIntel;
   ids?: IdFactory;
   onWarn?: (message: string, detail?: Record<string, unknown>) => void;
@@ -58,9 +80,8 @@ export interface EffectRunnerOptions {
 export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
   const ids = opts.ids ?? uuidIds;
   const threads = new Map<string, ThreadRef>();
-  // In production these two live on the `pairings` row and in `session_notes`.
+  // In production this lives on the `pairings` row.
   const docRefs = new Map<string, string>();
-  const transcripts = new Map<string, string>();
 
   const warn = (m: string, d?: Record<string, unknown>) =>
     opts.onWarn?.(m, d);
@@ -92,12 +113,54 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
     return { adapter, ref, fresh: true };
   }
 
-  /** Joint-thread messages degrade to a DM to each party; never the reverse. */
+  /**
+   * Joint-thread messages degrade to a DM to each party; never the reverse.
+   *
+   * `part` distinguishes a second shared message inside one effect (the
+   * manual-invite request) from the effect's own; the thread post and each
+   * recipient's DM are keyed under it exactly as before.
+   *
+   * With no thread, the *shared* message goes to each participant through a
+   * `dm` slot that may be failing rather than absent, and it follows the same
+   * one policy `sendPrivate` does (`DM_RETRIES`, `ctx.attempt`), per
+   * recipient:
+   *
+   *   - Every recipient is tried on every attempt, so one failing DM never
+   *     holds back the other's message. A recipient who got it is marked in
+   *     the step's ledger (`ctx.parts`), and a retry skips them: the Slack DM
+   *     adapter has no server-side dedupe, so without this a retry would
+   *     re-send to the one it already reached. That covers a thrown step,
+   *     not a killed process: the marks are saved with the step, so a kill
+   *     after a Slack send and before that save re-sends on resume (see
+   *     `EffectContext.parts`).
+   *   - A failure on the first attempt fails the step (a blip is a blip).
+   *     From the retry on, each still-failing recipient is warned about and
+   *     escalated as `dm_undeliverable`, and the step completes.
+   *
+   * When *every* recipient fails on the retry, the step still completes —
+   * decided deliberately. The alternatives are to keep throwing until the
+   * engine parks the instance, or to end the saga. Parking leaves a pair
+   * that nothing will ever move again (there is no un-park action), and it
+   * reaches a human only through the generic `saga_step_failed`, five
+   * backed-off attempts later. Continuing puts a human on it now — one
+   * `dm_undeliverable` per recipient, on the retry — while the saga's own
+   * deadlines keep running: a proposal nobody saw gets its one renudge
+   * (which reaches them if the outage has ended) and then escalates as
+   * silence, never a third attempt (invariant 11). What it never does is
+   * treat the undelivered message as seen: no agreement is inferred from it
+   * (invariant 9), and the wait is the same wait a delivered one gets.
+   *
+   * There is no thread here to fall back to, so invariant 13 is not in play
+   * — but a DM failure never reroutes anywhere else either.
+   */
   async function broadcast(
     pair: PairContext,
     body: string,
-    key: string,
+    ctx: EffectContext,
+    emit: EffectEmit,
+    part?: string,
   ): Promise<void> {
+    const key = part ? `${ctx.key}:${part}` : ctx.key;
     const t = await thread(pair);
     if (t) {
       await t.adapter.postMessage({ thread: t.ref, body, idempotencyKey: key });
@@ -108,28 +171,141 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
       warn("no conversation or dm adapter bound; message dropped", { body });
       return;
     }
+    const failed: {
+      participant: PairContext["participants"][number];
+      recipient: string;
+      error: unknown;
+    }[] = [];
     for (const [i, p] of pair.participants.entries()) {
-      await dm.send({
-        memberRef: p.memberRef,
-        body,
-        idempotencyKey: `${key}:${i}`,
+      const recipient = part ? `${part}:${i}` : String(i);
+      if (ctx.parts?.done(recipient)) continue;
+      try {
+        await dm.send({
+          memberRef: p.memberRef,
+          body,
+          idempotencyKey: `${key}:${i}`,
+        });
+        ctx.parts?.mark(recipient);
+      } catch (error) {
+        failed.push({ participant: p, recipient, error });
+      }
+    }
+    if (failed.length === 0) return;
+    if (ctx.attempt < DM_RETRIES) throw failed[0]!.error;
+    const reachedNobody = failed.length === pair.participants.length;
+    for (const { participant, recipient, error } of failed) {
+      const message = error instanceof Error ? error.message : String(error);
+      warn("dm failed after retry; shared message not sent to participant", {
+        participantId: participant.participantId,
+        attempt: ctx.attempt,
+        reachedNobody,
+        error: message,
       });
+      await emit(
+        "saga.escalated",
+        {
+          reason: "dm_undeliverable",
+          detail: `shared message (no thread) to participant ${participant.participantId}: ${message}`.slice(0, 500),
+          pairingId: pair.pairingId,
+          participantId: participant.participantId,
+        },
+        undefined,
+        recipient,
+      );
+    }
+  }
+
+  /**
+   * A private message to one participant, through a bound `dm` slot that may
+   * be *failing* rather than absent.
+   *
+   * What a persistently failing DM does to the flow, deliberately:
+   *
+   *   1. The first failure propagates. The engine records it on the instance
+   *      (keeping the ledger, so the step's shared post is not repeated),
+   *      backs the timer off and retries the step — a blip is a blip.
+   *   2. From the retry on (`ctx.attempt >= DM_RETRIES`), a failure degrades:
+   *      the message is not sent, an operator is warned, and a human is told
+   *      via `saga.escalated` that a private message could not be delivered.
+   *      The step then completes and the session carries on.
+   *
+   * Why degrade rather than keep retrying until the engine parks the saga:
+   * every private message in the lifecycle rides a step that also moves the
+   * pair on (the reminder step is also what arms `held`; the feedback request
+   * rides the confirming step). Parking the whole pairing because a courtesy
+   * DM cannot be delivered starves the session of everything that *can* still
+   * happen — the thread, the notes, the extraction — and a "heads up, your
+   * session is soon" delivered after the session is worse than none. It is
+   * "renudge once, then escalate" (invariant 11) applied to a vendor.
+   *
+   * What it never does, at any attempt: fall back to the joint thread
+   * (invariant 13). A private message that lands in front of the other
+   * participant is worse than one that is not sent.
+   */
+  async function sendPrivate(
+    dm: DmAdapter,
+    participant: PairContext["participants"][number],
+    body: string,
+    ctx: EffectContext,
+    emit: (
+      name: EmitInput["name"],
+      payload?: Record<string, unknown>,
+    ) => Promise<unknown>,
+    purpose: "dm" | "request_feedback",
+  ): Promise<unknown> {
+    try {
+      return await dm.send({
+        memberRef: participant.memberRef,
+        body,
+        idempotencyKey: ctx.key,
+      });
+    } catch (error) {
+      if (ctx.attempt < DM_RETRIES) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      warn("dm failed after retry; private message not sent", {
+        purpose,
+        participantId: participant.participantId,
+        attempt: ctx.attempt,
+        error: message,
+      });
+      await emit("saga.escalated", {
+        reason: "dm_undeliverable",
+        detail: `${purpose} to participant ${participant.participantId}: ${message}`.slice(0, 500),
+        pairingId: pairingIdOf(ctx),
+        participantId: participant.participantId,
+      });
+      return { delivered: false, error: message };
     }
   }
 
   return async function runEffect(effect: Effect, ctx: EffectContext) {
     const pairingId = pairingIdOf(ctx);
     const pair = await opts.resolvers.pairContext(pairingId);
-    const emit = (
-      name: EmitInput["name"],
-      payload?: Record<string, unknown>,
-      subject?: string,
-    ) =>
+    // Every event an effect produces is keyed by that effect (invariant 6).
+    // The ledger alone cannot make these idempotent: it is saved with the
+    // step, after every effect ran, so a crash between an emit committing and
+    // the step saving re-runs the effect on retry. The adapter calls dedupe on
+    // `ctx.key`; this is the same key for the event log, and the sink turns a
+    // repeat into "here is the event you already appended". The name is part
+    // of the key so an effect may emit more than one kind of event.
+    //
+    // Rejected: writing the step's events in the same transaction as the saga
+    // save (buffer here, flush in `store.save`). It closes the window for
+    // events, but the engine, store and sink are three separate ports today,
+    // the in-memory `Dispatcher` would need the same unit of work, and effects
+    // that read an emitted event's id back (`emit` returns `eventId`) would
+    // need a deferred id. It also would not remove the need for a key: the
+    // adapter call before it is still re-run on retry and still dedupes by
+    // key, so the key is the one mechanism that already covers every effect.
+    // `part` keys one of several events of the same name from one effect —
+    // a fan-out escalating per recipient.
+    const emit: EffectEmit = (name, payload, subject, part) =>
       opts.log.emit({
         orgId: ctx.instance.orgId,
         name,
         subjectRef: subject ?? ctx.instance.subjectRef,
         payload,
+        idempotencyKey: part ? `${ctx.key}:${part}:${name}` : `${ctx.key}:${name}`,
       });
 
     switch (effect.type) {
@@ -158,7 +334,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
       case "post_proposal": {
         const t = await thread(pair);
         if (!t) {
-          await broadcast(pair, effect.body, ctx.key);
+          await broadcast(pair, effect.body, ctx, emit);
           return null;
         }
         const caps = await opts.registry.capabilities("conversation");
@@ -183,7 +359,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
       }
 
       case "post_message": {
-        await broadcast(pair, effect.body, ctx.key);
+        await broadcast(pair, effect.body, ctx, emit);
         return null;
       }
 
@@ -194,7 +370,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           // and the verdict will have to arrive some other structured way or
           // not at all. The timeout in `confirming` still fires and still
           // marks the result unverified (invariant 19).
-          await broadcast(pair, effect.body, ctx.key);
+          await broadcast(pair, effect.body, ctx, emit);
           return null;
         }
         const caps = await opts.registry.capabilities("conversation");
@@ -228,11 +404,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           });
           return null;
         }
-        return dm.send({
-          memberRef: participant.memberRef,
-          body: effect.body,
-          idempotencyKey: ctx.key,
-        });
+        return sendPrivate(dm, participant, effect.body, ctx, emit, "dm");
       }
 
       case "create_calendar_event": {
@@ -244,9 +416,11 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           await broadcast(
             pair,
             `Agreed for ${effect.start}. Could one of you send the invite? I'll take it from here.`,
-            `${ctx.key}:manual-invite`,
+            ctx,
+            emit,
+            "manual-invite",
           );
-          await emit("session.scheduled", {
+          const scheduled = await emit("session.scheduled", {
             sessionId,
             calendarEventId: "",
             startsAt: effect.start,
@@ -254,7 +428,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
             transcriptionEnabled: false,
             degraded: true,
           });
-          return { sessionId };
+          return { sessionId: String(scheduled.payload["sessionId"] ?? sessionId) };
         }
 
         const event = await calendar.createEvent({
@@ -267,7 +441,10 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           withTranscription: effect.withTranscription,
           idempotencyKey: ctx.key,
         });
-        await emit("session.scheduled", {
+        // On a retry the sink returns the event the first attempt appended,
+        // whose `sessionId` is the one the saga and the projection already
+        // know — not the fresh one minted above.
+        const scheduled = await emit("session.scheduled", {
           sessionId,
           calendarEventId: event.eventId,
           startsAt: effect.start,
@@ -275,7 +452,10 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           conferenceUrl: event.conferenceUrl ?? null,
           transcriptionEnabled: event.transcriptionEnabled,
         });
-        return { sessionId, calendarEventId: event.eventId };
+        return {
+          sessionId: String(scheduled.payload["sessionId"] ?? sessionId),
+          calendarEventId: event.eventId,
+        };
       }
 
       case "verify_calendar_event": {
@@ -295,27 +475,59 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           calendarEventId: effect.calendarEventId,
         });
         if (!found) return { found: false };
-        transcripts.set(found.ref, found.text);
+        // Durable before announced: the extraction runs when the relay
+        // delivers `transcript.available`, on a later pass and possibly in a
+        // different process. The event carries the reference only.
+        if (effect.sessionId) {
+          await opts.sources.recordTranscript({
+            sessionId: effect.sessionId,
+            ref: found.ref,
+            body: found.text,
+          });
+        } else {
+          // A step decided before `sessionId` was on this effect, replayed
+          // from its pending record. Nothing to key the row on.
+          warn("fetch_transcript without a sessionId; transcript not stored", {
+            calendarEventId: effect.calendarEventId,
+          });
+        }
         await emit("transcript.available", { ref: found.ref });
         return { found: true, ref: found.ref };
       }
 
       case "run_extraction": {
-        const text = effect.text ?? transcripts.get(effect.sourceRef) ?? "";
+        let text = effect.text;
+        if (text === undefined) {
+          const stored = await opts.sources.transcript({
+            sessionId: effect.sessionId,
+            ref: effect.sourceRef,
+          });
+          if (stored === null) {
+            warn("no stored source for extraction; extracting from nothing", {
+              sessionId: effect.sessionId,
+              sourceRef: effect.sourceRef,
+            });
+          }
+          text = stored ?? "";
+        }
         const result = await opts.intel.extract({
           sessionId: effect.sessionId,
           sourceRef: effect.sourceRef,
           text,
           pair,
         });
-        await emit("extraction.completed", {
+        const completed = await emit("extraction.completed", {
           extractionId: result.extractionId,
           markdown: result.markdown,
           actionItems: result.actionItems,
           sourceRef: effect.sourceRef,
           ...(result.safeguarding ? { safeguarding: true } : {}),
         });
-        return { extractionId: result.extractionId };
+        return {
+          extractionId: String(
+            completed.payload["extractionId"] ?? result.extractionId,
+          ),
+        };
       }
 
       case "notify_safeguarding": {
@@ -378,11 +590,14 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           });
           return null;
         }
-        return dm.send({
-          memberRef: participant.memberRef,
-          body: effect.question,
-          idempotencyKey: ctx.key,
-        });
+        return sendPrivate(
+          dm,
+          participant,
+          effect.question,
+          ctx,
+          emit,
+          "request_feedback",
+        );
       }
 
       case "emit": {

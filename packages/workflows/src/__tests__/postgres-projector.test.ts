@@ -6,6 +6,7 @@ import {
   organizations,
   pairings,
   participants,
+  sessions,
   users,
 } from "@mentorship/db";
 import { connectTestDb, DATABASE_URL, type TestDb } from "@mentorship/db/testing";
@@ -194,5 +195,90 @@ describe.skipIf(!DATABASE_URL)("PostgresProjector — agreement.opened", () => {
 
     expect(row!.pairingId).toBe(pairingId);
     expect(row!.pairingId).not.toBe(agreementId);
+  });
+});
+
+describe.skipIf(!DATABASE_URL)("PostgresProjector — session.scheduled is idempotent per invite", () => {
+  let handle: TestDb;
+  const orgId = randomUUID();
+  const cohortId = randomUUID();
+  const mentorUser = randomUUID();
+  const menteeUser = randomUUID();
+  let pairingId: string;
+
+  beforeAll(async () => {
+    handle = await connectTestDb();
+    await handle.db
+      .insert(organizations)
+      .values({ id: orgId, name: "Sched", slug: `sched-${orgId.slice(0, 8)}` });
+    await handle.db.insert(users).values([
+      { id: mentorUser, orgId, email: "m@example.com", displayName: "M" },
+      { id: menteeUser, orgId, email: "e@example.com", displayName: "E" },
+    ]);
+    const people = await handle.db
+      .insert(participants)
+      .values([
+        { orgId, cohortId, userId: mentorUser, role: "mentor" },
+        { orgId, cohortId, userId: menteeUser, role: "mentee" },
+      ])
+      .returning();
+    const [pairing] = await handle.db
+      .insert(pairings)
+      .values({
+        orgId,
+        cohortId,
+        mentorParticipantId: people[0]!.id,
+        menteeParticipantId: people[1]!.id,
+        state: "active",
+        origin: "imported",
+        pairKey: `${mentorUser}:${menteeUser}`,
+      })
+      .returning();
+    pairingId = pairing!.id;
+  });
+
+  afterAll(async () => {
+    if (!handle) return;
+    await handle.db.delete(sessions).where(eq(sessions.orgId, orgId));
+    await handle.db.delete(pairings).where(eq(pairings.orgId, orgId));
+    await handle.db.delete(participants).where(eq(participants.orgId, orgId));
+    await handle.db.delete(users).where(eq(users.orgId, orgId));
+    await handle.db.delete(organizations).where(eq(organizations.id, orgId));
+    await handle.close();
+  });
+
+  const scheduled = (sessionId: string, calendarEventId: string) => ({
+    id: randomUUID(),
+    orgId,
+    name: "session.scheduled" as const,
+    subjectRef: `pairing:${pairingId}`,
+    occurredAt: "2026-09-11T06:00:00.000Z",
+    version: 1,
+    payload: {
+      sessionId,
+      calendarEventId,
+      startsAt: "2026-09-15T15:00:00.000Z",
+      endsAt: "2026-09-15T15:45:00.000Z",
+      transcriptionEnabled: false,
+    },
+  });
+
+  const sessionRows = () =>
+    handle.db.select().from(sessions).where(eq(sessions.orgId, orgId));
+
+  it("a re-emit for the same invite with a fresh sessionId is not a phantom second session", async () => {
+    const projector = new PostgresProjector(handle.db, { role: "mentorship_app" });
+    const first = randomUUID();
+    await projector.apply(scheduled(first, "cal_evt_1"));
+    await projector.apply(scheduled(first, "cal_evt_1")); // plain redelivery
+    await projector.apply(scheduled(randomUUID(), "cal_evt_1")); // pre-0014 re-emit
+    const rows = await sessionRows();
+    expect(rows.map((r) => r.id)).toEqual([first]);
+  });
+
+  it("a different invite is a different session", async () => {
+    const projector = new PostgresProjector(handle.db, { role: "mentorship_app" });
+    await projector.apply(scheduled(randomUUID(), "cal_evt_2"));
+    expect(await sessionRows()).toHaveLength(2);
   });
 });

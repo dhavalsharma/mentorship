@@ -1,6 +1,13 @@
 # End-to-end testing strategy
 
-827 tests pass. None of them is an end-to-end test.
+> **Status (Tier 2 built).** `tests/e2e/` now exists: `pnpm test:e2e` runs 16
+> journeys with P1/P3/P4/P5 applied to each, and `pnpm test:e2e:nightly` adds
+> P2. It found ten product bugs on its first run — see
+> [What the journey suite found](#what-the-journey-suite-found). The text below
+> is the strategy as written before it was built, kept because it is the
+> argument; where the build departed from it, the departure is noted.
+
+874 tests pass. None of them is an end-to-end test.
 
 That is not a criticism of the suite — it is very good at what it does, and
 what it does is prove each piece in isolation against a seam. But every bug
@@ -34,8 +41,8 @@ genuinely distinct axes, each with its own failure mode and its own cost:
 | --- | --- | --- |
 | **Business flow** | Does a pair get from `pair.activated` to a documented, confirmed session and round again? | `pnpm demo` walks it, in memory, and **prints** rather than asserts |
 | **Process** | Do `apps/api` and `apps/worker`, as separate processes sharing only Postgres, produce the right outcome? | **Nothing.** No test runs both |
-| **Interface** | Does a human clicking in Slack or in the dashboard reach the right code? | Slack: yes, over a real socket with a real HMAC. Web: nothing above `lib/` |
-| **Vendor** | Do Slack and Google behave the way the stubs say? | Manual, partial, documented in [live-tenant-testing.md](./live-tenant-testing.md) |
+| **Interface** | Does a human clicking in Slack or in the dashboard reach the right code? | Slack: yes, over a real socket with a real HMAC. Web: six Playwright journeys (Tier 3) against `next start` + `apps/api` + Postgres |
+| **Vendor** | Do Slack and Google behave the way the stubs say? | Manual, partial, documented in [live-tenant-testing.md](./live-tenant-testing.md). Adapter tests now replay dated fixtures — all still hand-written ([vendor-contracts.md](./vendor-contracts.md)) |
 
 A fifth thing is often smuggled into an E2E suite and must not be: **does the
 model get the extraction right.** That is an eval. It is nondeterministic, it
@@ -93,19 +100,23 @@ bug to fix.**
 
 | Tier | What it is | Count | Runs in |
 | --- | --- | --- | --- |
-| 0 | Unit and contract tests, no infrastructure | 690 | ~5s |
-| 1 | Postgres-backed component tests (RLS, store, relay, projector, resolvers, API routes over real sockets) | 95 | ~5s with `DATABASE_URL` |
-| 2 | **Journey tests — full stack, two processes, real Postgres** | 0 | — |
-| 3 | **Browser journeys against `apps/web`** | 0 | — |
-| 4 | **Vendor contract fixtures** | 0 | — |
-| 5 | Evals over the AI primitives | partial (10 golden cases in `session-intel`) | ~5s |
-| — | **CI running any of it** | none — no workflow file exists | — |
+| 0 | Unit and contract tests, no infrastructure | 777 | ~5s |
+| 1 | Postgres-backed component tests (RLS, store, relay, projector, resolvers, API routes over real sockets) | 97 | ~5s with `DATABASE_URL` |
+| 2 | **Journey tests — full stack, two processes, real Postgres** (`pnpm test:e2e`) | 153 passing, 3 skipped with reasons — 16 journeys, each with P1/P3/P4/P5; 7 of the 153 are `it.fails` pinning a known bug | ~15s |
+| 2n | Nightly: P2 crash-resume across the catalogue (`pnpm test:e2e:nightly`, adds to the above) | 41 — 18 crash sweeps, 18 restart-every-pass runs, 5 `it.fails` known bugs | ~2 min |
+| 3 | Browser journeys against `apps/web` — `pnpm test:browser` (Playwright, `apps/web/e2e/`) | 6 specs, 8 tests | ~15s including `next build`; needs a migrated Postgres |
+| 4 | Vendor contract fixtures — replayed in the gate; live suite on demand | 28 fixtures, **all hand-written**; 6 test files replay them; `pnpm test:contracts:live` built, **never run** (no credentials yet) | replay: in tier 0 |
+| 5 | Evals over the AI primitives — `pnpm eval`, never in the gate | 6 golden + 8 safeguarding cases, plus `ai_runs` verdicts; run in deterministic mode only | ~2s |
+| — | **CI running any of it** | `.github/workflows/ci.yml` written (tiers 0–1, `deps:check`, migrations, web build); **not yet run on GitHub** | — |
 
 Tier 1 is stronger than the name suggests: `apps/worker/src/__tests__/worker.test.ts`
 already takes a `pair.activated` row to a proposed session on Postgres, and
 `apps/api/src/__tests__/postgres-slack-events.test.ts` already posts a
 genuinely signed payload over a real socket. They are one harness apart from
 being the same test, and nothing joins them.
+
+That was true when this was written. `tests/e2e/harness/stage.ts` is the
+harness that joins them.
 
 ---
 
@@ -236,8 +247,8 @@ the moment the second journey exists.
 
 ## Tier 3 — browser journeys
 
-`apps/web` has 19 tests, all of them over `lib/`. Every page, every fetch,
-every redirect and the whole auth round trip are untested. But the ceiling
+Before this tier, `apps/web` had 19 tests, all of them over `lib/`. Every page, every fetch,
+every redirect and the whole auth round trip were untested. But the ceiling
 here is low and the temptation is to overbuild, so: **six specs, and a rule
 that the count does not grow without a bug to justify it.**
 
@@ -263,6 +274,33 @@ What this tier must *not* do: assert on styling, snapshot the DOM, or test
 slowest and most brittle place to assert anything, so it should only assert
 the things that are true *only* in a browser — that a route is reachable,
 that a session cookie survives, that a form submits.
+
+**Built.** `apps/web/e2e/`, one file per spec above, run by `pnpm test:browser`
+(root, delegating to `apps/web`). `e2e/global-setup.ts` seeds two fresh
+`randomUUID()` orgs — never a truncate, the database is shared — starts
+`apps/api` on Postgres as `mentorship_app` (so RLS is live, not bypassed by a
+superuser connection), runs `next build && next start` against it on ports
+18787/13000, and deletes exactly its own orgs' rows on teardown. Specs are
+`*.spec.ts`, which the root Vitest `*.test.ts` include never matches, so the
+Tier 0/1 count is unchanged by them.
+
+Two things differ from the plan above, both on purpose:
+
+- **The token is not read from the database, because it cannot be.**
+  `magic_links` stores `sha256(token)` only (`hashToken` in
+  `packages/auth/src/magic-link.ts`) — the property that makes a leaked dump
+  useless. Spec 1 reads the raw token where `main.ts` actually prints it (the
+  global setup captures the api's stdout to a file), then asserts the database
+  holds its hash and not the token. No test-only hook was added to the product.
+- **"Org B's URL" is the proxied api route.** `apps/web` has no org in its own
+  paths — it is configured for one org — so spec 6 sends org A's cookie through
+  the same `/api` rewrite the forms use, at org B's read and write routes (both
+  403, org B's binding untouched), and separately opens the dashboard with an
+  org B session (bounced to `/login`).
+
+Spec 1 and spec 6 are two tests each (known/unknown email plus the round
+trip; read/write refusal plus the reverse direction), which is why the count
+is six specs and eight tests. None found a product bug on first run.
 
 ---
 
@@ -300,6 +338,22 @@ while the bare address succeeds — is exactly what tier 4 is for, and it was
 found by hand. A captured fixture would have made it a checked-in fact rather
 than a paragraph.
 
+**Status (2026-09-23): built, not yet fed.** All three mechanisms exist —
+[vendor-contracts.md](./vendor-contracts.md) has the details and the sign-off
+table. The recording transport (`packages/integrations/src/contracts/`) is
+wired into `live-registry.ts` behind `CAPTURE_VENDOR_FIXTURES=1`, off by
+default. The Sheets, Drive-document (including `isEchoRevision`), Slack
+conversation/DM and Calendar adapter tests now replay
+`tests/fixtures/vendor/**`, and the replay refuses any request field no
+fixture recorded and any response field a fixture does not have. But with no
+live credentials available when this was built, every one of the 28 fixtures
+is `source: "hand-written"` — seeded from the stubs they replaced — and every
+replaying test file says so in a warning after it runs. The plus-addressing
+refusal is now a checked-in (hand-written) error fixture, and replaying the
+recorded `documents.get` surfaced one thing the old stub never modelled (the
+leading `sectionBreak`). `pnpm test:contracts:live` has only ever been run to
+confirm it refuses without credentials.
+
 ---
 
 ## Tier 5 — evals, and why they are not in the gate
@@ -330,34 +384,70 @@ Refusal, timeout, and a schema violation surviving one repair must all reach
 `fallback`. That is already tested in `packages/ai`; a journey with a
 deliberately hostile `LlmProvider` proves it end to end.
 
+**Status (2026-09-23): `pnpm eval` exists** (`evals/run.ts`, outside vitest's
+include). It runs every golden case and a new hand-labelled safeguarding set
+(`session-intel/src/__tests__/safeguarding-fixtures.ts`: four gentle,
+non-graphic disclosures and four hard negatives) through the real
+`runPrimitive` + `createSessionIntelPrimitive`, and with `DATABASE_URL` reads
+`ai_runs` verdicts one tenant at a time inside `withTenant`. It reports
+action-item precision/recall, anchored evidence-span validity (invariant 18),
+safeguarding recall/precision, and accepted-as-is rate from Confirm/Edit
+labels, grouped by `prompt_version` and model; `EVAL_REPORT_PATH` writes JSON
+for trending. Without `ANTHROPIC_API_KEY` it scores the deterministic fallback
+and says so up front — which means safeguarding recall is 0/4 by design
+(invariant 16) and is printed as that, not hidden. It exits 0 whatever the
+scores, 1 only on a harness error. Two honest limits: `ai_runs.input` is never
+written, so a stored run's spans can only be checked for shape, not anchored
+to its source; and it has never been run with a real key. The hostile-provider
+gate test is `session-intel/src/__tests__/hostile-provider.test.ts` (refusal,
+timeout error, invalid-twice), at the primitive level rather than in a
+journey, since no journey harness exists yet. It cannot cover a provider that
+never settles: `runPrimitive` has no deadline of its own.
+
 ---
 
 ## CI — the gate
 
-No CI workflow exists in this repository. Three separate things in the status
-table say "not yet wired into CI, since no CI workflow exists" — `deps:check`,
-the matching invariants suite, the RLS leak test. Everything above is
-hypothetical until this file exists, so it is the first thing to build, before
-a single journey.
+Three workflow files now exist in `.github/workflows/`, sharing one setup
+action (`.github/actions/setup` — pnpm 9.15.0, Node 22, cached store,
+`pnpm install --frozen-lockfile`). **None of them has run on GitHub yet.**
+Every step was run by hand locally against the same commands (see below); the
+YAML itself is parsed and structurally checked, not executed by Actions. Until
+the first green run on a real PR, treat this section as "written", not
+"enforced".
 
-`.github/workflows/ci.yml`, with a `pgvector/pgvector:pg17` service:
-
-**On every PR** — target under three minutes:
+**`ci.yml` — every PR and every push to `main`**, one job with a
+`pgvector/pgvector:pg17` service and `DATABASE_URL` set. Target under three
+minutes:
 
 ```
 pnpm typecheck
-pnpm deps:check                     # invariants 1 and 2, currently unenforced
+pnpm deps:check                     # invariants 1 and 2
 pnpm db:migrate                     # migrations apply from scratch
-pnpm test                           # 827, with DATABASE_URL set
+node scripts/assert-no-skipped.mjs  # = pnpm test, 874, and fails on any skip
 pnpm test:e2e                       # tier 2 journeys + P1, P3, P4, P5
 pnpm --filter @mentorship/web build
 ```
 
-**Nightly** — P2 crash-resume across every journey, the full Playwright suite,
-`pnpm eval`, and a `pnpm demo` smoke run.
+**`nightly.yml` — cron (03:17 UTC) and manual dispatch**, one job each so a red
+one never hides another: `pnpm test:e2e:nightly` (P2 crash-resume across every
+journey), `pnpm test:browser` (Playwright, chromium installed with
+`--with-deps`, report uploaded on failure), `pnpm eval` (`ANTHROPIC_API_KEY`
+optional, from secrets), and a `pnpm demo` smoke run with no database.
 
-**On demand, manually triggered, credentials from secrets** — the live vendor
-contract tests and fixture capture.
+**`live-contracts.yml` — `workflow_dispatch` only, never on a PR**:
+`pnpm test:contracts:live` in a `live-sandbox` environment (so its secrets can
+sit behind required reviewers), with `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`,
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`,
+`GOOGLE_CALENDAR_ID` and `SANDBOX_ALLOWLIST` from secrets. A missing secret
+fails the job before anything runs; captured fixtures under
+`tests/fixtures/vendor/` are uploaded as an artifact, never auto-committed.
+Serialised by a concurrency group — two runs against one sandbox prove nothing.
+
+The `test:e2e`, `test:e2e:nightly`, `test:browser`, `eval` and
+`test:contracts:live` scripts are referenced by these workflows and provided
+by their own changes; until each lands, the step that calls it fails with a
+missing-script error rather than passing vacuously.
 
 Two gate rules worth writing down now rather than discovering later:
 
@@ -366,9 +456,16 @@ Two gate rules worth writing down now rather than discovering later:
   hundred for reasons unrelated to the diff, it belongs in nightly.
 - **A skipped test is a failure in CI.** `DATABASE_URL` being unset locally is
   a convenience (`describe.skipIf`), and it is the correct default for `pnpm
-  test` on a laptop. In CI it would silently drop 95 tests including the
-  cross-tenant leak test. The workflow sets `DATABASE_URL` and asserts the
-  skipped count is zero.
+  test` on a laptop. In CI it would silently drop 97 tests including the
+  cross-tenant leak test. The workflow sets `DATABASE_URL` and runs the suite
+  through `scripts/assert-no-skipped.mjs`, which reads Vitest's JSON report
+  and exits non-zero on any skipped or todo test — and, when `CI` is set, on a
+  missing `DATABASE_URL` too. Checked locally both ways: with the database,
+  874 run and 0 skipped (exit 0); without it and `CI=true`, 97 skipped
+  (exit 1). Without `CI` or `DATABASE_URL` it only reports the counts, so on
+  a laptop it behaves like `pnpm test`. Vitest has no fail-on-skip option,
+  and its console summary is not a contract; the JSON report's per-test
+  `status` is.
 
 ---
 
@@ -394,41 +491,112 @@ Worth stating, so the suite's green is read correctly:
 
 ---
 
+## What the journey suite found
+
+Built as specified, with these departures and additions:
+
+- **The harness lives in `tests/e2e/harness/`** (`stage.ts`, `seed.ts`,
+  `observe.ts`, `properties.ts`, `crash.ts`), not one file, and `tests/e2e/`
+  is a directory on the root `tsconfig`/aliases rather than a workspace
+  package — it needs no dependencies of its own. `apps/api`'s Postgres wiring
+  was extracted to `buildPostgresApiDeps` (`apps/api/src/postgres-deps.ts`),
+  so the server a journey talks to is the one `main.ts` ships.
+- **Two processes means two pools.** The API and the worker each get their own
+  connection pool and both run as `mentorship_app`, so RLS is enforced on every
+  journey rather than bypassed by the superuser.
+- **The clock ticks.** One millisecond per read. A frozen clock stamps every
+  event in a drain with the same instant, and the relay's `ORDER BY
+  occurred_at` then returns ties in heap order — an ordering production never
+  has.
+- **A third surface: process logs.** "Warns loudly" (invariant 16) and "the
+  refusal is visible to an operator" are only observable there.
+- **P4 reads `saga_instances.history` and nothing else**, because no
+  participant-visible surface can witness a wait with no deadline. The engine
+  now records each step's `waitFor`/`timeoutAt`/`done` in its history entry;
+  before, only the *current* state's wait was knowable at all. P4 also flags a
+  `running` row with no timeout.
+- **P5's model fence** is an `LlmProvider` that refuses any question except
+  session intelligence, plus a trace check that `run_extraction` is only ever
+  emitted on the transition into `extracting`.
+- **P2 kills the process, not the call.** The Nth adapter call never returns
+  and the worker's pool is ended under it, so Postgres rolls back the relay's
+  claim. A thrown error would be caught by the relay and recorded as an
+  attempt — a much kinder failure than a process that stops. It runs twice per
+  call (before the vendor acts, and after), plus once with a fresh worker
+  before every pass. Its comparison is a multiset with ids and sub-minute time
+  scrubbed, repeated reads (`transcript.fetch`) excluded, and repeated
+  `pair.thread_bound` collapsed (a fresh process re-announces by design).
+- **Skipped, with the reason in the file**: `declined` (no Decline button
+  exists and the parser rejects the kind), `consent-revoked` (nothing writes
+  `consents.revoked_at`), `calendar-never-confirmed` (the runner emits
+  `session.scheduled` inside the same effect as `createEvent`; only losing an
+  outbox row reaches the timeout). Variants added: `transcribed`,
+  `transcription-without-consent`, `document-echo`.
+
+### Product bugs
+
+Each is asserted as the *correct* behaviour and marked `it.fails`, so the day
+one is fixed the suite goes red until the marker is removed. A fixed one
+keeps its row, marked **Fixed**, and its check becomes a plain `it`.
+
+| # | Found by | Bug |
+| --- | --- | --- |
+| 1 | `one-sided` | **Fixed.** ~~A one-sided silence is escalated on the first timeout with **no renudge** — the `partial_response` branch runs before the renudge check (invariant 11).~~ `proposing` now renudges the silent party once in the thread (naming them and the other's pick) on `policy.agreement.renudgeAfterHours`, then escalates `one_sided_response`; the pending step makes the renudge once-only across a crash. The journey's check is a plain `it`. |
+| 2 | P1 on every journey that ends paused | **Fixed.** ~~A redelivered `pair.activated` **restarts a paused saga**: `SagaEngine.start()` dedupes only against a `running` instance, and a paused one is `done`. The pair a human was asked to look at gets a fresh proposal.~~ `start()` now returns any existing instance for the saga+subject, whatever its status (paused `done` and parked `failed` alike); the four journeys' P1 are plain `it`. |
+| 3 | `extraction-timeout` | **Fixed.** ~~The confirming-timeout render **replaces the write-up** with the "unverified" banner — the managed region ends up containing only the banner (invariant 19 says mark, not erase).~~ The write-up is carried on the saga state and re-rendered by core's `renderWriteUp` with the banner above it; a human edit to the region is still pinned, not overwritten. The journey check is a plain `it`. |
+| 4 | `dm-outage` | **Fixed.** ~~A *failing* (not absent) DM slot wedges the lifecycle at the reminder, and `SagaEngine.tick()` has no per-instance failure handling, so every pass for the org throws.~~ `tick()` now isolates each instance: a throwing timer step is recorded in that instance's history (error, attempt, ledger so far) with `timeoutAt` backed off on the relay's curve, and parked as `failed` after 5 attempts (listed by `stuck-sagas`, escalated best-effort); `tick()` returns `{fired, advanced, failed, parked}`. A DM that fails again on its retry degrades — not sent, `saga.escalated {reason: dm_undeliverable}`, never the thread (invariant 13) — so the session carries on. No migration: history carries the attempts. |
+| 5 | P2 | **Fixed.** ~~**Stranded at start**: `SagaEngine.start()` commits the instance before its first step runs. A crash in that step leaves it `running` in `idle` with no wait and no timeout; the redelivered activation finds it "running" and leaves it. The pair is never proposed to.~~ `start()` resumes an existing instance whose first step never committed (`running`, `stepIndex` 0), replaying its write-ahead pending step if it has one (migration `0015`). |
+| 6 | P2 | **Fixed.** ~~`emit` effects are not idempotent.~~ The ledger is saved only with the whole step, so a retried step re-emitted: duplicate `session.scheduled` (and a phantom `sessions` row), `session.held`, `pair.cadence_deficit`. Every event an effect produces now carries `{effect key}:{event name}` in `events.idempotency_key`, deduped by a partial unique index (migration `0014`) with `ON CONFLICT DO NOTHING` returning the original row; `EventLog` has the same semantics, and the `session.scheduled` projection skips a second row for the same calendar invite. The nightly `reEmittedOnRetry` check is now a plain `it`. |
+| 7 | P2 | **Fixed.** ~~**The confirming timeout eats its own event.** It emits `extraction.confirmed {unverified}` before rendering; after a crash the still-`confirming` saga receives that event as a verdict from nobody, re-arms 120h, and the render and feedback requests never happen.~~ The engine writes each decided step to `saga_instances.pending_step` before its effects run (migration `0015`); an event that finds a step in flight finishes that step first — same effects, same ids — and is then offered to the new state only if it waits for it. |
+| 8 | P2 | **Fixed.** ~~**A second shared doc on retry.** A pair's first `render_document` has no doc id, and neither `FakeDocument` nor `GoogleDriveDocumentAdapter` uses the idempotency key when creating — a crash after creation makes a second doc (in Drive, a second access email too).~~ The Drive adapter writes the render's key into the new file's `appProperties` in the same create call and looks it up in the folder first (never verified live); `FakeDocument` mirrors it; `secondDocumentCreated` is in `P2_FIXED_BUGS`. |
+| 9 | P2, restart-every-pass | **Fixed.** ~~**The transcript lives in worker memory** between the pass that fetches it and the pass that extracts it. A restart in between extracts from an empty string: "no transcript was available" for a transcribed session.~~ `fetch_transcript` writes the text to `session_notes` (kind `transcript`, deduped by migration `0016`) before emitting `transcript.available {ref}`, and `run_extraction` reads it back through `SessionSourceStore`; `transcriptLostOnRestart` is in `P2_FIXED_BUGS`. |
+| 10 | seeding | **Nothing writes `integration_bindings.capabilities`.** `PostgresSagaResolvers.capabilities()` reads only that cache (ADR-0006), so a real Postgres tenant sees every slot as `null`: proposals always degrade, and a transcript is never polled for. The harness seeded the probe result, standing in for the connect flow that did not exist. **Fixed:** `probeAndCacheCapabilities` (`packages/workflows/src/postgres-capabilities.ts`) probes every bound adapter at worker boot (`Worker.probeCapabilities()`, called by `main.ts`/`main-live.ts` and by `stage()` on every boot and restart) and on an optional scheduler refresh, upserting into the org's rows inside `withTenant`; a throwing probe is recorded as `capabilities = null` + `last_error` and warned, a no-longer-bound slot is cleared, and the resolver logs a miss on a bound slot once and degrades. The seed no longer writes the column (`apps/worker/src/__tests__/capability-probe.test.ts`; `happy-path` asserts no miss is logged). |
+
+Gaps noted rather than tested: there is no Postgres `RosterSink` (the seed has
+the only one), and no inbound route writes `feedback.submitted`, so every
+journey leaves `feedback` by its window closing.
+
+---
+
 ## Build order
 
 Ordered by bugs-caught per hour, not by tier number:
 
 1. **`.github/workflows/ci.yml`** with the PR gate above, running the existing
-   827 plus `deps:check`. Nothing new to write; it makes three already-built
-   guards actually guard something.
-2. **`tests/e2e/stage.ts`** plus the `happy-path` journey. One file of harness,
+   874 plus `deps:check`. Nothing new to write; it makes three already-built
+   guards actually guard something. *Written, with nightly and live-contract
+   workflows alongside; awaiting its first run on GitHub.*
+2. (done) **`tests/e2e/stage.ts`** plus the `happy-path` journey. One file of harness,
    one journey. This is the first test in the repo that runs two processes.
-3. **P4 and P5** — timeout totality and determinism. Pure observation, no
+3. (done) **P4 and P5** — timeout totality and determinism. Pure observation, no
    per-journey code, and P4 gives invariant 7 its first test.
-4. **P3 · tenant isolation**, and with it the second journey. This is the one
+4. (done) **P3 · tenant isolation**, and with it the second journey. This is the one
    that would have caught `findDue`.
-5. **The rest of the catalogue**, cheapest first. The pause-reason journeys
+5. (done) **The rest of the catalogue**, cheapest first (three skipped, with reasons). The pause-reason journeys
    (`one-sided`, `no-response`, `declined`, `counter-then-cap`) are mostly
    `script` variations and land in an hour each.
-6. **P1 · idempotency replay**, then **P2 · crash resume** wired into nightly.
+6. (done) **P1 · idempotency replay**, then **P2 · crash resume** wired into nightly
+   (`pnpm test:e2e:nightly`, run by `.github/workflows/nightly.yml`).
 7. **Tier 4 fixture capture**, during the next live run, starting with the
-   three unverified adapters named above.
-8. **Tier 3 Playwright**, six specs.
+   three unverified adapters named above. *The machinery is built* (capture,
+   replay, `pnpm test:contracts:live`); what remains is running it with
+   credentials and committing the `source: "live"` fixtures it writes.
+8. ~~**Tier 3 Playwright**, six specs.~~ Built — see the Tier 3 section.
 9. **`pnpm eval`**, once there are enough Confirm/Edit verdicts in `ai_runs`
-   for the number to mean anything.
+   for the number to mean anything. *Built*; what it lacks is labels — and,
+   if keeping a copy of participants' notes on `ai_runs.input` is judged
+   acceptable (it is a retention decision, not a test one), each run's source,
+   so stored spans can be anchored rather than only shape-checked.
 
 Steps 1 and 2 are most of the value. Everything from 3 onward is leverage on
 the harness step 2 builds.
 
 ---
 
-## One thing to fix along the way
+## One thing to fix along the way — done
 
-`apps/api/src/main.ts` states, in a comment on the Postgres path, that "the
-relay is not built yet (ROADMAP phase 1, pg-boss), so on this path the click
-is durably recorded and nothing moves until it is." The relay *is* built —
-`relayOnce` in `@mentorship/workflows/postgres`, run by `createWorker`. What
-is true is narrower: `pnpm serve:api` does not run a relay itself, so a click
-does not advance a saga unless `pnpm serve:worker` is also running against the
-same database. The first journey test makes the correct statement executable,
-and the comment should be corrected to say what it actually means when it does.
+`apps/api/src/main.ts` used to say, on its Postgres path, that "the relay is
+not built yet". The relay is built — `relayOnce`, run by `createWorker`. What
+is true is narrower, and is what the comment now says: `pnpm serve:api` runs no
+relay itself, so a click advances a saga only while `pnpm serve:worker` drains
+the same database. Every journey in `tests/e2e/` is that statement, executed.
