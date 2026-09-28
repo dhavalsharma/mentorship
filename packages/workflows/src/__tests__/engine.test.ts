@@ -879,6 +879,86 @@ describe("SagaEngine review findings (PR #13)", () => {
     expect(w.calls.map((c) => c.type)).toEqual(["emit", "render_document", "request_feedback"]);
   });
 
+  describe("a verdict arriving while the timeout step it races is failing", () => {
+    type ConfirmState = { name: "start" } | { name: "confirming" } | { name: "feedback" } | { name: "verdict" };
+    // The confirming timeout's shape: the render first, so a failing render
+    // leaves the step with nothing run.
+    const confirming: Saga<ConfirmState> = {
+      name: "Confirming",
+      initial: () => ({ name: "start" }),
+      step(state, input, ctx) {
+        if (state.name === "start") {
+          return {
+            next: { name: "confirming" },
+            waitFor: { names: ["extraction.confirmed"], subjectRef: ctx.subjectRef },
+            timeoutAt: DUE,
+          };
+        }
+        if (state.name === "confirming" && input.kind === "event") {
+          return { next: { name: "verdict" }, done: true };
+        }
+        if (state.name === "confirming") {
+          return {
+            next: { name: "feedback" },
+            waitFor: { names: ["feedback.submitted"], subjectRef: ctx.subjectRef },
+            timeoutAt: "2026-09-19T06:00:00.000Z",
+            effects: [
+              { type: "render_document", title: "doc", markdown: "unverified" },
+              { type: "emit", name: "extraction.confirmed", payload: { unverified: true } },
+              { type: "request_feedback", participantId: "p1", question: "how was it?" },
+            ],
+          };
+        }
+        return { next: state, done: true };
+      },
+    };
+
+    async function failingTimeout(recovers = false) {
+      const w = recordingWorld(confirming, {
+        fail: (effect, ctx) =>
+          effect.type === "render_document" && (!recovers || ctx.attempt === 0),
+      });
+      await w.engine.start({ sagaName: "Confirming", orgId: "org_1", subjectRef: "pairing:p1" });
+      w.at(DUE);
+      expect((await w.engine.tick()).failed).toBe(1);
+      const instance = await w.only();
+      expect(instance.pendingStep?.input).toBe("timeout");
+      return { w, instance };
+    }
+
+    it("a participant's verdict supersedes a timeout step that has run nothing", async () => {
+      const { w } = await failingTimeout();
+
+      await w.engine.deliver(
+        event({ id: "evt_click", name: "extraction.confirmed", payload: { participantId: "p1" } }),
+      );
+
+      const instance = await w.only();
+      expect(instance.state).toEqual({ name: "verdict" });
+      expect(instance.pendingStep).toBeNull();
+      // Nothing of the auto-confirm happened: no unverified event, no feedback.
+      expect(w.calls.map((c) => c.type)).toEqual([]);
+      expect(instance.history.some((h) => h.note?.includes("superseded"))).toBe(true);
+    });
+
+    it("an event the pending step itself emitted never supersedes it", async () => {
+      const { w, instance } = await failingTimeout(true);
+
+      // The emit ran on a retry killed before the step committed: the ledger
+      // shows nothing, and the relay hands the saga its own auto-confirm.
+      await w.engine.deliver(
+        event({
+          id: "evt_own",
+          name: "extraction.confirmed",
+          payload: { unverified: true },
+          idempotencyKey: `${instance.id}:${instance.stepIndex}:1:extraction.confirmed`,
+        }),
+      );
+
+      expect((await w.only()).state).toEqual({ name: "feedback" });
+    });
+  });
+
   it("a terminal event drops a pending step rather than finishing it", async () => {
     const w = recordingWorld(armedSaga(), { fail: (effect) => effect.type === "dm" });
     await w.engine.start({ sagaName: "Armed", orgId: "org_1", subjectRef: "pairing:p1" });

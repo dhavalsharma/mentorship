@@ -320,6 +320,32 @@ describe("agreement outcomes", () => {
     expect(await stateOf(ctx.h)).toMatchObject({ name: "armed" });
   });
 
+  it("re-arms a renudge written before renudgeExpiresAt existed on its own deadline, not the agreement's past one", async () => {
+    const ctx = await setup();
+    const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;
+    const [first] = agreement.participantIds;
+    await ctx.h.world.respond(agreement.id, first!, "accept", agreement.options[0]!.optionId);
+    await ctx.h.dispatcher.settle();
+    await advanceToNextTimer(ctx.h); // renudged
+
+    // A row renudged before the field shipped: `renudged: true`, no deadline.
+    const [renudged] = await ctx.h.engine.instances();
+    const { renudgeExpiresAt: _dropped, ...legacy } = renudged!.state as Record<string, unknown>;
+    await ctx.h.store.save(
+      { ...renudged!, state: legacy, version: renudged!.version + 1 },
+      renudged!.version,
+    );
+
+    await ctx.h.world.respond(agreement.id, first!, "accept", agreement.options[0]!.optionId);
+    await ctx.h.dispatcher.settle();
+    const [instance] = await ctx.h.engine.instances();
+    expect(instance!.state).toMatchObject({ name: "proposing", renudged: true });
+    expect(Date.parse(instance!.timeoutAt!)).toBe(
+      Date.parse(agreement.timeoutAt) + ctx.h.policy.agreement.renudgeAfterHours * 3_600_000,
+    );
+    expect(Date.parse(instance!.timeoutAt!)).toBeGreaterThan(ctx.h.clock.now().getTime());
+  });
+
   it("never renudges the same one-sided silence twice, even when the renudge step crashes after posting", async () => {
     const ctx = await setup();
     const agreement = ctx.h.world.latestAgreementFor(ctx.pairingId)!;

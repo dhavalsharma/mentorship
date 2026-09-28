@@ -84,6 +84,7 @@ export class EventLog implements EventSink {
       occurredAt: this.clock().toISOString(),
       version: 1,
       payload: input.payload ?? {},
+      ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
     };
     this.events.push(event);
     if (dedupe !== undefined) this.byKey.set(dedupe, event);

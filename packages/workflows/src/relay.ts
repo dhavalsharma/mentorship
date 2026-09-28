@@ -109,6 +109,7 @@ export async function relayOnce(
         occurredAt: row.occurredAt.toISOString(),
         version: row.version,
         payload: row.payload as Record<string, unknown>,
+        ...(row.idempotencyKey ? { idempotencyKey: row.idempotencyKey } : {}),
       };
 
       try {

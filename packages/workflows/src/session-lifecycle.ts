@@ -53,7 +53,8 @@ export type SessionLifecycleState =
        * already passed by then, so without this a response that resolves
        * nothing (the one who already picked clicking again) would re-arm on a
        * deadline in the past. Absent before a renudge, and on rows written
-       * before the one-sided renudge existed.
+       * before the one-sided renudge existed — `renudgeDeadline` derives one
+       * for those.
        */
       renudgeExpiresAt?: string;
     }
@@ -329,7 +330,7 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
               names: ["agreement.responded"],
               subjectRef: subjectRef("agreement", state.agreementId),
             },
-            timeoutAt: state.renudgeExpiresAt ?? agreement.timeoutAt,
+            timeoutAt: renudgeDeadline(state, agreement.timeoutAt, pair),
           };
 
           switch (resolution.status) {
@@ -939,11 +940,6 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
           return {
             ...onward,
             effects: [
-              {
-                type: "emit",
-                name: "extraction.confirmed",
-                payload: { extractionId: state.extractionId, unverified: true },
-              },
               // Mark, never replace: the banner goes above the write-up it
               // qualifies (bug #3 was the banner rendered as the whole
               // region). A participant's own edit to the region still wins —
@@ -951,7 +947,13 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
               // instance that reached `confirming` before the write-up was
               // carried on has nothing to re-render with; re-rendering the
               // bare banner would erase the doc again, so it is skipped and
-              // the `unverified` flag on the event above is the mark.
+              // the `unverified` flag on the event below is the mark.
+              //
+              // The render goes ahead of the emit: while it is the effect
+              // failing, the step has run nothing, so a participant's Confirm
+              // arriving during the backoff is still decided as a verdict (the
+              // engine's `supersedes`) rather than retrying — and then being
+              // recorded as — the auto-confirm.
               ...(state.markdown !== undefined
                 ? [
                     {
@@ -964,6 +966,11 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
                     },
                   ]
                 : []),
+              {
+                type: "emit",
+                name: "extraction.confirmed",
+                payload: { extractionId: state.extractionId, unverified: true },
+              },
               ...(onward.effects ?? []),
             ],
           };
@@ -1047,6 +1054,28 @@ export function createSessionLifecycle(): Saga<SessionLifecycleState> {
   // -------------------------------------------------------------------------
   // helpers
   // -------------------------------------------------------------------------
+
+  /**
+   * The deadline a non-resolving response in `proposing` re-arms on. Before a
+   * renudge it is the agreement's own; after one, the renudge's.
+   *
+   * A row renudged before `renudgeExpiresAt` existed carries `renudged: true`
+   * and no deadline, and re-arming it on `agreement.timeoutAt` — already past
+   * by construction — escalated on the next tick instead of waiting out the
+   * renudge. The renudge fired when that deadline did, so the deadline plus
+   * `renudgeAfterHours` is what it set, give or take the tick's lag.
+   * Rejected: a migration backfilling the field from `history`. It would fix
+   * Postgres rows only, and this is total and needs no write.
+   */
+  function renudgeDeadline(
+    state: Extract<SessionLifecycleState, { name: "proposing" }>,
+    agreementTimeoutAt: string,
+    pair: PairContext,
+  ): string {
+    if (state.renudgeExpiresAt) return state.renudgeExpiresAt;
+    if (!state.renudged) return agreementTimeoutAt;
+    return addHours(agreementTimeoutAt, pair.policy.agreement.renudgeAfterHours);
+  }
 
   function pollTimeout(
     pair: PairContext,

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { UNVERIFIED_BANNER } from "@mentorship/core";
 import { FakeDocument, readManagedRegion } from "@mentorship/integrations";
 import { commitRosterImport, planRosterImport } from "@mentorship/roster";
@@ -32,7 +32,7 @@ async function toConfirming() {
   expect(instance!.state).toMatchObject({ name: "confirming" });
   const doc = h.registry.get<FakeDocument>("document")!;
   const docRef = String(h.recorder.of("document.rendered")[0]!.detail["docRef"]);
-  return { h, doc, docRef };
+  return { h, doc, docRef, pairingId };
 }
 
 describe("confirming timeout", () => {
@@ -56,5 +56,34 @@ describe("confirming timeout", () => {
     expect(readManagedRegion(doc.read(docRef)!)).toBe(edited);
     const last = h.recorder.of("document.rendered").at(-1)!;
     expect(last.detail["pinned"]).toBe(true);
+  });
+
+  it("honours a participant's Confirm that arrives while the auto-confirm is still failing to render", async () => {
+    const { h, doc, docRef, pairingId } = await toConfirming();
+    const before = readManagedRegion(doc.read(docRef)!)!;
+    const render = vi
+      .spyOn(doc, "renderManagedRegion")
+      .mockRejectedValue(new Error("Docs outage"));
+
+    await advanceToNextTimer(h); // window closes; the auto-confirm step fails
+    const [pending] = await h.engine.instances();
+    expect(pending!.pendingStep?.input).toBe("timeout");
+
+    render.mockRestore(); // the click is not what makes the render work
+    const [instance] = await h.engine.instances();
+    const pair = h.world.pairings.get(pairingId)!;
+    for (const p of [pair.mentorParticipantId, pair.menteeParticipantId]) {
+      await h.world.confirmExtraction(pairingId, p);
+    }
+    await h.dispatcher.settle();
+
+    const [after] = await h.engine.instances();
+    expect(after!.state).toMatchObject({ name: "feedback" });
+    expect(after!.stepIndex).toBeGreaterThan(instance!.stepIndex);
+    // A human verdict, never recorded as an unverified auto-confirm.
+    expect(
+      h.log.all().filter((e) => e.name === "extraction.confirmed" && e.payload["unverified"]),
+    ).toEqual([]);
+    expect(readManagedRegion(doc.read(docRef)!)).toBe(before);
   });
 });

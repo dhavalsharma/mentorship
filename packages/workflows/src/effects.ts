@@ -129,7 +129,10 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
    *     holds back the other's message. A recipient who got it is marked in
    *     the step's ledger (`ctx.parts`), and a retry skips them: the Slack DM
    *     adapter has no server-side dedupe, so without this a retry would
-   *     re-send to the one it already reached.
+   *     re-send to the one it already reached. That covers a thrown step,
+   *     not a killed process: the marks are saved with the step, so a kill
+   *     after a Slack send and before that save re-sends on resume (see
+   *     `EffectContext.parts`).
    *   - A failure on the first attempt fails the step (a blip is a blip).
    *     From the retry on, each still-failing recipient is warned about and
    *     escalated as `dm_undeliverable`, and the step completes.

@@ -34,9 +34,19 @@ export interface EffectContext {
    * with them (the engine keeps the ledger as far as it got) and a retry
    * skips them. This is what stops a retried broadcast re-sending to the
    * recipient who already got it on an adapter with no server-side dedupe
-   * (Slack's `chat.postMessage`). Like the ledger itself it cannot cover a
-   * process killed mid-step — the per-recipient idempotency key is the guard
-   * there (invariant 6).
+   * (Slack's `chat.postMessage`).
+   *
+   * Like the ledger itself it is saved only when the step fails or commits,
+   * so it does not survive a process killed between a send and that save.
+   * The per-recipient idempotency key covers that window only on an adapter
+   * that dedupes on it (`FakeDm`, and so nightly P2, which cannot see the
+   * gap). `SlackDmAdapter` never sends the key — `chat.postMessage` has no
+   * such field — so on Slack a kill there re-sends that recipient's DM on
+   * resume: the same at-least-once window every Slack post and DM effect
+   * has (see the note in `packages/integrations/src/slack/dm.ts`). Rejected:
+   * saving the row after each recipient. An extra write per DM narrows the
+   * window without closing it — a kill between the send and that save is
+   * the same duplicate.
    *
    * Optional so a runner can be driven without an engine (tests); absent, a
    * fan-out falls back to the adapter key alone.
@@ -431,6 +441,11 @@ export class SagaEngine {
    * `extraction.confirmed`) is no longer read back as a verdict by the state
    * it was leaving.
    *
+   * One exception, narrow on purpose: an outside event the leaving state was
+   * waiting for supersedes a *failing timeout* step that has run nothing yet
+   * (`supersedes`) — a participant's verdict is not demoted to the
+   * auto-confirm it raced.
+   *
    * Rejected alternatives:
    * - Persisting the record only when a step *fails* (in `recordFailure`).
    *   Covers a thrown effect, not a killed process: a crash mid-step still
@@ -450,7 +465,32 @@ export class SagaEngine {
     attempt = 0,
   ): Promise<SagaInstance> {
     const pending = instance.pendingStep ?? null;
-    if (pending) {
+    if (pending && this.supersedes(instance, pending, input)) {
+      // Decide afresh for the event, at the next `stepIndex`: the abandoned
+      // step's keys are never reused, so nothing it half-did at the vendor
+      // can be mistaken for this step's own. One save, below, does both.
+      const now = this.now().toISOString();
+      instance = {
+        ...instance,
+        pendingStep: null,
+        stepIndex: instance.stepIndex + 1,
+        history: [
+          ...instance.history,
+          {
+            at: now,
+            stepIndex: instance.stepIndex,
+            input: pending.input,
+            from: pending.from,
+            to: pending.from,
+            effects: [],
+            waitFor: instance.awaitingEvent?.names ?? null,
+            timeoutAt: instance.timeoutAt,
+            done: false,
+            note: `timeout step superseded by ${describeInput(input)} before any of its effects ran`,
+          },
+        ],
+      };
+    } else if (pending) {
       const { row, won } = await this.completePending(
         instance,
         pending,
@@ -622,6 +662,53 @@ export class SagaEngine {
       }
       throw error;
     }
+  }
+
+  /**
+   * Whether an event the instance's current state was waiting for should be
+   * decided by that state rather than finish the timeout step in flight.
+   *
+   * Finishing first is right for almost every input (see `advance`), but not
+   * for the one this state exists to receive, racing a timeout that has not
+   * happened yet in any visible way. The case that forced it (PR #13 review):
+   * a participant's Confirm arriving while the `confirming` timeout's render
+   * keeps failing. Finished first, the click retried the auto-confirm, and a
+   * click that finally let it through was recorded as an *unverified*
+   * auto-confirm, then dropped because `feedback` does not wait for it — a
+   * human verdict silently demoted to a machine guess (invariant 19).
+   *
+   * All four conditions, each for a reason:
+   * - The pending step is a timeout. An event step is someone's answer, and
+   *   is always finished.
+   * - The event matches the wait the row still carries from the state the
+   *   step is leaving — it is exactly what that state would have taken a
+   *   moment earlier.
+   * - The step has failed at least once and its ledger holds nothing for this
+   *   `stepIndex`. A failure is saved with the ledger as far as it got, so
+   *   "nothing" is known rather than hoped. A step that has *not* failed may
+   *   be running in another process right now, or was killed after its
+   *   vendor call and before any save — superseding either would do its
+   *   effects twice, so those are finished as before.
+   * - The event is not one this instance's own effects emitted (its
+   *   `idempotencyKey` carries the effect key). That covers the one gap the
+   *   previous condition leaves: a retry that ran the step's `emit` and was
+   *   killed before committing. The relay then delivers the step's own
+   *   auto-confirm, which must finish the step, never be read as a verdict.
+   *
+   * Rejected: reading the payload (`unverified: true`, no `participantId`).
+   * It would work for this one saga and teach the engine a saga's vocabulary.
+   */
+  private supersedes(
+    instance: SagaInstance,
+    pending: SagaPendingStep,
+    input: SagaInput,
+  ): boolean {
+    if (pending.inputKey !== "timeout" || input.kind !== "event") return false;
+    if (!matchesPattern(input.event, instance.awaitingEvent)) return false;
+    if (input.event.idempotencyKey?.startsWith(`${instance.id}:`)) return false;
+    if (consecutiveFailures(instance) === 0) return false;
+    const prefix = `${instance.id}:${instance.stepIndex}:`;
+    return !Object.keys(instance.completedEffects).some((k) => k.startsWith(prefix));
   }
 
   /**

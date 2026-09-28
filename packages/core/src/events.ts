@@ -89,6 +89,14 @@ export const DomainEventSchema = z.object({
   occurredAt: z.string(),
   version: z.number().int().default(1),
   payload: z.record(z.unknown()).default({}),
+  /**
+   * The key of the saga effect that produced this event (`{effect key}:{name}`,
+   * invariant 6), when an effect produced it; absent for anything a person or
+   * an inbound route wrote. It is what lets the engine tell a step's own
+   * emitted event from an outside one with the same name — see `advance()`
+   * in `packages/workflows/src/engine.ts`.
+   */
+  idempotencyKey: z.string().optional(),
 });
 
 export type DomainEvent = z.infer<typeof DomainEventSchema>;
