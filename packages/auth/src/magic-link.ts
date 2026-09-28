@@ -128,8 +128,13 @@ export async function requestMagicLink(input: {
 
 export type VerifyMagicLinkFailureReason = "not_found" | "expired" | "already_used";
 
+/**
+ * `userId` is carried on success so a caller can act on *who* just signed in
+ * — `apps/api` accepts their pending cohort invites — without a second trip
+ * through `verifySession` for a session it minted a line earlier.
+ */
 export type VerifyMagicLinkResult =
-  | { ok: true; sessionId: string; expiresAt: string }
+  | { ok: true; sessionId: string; userId: string; expiresAt: string }
   | { ok: false; reason: VerifyMagicLinkFailureReason };
 
 /**
@@ -176,7 +181,7 @@ export async function verifyMagicLink(input: {
     expiresAt,
   });
 
-  return { ok: true, sessionId, expiresAt };
+  return { ok: true, sessionId, userId: link.userId, expiresAt };
 }
 
 export type VerifySessionFailureReason = "not_found" | "expired" | "revoked";

@@ -46,16 +46,41 @@ The load-bearing wall. Everything after this assumes it.
       chat member ↔ calendar account. `packages/enrollment`'s `acceptInvite`:
       records a verified `identityLinks` row, flips the participant to
       `enrolled`. Takes the verified identity as given rather than
-      authenticating anyone itself — that's `packages/auth`'s job, called
-      from wherever an HTTP route eventually links the two.
+      authenticating anyone itself — that's `packages/auth`'s job. Now linked
+      over HTTP: following the magic link an invite issues *is* the
+      verification — `POST /auth/verify` runs `acceptPendingInvites` for the
+      signed-in user, recording an `email` identity and enrolling them.
+      **Only the email is verified**; linking the Slack member id and the
+      calendar account still needs each vendor's own sign-in (OAuth / "Sign
+      in with Slack") and is not built.
 - [x] Cohorts, enrolment, invite flow — `packages/enrollment`'s
       `planInvite`/`commitInvite`: one admin, one email, one cohort, one role,
       deduped against a repeat invite. No schema change; built entirely on
       `cohorts`/`users`/`participants`/`identityLinks`, which already existed.
-      Not wired into any HTTP route yet.
+      Wired: `POST /orgs/:orgId/invites` on `apps/api` (`authenticateAdmin`,
+      then `authorize()` on `enrolment.invite`, Zod body, cohort and role
+      checked against this org's own data inside `withTenant`; 201 / 200
+      dedupe / 400 field errors), a magic link issued per invite while the
+      person is still `invited`, and `apps/web`'s `/dashboard/invites`.
+- [ ] **Open: admin is not a role yet.** Every session authorizes as
+      `admin` (`handleAdminList`'s shortcut, now also `handleInvite`'s). That
+      was already true of any roster-imported user who requested a link;
+      invites make it worse by *issuing* each invitee a working session.
+      Closing it needs a schema change — somewhere to say who is staff
+      (an `org_members`/role table, or a role on `users`) — and
+      `authenticateAdmin` resolving the session to that role before
+      `authorize()`; the `enrolment.invite` resource already refuses pair
+      roles, so nothing else in the route changes. Not guessed at here.
+- [ ] Invite follow-ups, none needing a schema change: actually sending the
+      link by email (it is printed today, like every magic link), a
+      `GET` of cohorts/pending invites so the form need not take a cohort id,
+      revoking an invite, and asking a new invitee for their zone (it
+      defaults to UTC unless the admin supplies `tzOffsetMinutes`).
 - [x] Audit log — the table existed with no writer until now. An optional
       `AuditSink` records `participant.invited`/`identity.verified` from
-      `packages/enrollment`. Still no reader/admin view over it.
+      `packages/enrollment`, now persisted by `PostgresAuditSink`
+      (`apps/api/src/postgres-enrollment.ts`) in the same transaction as the
+      rows it describes. Still no reader/admin view over it.
 
 ## Phase 1 — The spine and the session flow
 

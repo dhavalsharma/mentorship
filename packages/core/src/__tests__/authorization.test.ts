@@ -173,6 +173,34 @@ describe("activity is attributable — admins keep seeing it", () => {
   });
 });
 
+describe("enrolment.invite is an org-chart-only write", () => {
+  const invite = (orgId: OrgId = ORG_A): Resource => ({ type: "enrolment.invite", orgId });
+
+  it("allows an admin and a program lead in their own org", () => {
+    expect(authorize(admin(), invite()).allowed).toBe(true);
+    expect(authorize(programLead(), invite()).allowed).toBe(true);
+  });
+
+  it("denies a pair member, even one naming their own pairing", () => {
+    expect(authorize(pairMember("mentor", [PAIRING_1]), invite()).allowed).toBe(false);
+    expect(
+      authorize(pairMember("mentee", [PAIRING_1]), {
+        type: "enrolment.invite",
+        orgId: ORG_A,
+        pairingId: PAIRING_1,
+      }).allowed,
+    ).toBe(false);
+  });
+
+  it("denies an unnamed-role participant", () => {
+    expect(authorize(outsider(), invite()).allowed).toBe(false);
+  });
+
+  it("denies an admin of another org", () => {
+    expect(authorize(admin(ORG_B), invite(ORG_A)).allowed).toBe(false);
+  });
+});
+
 describe("cross-org access is always denied", () => {
   it("denies an admin of org A reading org B's activity", () => {
     expect(authorize(admin(ORG_A), riskFindingOf(undefined, ORG_B)).allowed).toBe(false);

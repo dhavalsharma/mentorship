@@ -54,6 +54,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
           <Link href="/dashboard/matching-rounds" className="text-sm hover:underline">
             Matching rounds
           </Link>
+          <Link href="/dashboard/invites" className="text-sm hover:underline">
+            Invites
+          </Link>
           <Link
             href="/dashboard/settings/document"
             className="text-sm hover:underline"

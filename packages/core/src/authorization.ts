@@ -98,6 +98,12 @@ export const ResourceTypeSchema = z.enum([
   "operational-monitoring",
   /** A matching round's candidate pairs, features and scores — appeal data. */
   "matching-candidates",
+  /**
+   * Inviting someone into a cohort — a *write* that decides who is in the
+   * program. Org-chart staff only: unlike activity, a pair member being party
+   * to some pairing is no reason at all to let them add people to a cohort.
+   */
+  "enrolment.invite",
 ]);
 export type ResourceType = z.infer<typeof ResourceTypeSchema>;
 
@@ -199,6 +205,16 @@ export function authorize(actor: Actor, resource: Resource): AuthorizationDecisi
         return allow("activity/attendance data is visible to org-chart staff and pair members");
       }
       return deny("actor is neither org-chart staff nor a party to this pairing");
+    }
+
+    case "enrolment.invite": {
+      // No `isPairMember` branch, on purpose — see the resource type's doc.
+      // Membership of a pairing is about reading your own pair's data, never
+      // about changing who else is in the cohort.
+      if (isOrgChart) {
+        return allow("org-chart staff may invite people into their org's cohorts");
+      }
+      return deny("only org-chart staff may invite people into a cohort");
     }
 
     default: {

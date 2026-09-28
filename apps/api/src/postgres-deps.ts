@@ -5,6 +5,7 @@ import {
   SlackWebApiModalOpener,
   type SlackTransport,
 } from "@mentorship/integrations";
+import { PostgresEnrollmentService } from "./postgres-enrollment.js";
 import {
   PostgresAgreementResponder,
   PostgresChatIdentityResolver,
@@ -99,6 +100,10 @@ export function buildPostgresApiDeps(options: PostgresApiDepsOptions): ApiServer
     },
     documentSettings: new PostgresDocumentSettingsStore(db, scoped),
     sheetSettings: new PostgresSheetSettingsStore(db, scoped),
+    enrollment: new PostgresEnrollmentService(db, {
+      ...scoped,
+      ...(options.now ? { now: options.now } : {}),
+    }),
     auth: {
       store: new PostgresMagicLinkStore(db, scoped),
       orgId,

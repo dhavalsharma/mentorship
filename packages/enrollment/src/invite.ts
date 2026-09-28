@@ -143,12 +143,21 @@ export interface CommitInviteResult {
   participantId: string;
   /** False the first time; true when this email/cohort/role was already invited or enrolled — a no-op, not an error. */
   alreadyInvited: boolean;
+  /**
+   * The participant's state after the commit — `"invited"` for a new invite,
+   * whatever it already was for a repeat. A caller deciding whether to
+   * (re)send a sign-in link needs to tell "still waiting on them" from
+   * "already enrolled" without a second read.
+   */
+  state: string;
 }
 
 export async function commitInvite(
   plan: InvitePlan,
   sink: EnrollmentSink,
   audit?: AuditSink,
+  /** Who sent the invite, for the audit row — the admin's user id when an HTTP route knows it. */
+  options: { actorRef?: string | null } = {},
 ): Promise<CommitInviteResult> {
   const { userId } = await sink.upsertUser({
     email: plan.email,
@@ -165,7 +174,11 @@ export async function commitInvite(
     // Already "enrolled" or already "invited" — either way, re-inviting is a
     // dedupe case, not an error, mirroring how a repeated roster row is
     // skipped rather than rejected.
-    return { participantId: existing.participantId, alreadyInvited: true };
+    return {
+      participantId: existing.participantId,
+      alreadyInvited: true,
+      state: existing.state,
+    };
   }
 
   const { participantId } = await sink.createParticipant({
@@ -180,14 +193,14 @@ export async function commitInvite(
     await audit.record({
       orgId: plan.orgId ?? "",
       actorType: "admin",
-      actorRef: null,
+      actorRef: options.actorRef ?? null,
       action: "participant.invited",
       subjectRef: `participant:${participantId}`,
       after: { userId, cohortId: plan.cohortId, role: plan.role, state: "invited" },
     });
   }
 
-  return { participantId, alreadyInvited: false };
+  return { participantId, alreadyInvited: false, state: "invited" };
 }
 
 // ---------------------------------------------------------------------------
@@ -241,4 +254,67 @@ export async function acceptInvite(
       },
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Accept on sign-in
+// ---------------------------------------------------------------------------
+
+/**
+ * The read `acceptPendingInvites` needs on top of `EnrollmentSink`: every
+ * participant row for this user still waiting on them. Kept a separate port
+ * so the existing `EnrollmentSink` shape (and every fake of it) is unchanged.
+ */
+export interface PendingInviteSource {
+  listInvitedParticipants(input: {
+    userId: string;
+  }): Promise<{ participantId: string }[]>;
+}
+
+/**
+ * The provider recorded for an identity proven by clicking a magic link sent
+ * to that address. Not one of the chat/calendar providers `identity_links`
+ * was first written for — it is the *email* that has been verified, which is
+ * what an invite is addressed to. Linking a Slack member id or a calendar
+ * account is a separate, later verification (it needs that vendor's own
+ * sign-in), and this deliberately does not pretend to do it.
+ */
+export const EMAIL_IDENTITY_PROVIDER = "email";
+
+/**
+ * Called once a person has proven control of `email` (today: consumed a
+ * magic link sent to it). Every cohort invite still `"invited"` for them is
+ * accepted through `acceptInvite`, so each gets its own `identity.verified`
+ * audit row. Idempotent: a second sign-in finds nothing pending and does
+ * nothing, which is what makes it safe for a caller to run best-effort after
+ * a login and simply retry on the next one if it failed.
+ */
+export async function acceptPendingInvites(
+  input: {
+    userId: string;
+    email: string;
+    now: () => string;
+    orgId?: string;
+  },
+  sink: EnrollmentSink & PendingInviteSource,
+  audit?: AuditSink,
+): Promise<{ accepted: string[] }> {
+  const pending = await sink.listInvitedParticipants({ userId: input.userId });
+  const accepted: string[] = [];
+  for (const { participantId } of pending) {
+    await acceptInvite(
+      {
+        participantId,
+        userId: input.userId,
+        provider: EMAIL_IDENTITY_PROVIDER,
+        externalId: input.email.trim().toLowerCase(),
+        now: input.now,
+        ...(input.orgId !== undefined ? { orgId: input.orgId } : {}),
+      },
+      sink,
+      audit,
+    );
+    accepted.push(participantId);
+  }
+  return { accepted };
 }

@@ -33,6 +33,8 @@ import {
   verifySession,
   type MagicLinkStore,
 } from "@mentorship/auth";
+import { planInvite, type InvitePlan } from "@mentorship/enrollment";
+import { InviteRequestSchema, defaultDisplayName } from "./invites.js";
 
 /**
  * Deliberately not a framework. The one thing that matters for this route is
@@ -159,6 +161,24 @@ export interface AuthDeps {
   onMagicLinkIssued?: (email: string, rawToken: string) => void;
 }
 
+/**
+ * What `POST /orgs/:orgId/invites` commits, and what `POST /auth/verify`
+ * runs once someone has proven control of their email. Postgres implements
+ * it as one `withTenant` transaction per call (`postgres-enrollment.ts`); the
+ * route never sees a sink or a transaction.
+ */
+export type InviteOutcome =
+  | { ok: true; participantId: string; alreadyInvited: boolean; state: string }
+  /** No cohort with that id in *this* org — which, under RLS, includes another org's. */
+  | { ok: false; reason: "unknown_cohort" }
+  /** The cohort's program does not define that role (ADR-0001: roles are policy data). */
+  | { ok: false; reason: "unknown_role"; roles: string[] };
+
+export interface EnrollmentService {
+  invite(orgId: string, plan: InvitePlan, actorUserId: string): Promise<InviteOutcome>;
+  acceptPendingInvites(orgId: string, userId: string): Promise<{ accepted: string[] }>;
+}
+
 export interface ApiServerDeps {
   slackSigningSecret: string;
   identity: ChatIdentityResolver;
@@ -215,6 +235,12 @@ export interface ApiServerDeps {
    * a 401, never as "auth is skipped."
    */
   auth?: AuthDeps;
+  /**
+   * Cohort invites, and accepting them on sign-in. Absent, the invite route
+   * 501s (after auth — an unauthenticated caller still gets a 401) and
+   * `/auth/verify` signs people in without touching any invite.
+   */
+  enrollment?: EnrollmentService;
 }
 
 const SESSION_COOKIE = "mentorship_session";
@@ -332,6 +358,14 @@ async function route(
   if (req.method === "POST" && req.url === "/auth/verify") {
     await handleVerify(req, res, deps);
     return;
+  }
+
+  if (req.method === "POST" && req.url) {
+    const orgId = matchInvitesRoute(req.url);
+    if (orgId !== null) {
+      await handleInvite(req, res, deps, orgId);
+      return;
+    }
   }
 
   if ((req.method === "GET" || req.method === "PUT") && req.url) {
@@ -580,6 +614,140 @@ async function handleMatchingRoundCandidates(
     }
     throw error;
   }
+}
+
+/** `/orgs/:orgId/invites`. */
+function matchInvitesRoute(url: string): string | null {
+  const parsed = new URL(url, "http://internal");
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length !== 3) return null;
+  const [orgs, orgId, resource] = segments as [string, string, string];
+  if (orgs !== "orgs" || resource !== "invites") return null;
+  return orgId;
+}
+
+/**
+ * One admin, one email, one cohort, one role. 201 for a new invite, 200 for a
+ * repeat (a dedupe, not an error — the same rule `commitInvite` applies), 400
+ * with per-field issues for anything malformed or naming a cohort or role
+ * this org does not have.
+ *
+ * While the participant is still `invited`, every call — first or repeat —
+ * issues a fresh magic link through the same `onMagicLinkIssued` seam
+ * `/auth/request-link` uses, so re-inviting doubles as "resend". The raw
+ * token never reaches this response: the admin must not be able to sign in
+ * as the person they invited. Following that link is what accepts the
+ * invite — see `handleVerify`.
+ */
+async function handleInvite(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiServerDeps,
+  orgId: string,
+): Promise<void> {
+  if (!UUID_RE.test(orgId)) {
+    writeJson(res, 400, { error: "orgId must be a UUID" });
+    return;
+  }
+
+  const authed = await authenticateAdmin(req, res, deps, orgId);
+  if (!authed) return; // response already written (401 or 403)
+
+  // Same admin shortcut, and the same caveat, as `handleAdminList`: a
+  // session is the only role apps/api can establish today, so it authorizes
+  // as `admin`. `enrolment.invite` is the resource that will start refusing
+  // the day a session can resolve to a participant instead.
+  const actor: Actor = { orgId: asOrgId(orgId), role: "admin", pairingIds: [] };
+  const decision = authorize(actor, { type: "enrolment.invite", orgId: asOrgId(orgId) });
+  if (!decision.allowed) {
+    writeJson(res, 403, { error: "forbidden" });
+    return;
+  }
+
+  if (!deps.enrollment) {
+    writeJson(res, 501, { error: "enrolment is not configured on this server" });
+    return;
+  }
+
+  let rawBody: string;
+  try {
+    rawBody = await readBody(req, MAX_BODY_BYTES);
+  } catch {
+    res.writeHead(413, { "content-type": "text/plain" });
+    res.end("payload too large");
+    return;
+  }
+
+  let json: unknown;
+  try {
+    json = JSON.parse(rawBody);
+  } catch {
+    writeJson(res, 400, { error: "invalid JSON body" });
+    return;
+  }
+
+  const body = InviteRequestSchema.safeParse(json);
+  if (!body.success) {
+    writeJson(res, 400, {
+      error: "invalid invite",
+      issues: body.error.issues.map((issue) => ({
+        field: String(issue.path[0] ?? ""),
+        message: issue.message,
+      })),
+    });
+    return;
+  }
+
+  const planned = planInvite({
+    email: body.data.email,
+    displayName: body.data.displayName ?? defaultDisplayName(body.data.email),
+    // An invite rarely knows someone's zone. 0 only ever lands on a *new*
+    // user row — the Postgres sink never overwrites an existing one — and is
+    // the same default `users.tz_offset_minutes` already has.
+    tzOffsetMinutes: body.data.tzOffsetMinutes ?? 0,
+    cohortId: body.data.cohortId,
+    role: body.data.role,
+    ...(body.data.capacity !== undefined ? { capacity: body.data.capacity } : {}),
+    orgId,
+  });
+  if (!planned.ok) {
+    writeJson(res, 400, { error: "invalid invite", issues: planned.issues });
+    return;
+  }
+
+  const outcome = await deps.enrollment.invite(orgId, planned.plan, authed.userId);
+  if (!outcome.ok) {
+    const issue =
+      outcome.reason === "unknown_cohort"
+        ? { field: "cohortId", message: "no such cohort in this organisation" }
+        : {
+            field: "role",
+            message: `not a role in this cohort's program (expected one of: ${outcome.roles.join(", ")})`,
+          };
+    writeJson(res, 400, { error: "invalid invite", issues: [issue] });
+    return;
+  }
+
+  let signInLinkIssued = false;
+  if (outcome.state === "invited" && deps.auth) {
+    const link = await requestMagicLink({
+      store: deps.auth.store,
+      orgId: deps.auth.orgId,
+      email: planned.plan.email,
+      now: deps.now ?? (() => new Date()),
+    });
+    if (link.rawToken !== null) {
+      deps.auth.onMagicLinkIssued?.(planned.plan.email, link.rawToken);
+      signInLinkIssued = true;
+    }
+  }
+
+  writeJson(res, outcome.alreadyInvited ? 200 : 201, {
+    participantId: outcome.participantId,
+    alreadyInvited: outcome.alreadyInvited,
+    state: outcome.state,
+    signInLinkIssued,
+  });
 }
 
 /** `/orgs/:orgId/settings/document`. */
@@ -934,6 +1102,23 @@ async function handleVerify(
     // them it expired versus was already used leaks nothing new.
     writeJson(res, 401, { ok: false, reason: result.reason });
     return;
+  }
+
+  // Proving control of the email *is* the invite's verification step: the
+  // link could only have reached someone who reads that inbox. Best-effort
+  // and invisible in the response — a sign-in never fails because enrolment
+  // did, the response is byte-identical whether or not anything was
+  // accepted (so it says nothing about which emails were invited), and a
+  // failed acceptance is simply retried by the next sign-in, since
+  // `acceptPendingInvites` is idempotent.
+  if (deps.enrollment) {
+    try {
+      await deps.enrollment.acceptPendingInvites(deps.auth.orgId, result.userId);
+    } catch (error) {
+      deps.onUnhandled?.("invite_accept_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   res.writeHead(200, {
