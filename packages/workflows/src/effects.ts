@@ -3,6 +3,7 @@ import type {
   ConversationAdapter,
   DmAdapter,
   DocumentAdapter,
+  DomainEvent,
   Effect,
   IdFactory,
   PairContext,
@@ -43,6 +44,13 @@ export interface SessionIntel {
  * below the engine's `maxStepAttempts`, or the saga parks before it degrades.
  */
 export const DM_RETRIES = 1;
+
+type EffectEmit = (
+  name: EmitInput["name"],
+  payload?: Record<string, unknown>,
+  subject?: string,
+  part?: string,
+) => Promise<DomainEvent>;
 
 export interface EffectRunnerOptions {
   registry: IntegrationRegistry;
@@ -105,12 +113,51 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
     return { adapter, ref, fresh: true };
   }
 
-  /** Joint-thread messages degrade to a DM to each party; never the reverse. */
+  /**
+   * Joint-thread messages degrade to a DM to each party; never the reverse.
+   *
+   * `part` distinguishes a second shared message inside one effect (the
+   * manual-invite request) from the effect's own; the thread post and each
+   * recipient's DM are keyed under it exactly as before.
+   *
+   * With no thread, the *shared* message goes to each participant through a
+   * `dm` slot that may be failing rather than absent, and it follows the same
+   * one policy `sendPrivate` does (`DM_RETRIES`, `ctx.attempt`), per
+   * recipient:
+   *
+   *   - Every recipient is tried on every attempt, so one failing DM never
+   *     holds back the other's message. A recipient who got it is marked in
+   *     the step's ledger (`ctx.parts`), and a retry skips them: the Slack DM
+   *     adapter has no server-side dedupe, so without this a retry would
+   *     re-send to the one it already reached.
+   *   - A failure on the first attempt fails the step (a blip is a blip).
+   *     From the retry on, each still-failing recipient is warned about and
+   *     escalated as `dm_undeliverable`, and the step completes.
+   *
+   * When *every* recipient fails on the retry, the step still completes —
+   * decided deliberately. The alternatives are to keep throwing until the
+   * engine parks the instance, or to end the saga. Parking leaves a pair
+   * that nothing will ever move again (there is no un-park action), and it
+   * reaches a human only through the generic `saga_step_failed`, five
+   * backed-off attempts later. Continuing puts a human on it now — one
+   * `dm_undeliverable` per recipient, on the retry — while the saga's own
+   * deadlines keep running: a proposal nobody saw gets its one renudge
+   * (which reaches them if the outage has ended) and then escalates as
+   * silence, never a third attempt (invariant 11). What it never does is
+   * treat the undelivered message as seen: no agreement is inferred from it
+   * (invariant 9), and the wait is the same wait a delivered one gets.
+   *
+   * There is no thread here to fall back to, so invariant 13 is not in play
+   * — but a DM failure never reroutes anywhere else either.
+   */
   async function broadcast(
     pair: PairContext,
     body: string,
-    key: string,
+    ctx: EffectContext,
+    emit: EffectEmit,
+    part?: string,
   ): Promise<void> {
+    const key = part ? `${ctx.key}:${part}` : ctx.key;
     const t = await thread(pair);
     if (t) {
       await t.adapter.postMessage({ thread: t.ref, body, idempotencyKey: key });
@@ -121,12 +168,47 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
       warn("no conversation or dm adapter bound; message dropped", { body });
       return;
     }
+    const failed: {
+      participant: PairContext["participants"][number];
+      recipient: string;
+      error: unknown;
+    }[] = [];
     for (const [i, p] of pair.participants.entries()) {
-      await dm.send({
-        memberRef: p.memberRef,
-        body,
-        idempotencyKey: `${key}:${i}`,
+      const recipient = part ? `${part}:${i}` : String(i);
+      if (ctx.parts?.done(recipient)) continue;
+      try {
+        await dm.send({
+          memberRef: p.memberRef,
+          body,
+          idempotencyKey: `${key}:${i}`,
+        });
+        ctx.parts?.mark(recipient);
+      } catch (error) {
+        failed.push({ participant: p, recipient, error });
+      }
+    }
+    if (failed.length === 0) return;
+    if (ctx.attempt < DM_RETRIES) throw failed[0]!.error;
+    const reachedNobody = failed.length === pair.participants.length;
+    for (const { participant, recipient, error } of failed) {
+      const message = error instanceof Error ? error.message : String(error);
+      warn("dm failed after retry; shared message not sent to participant", {
+        participantId: participant.participantId,
+        attempt: ctx.attempt,
+        reachedNobody,
+        error: message,
       });
+      await emit(
+        "saga.escalated",
+        {
+          reason: "dm_undeliverable",
+          detail: `shared message (no thread) to participant ${participant.participantId}: ${message}`.slice(0, 500),
+          pairingId: pair.pairingId,
+          participantId: participant.participantId,
+        },
+        undefined,
+        recipient,
+      );
     }
   }
 
@@ -212,17 +294,15 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
     // need a deferred id. It also would not remove the need for a key: the
     // adapter call before it is still re-run on retry and still dedupes by
     // key, so the key is the one mechanism that already covers every effect.
-    const emit = (
-      name: EmitInput["name"],
-      payload?: Record<string, unknown>,
-      subject?: string,
-    ) =>
+    // `part` keys one of several events of the same name from one effect —
+    // a fan-out escalating per recipient.
+    const emit: EffectEmit = (name, payload, subject, part) =>
       opts.log.emit({
         orgId: ctx.instance.orgId,
         name,
         subjectRef: subject ?? ctx.instance.subjectRef,
         payload,
-        idempotencyKey: `${ctx.key}:${name}`,
+        idempotencyKey: part ? `${ctx.key}:${part}:${name}` : `${ctx.key}:${name}`,
       });
 
     switch (effect.type) {
@@ -251,7 +331,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
       case "post_proposal": {
         const t = await thread(pair);
         if (!t) {
-          await broadcast(pair, effect.body, ctx.key);
+          await broadcast(pair, effect.body, ctx, emit);
           return null;
         }
         const caps = await opts.registry.capabilities("conversation");
@@ -276,7 +356,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
       }
 
       case "post_message": {
-        await broadcast(pair, effect.body, ctx.key);
+        await broadcast(pair, effect.body, ctx, emit);
         return null;
       }
 
@@ -287,7 +367,7 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           // and the verdict will have to arrive some other structured way or
           // not at all. The timeout in `confirming` still fires and still
           // marks the result unverified (invariant 19).
-          await broadcast(pair, effect.body, ctx.key);
+          await broadcast(pair, effect.body, ctx, emit);
           return null;
         }
         const caps = await opts.registry.capabilities("conversation");
@@ -333,7 +413,9 @@ export function createEffectRunner(opts: EffectRunnerOptions): EffectRunner {
           await broadcast(
             pair,
             `Agreed for ${effect.start}. Could one of you send the invite? I'll take it from here.`,
-            `${ctx.key}:manual-invite`,
+            ctx,
+            emit,
+            "manual-invite",
           );
           const scheduled = await emit("session.scheduled", {
             sessionId,

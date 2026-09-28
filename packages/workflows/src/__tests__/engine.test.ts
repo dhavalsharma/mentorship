@@ -914,4 +914,53 @@ describe("SagaEngine review findings (PR #13)", () => {
     expect(instances[0]!.timeoutAt).toBe(DUE);
     expect(w.calls.map((c) => c.type)).toEqual(["post_message"]);
   });
+
+  // Found by the dm-outage-no-thread journey: the booking step emits
+  // `session.scheduled` and then fails on the booked confirmation. The relay
+  // delivers that event while the instance still waits on the step's input,
+  // and matching only `awaitingEvent` dropped it — the saga later sat in
+  // `scheduling` until it paused `calendar_never_confirmed` on a booked session.
+  it("an event a failed step emitted wakes it: the step is finished, then the event is taken", async () => {
+    type S = { name: "proposing" } | { name: "scheduling" } | { name: "armed" };
+    const booking: Saga<S> = {
+      name: "Booking",
+      initial: () => ({ name: "proposing" }),
+      step(state, input, ctx) {
+        if (state.name === "proposing" && input.kind === "start") {
+          return {
+            next: state,
+            waitFor: { names: ["agreement.responded"], subjectRef: ctx.subjectRef },
+            timeoutAt: DUE,
+          };
+        }
+        if (state.name === "proposing") {
+          return {
+            next: { name: "scheduling" },
+            waitFor: { names: ["session.scheduled"], subjectRef: ctx.subjectRef },
+            timeoutAt: DUE,
+            effects: [
+              { type: "emit", name: "session.scheduled" },
+              { type: "post_message", body: "booked" },
+            ],
+          };
+        }
+        if (state.name === "scheduling" && input.kind === "event") {
+          return { next: { name: "armed" }, done: true };
+        }
+        return { next: state, done: true };
+      },
+    };
+    const w = recordingWorld(booking, {
+      fail: (effect, ctx) => effect.type === "post_message" && ctx.attempt === 0,
+    });
+    await w.engine.start({ sagaName: "Booking", orgId: "org_1", subjectRef: "pairing:p1" });
+    await expect(
+      w.engine.deliver(event({ id: "evt_resp", name: "agreement.responded" })),
+    ).rejects.toThrow("post_message outage");
+
+    await w.engine.deliver(event({ id: "evt_sched", name: "session.scheduled" }));
+    const instance = await w.only();
+    expect(instance.state).toEqual({ name: "armed" });
+    expect(w.calls.map((c) => c.type)).toEqual(["emit", "post_message"]);
+  });
 });

@@ -10,7 +10,7 @@ import {
 import type { Journey } from "../harness/journey.js";
 import { conflict } from "../journeys/conflict.js";
 import { counterThenCap } from "../journeys/counter-then-cap.js";
-import { dmOutage } from "../journeys/dm-outage.js";
+import { dmOutage, dmOutageNoThread } from "../journeys/dm-outage.js";
 import { documentEcho, documentPinned } from "../journeys/document-pinned.js";
 import { extractionTimeout } from "../journeys/extraction-timeout.js";
 import { happyPath } from "../journeys/happy-path.js";
@@ -51,6 +51,7 @@ const JOURNEYS: Journey[] = [
   safeguarding,
   safeguardingUnconfigured,
   dmOutage,
+  dmOutageNoThread,
   documentPinned,
   documentEcho,
 ];

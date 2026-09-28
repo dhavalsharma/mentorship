@@ -746,6 +746,91 @@ describe("capability and consent branches", () => {
     expect(escalations).toHaveLength(2); // one per participant
     expect(ctx.warnings.some((w) => /dm failed after retry/.test(w))).toBe(true);
   });
+
+  // PR #13 review: with no thread, the *shared* message is a DM to each
+  // party (`broadcast`), and that path used to call `dm.send` bare — a DM
+  // outage threw on every attempt until `tick()` parked the pair. It now
+  // follows the same retry-once-then-degrade policy as a private DM.
+  it("degrades a failing dm on a tenant with no thread the same way, rather than parking the pair", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1, omitSlots: ["conversation"] });
+    await bothAccept(ctx);
+    const workingDm = ctx.h.registry.get("dm")!;
+    ctx.h.registry.bind({
+      slot: "dm",
+      id: "down-dm",
+      probe: async () => ({}) as never,
+      send: async () => {
+        throw new Error("dm outage: 503");
+      },
+    } as never);
+
+    await advanceToNextTimer(ctx.h); // the reminder: every DM throws
+    expect(await stateOf(ctx.h)).toMatchObject({ name: "armed" });
+    const [first] = await ctx.h.engine.instances();
+    expect(first!.history.at(-1)).toMatchObject({ attempt: 1, error: "dm outage: 503" });
+
+    await advanceToNextTimer(ctx.h); // the retry: degrades, step completes
+    const [retried] = await ctx.h.engine.instances();
+    expect(retried!.history.at(-1)).not.toHaveProperty("error");
+    expect(retried!.history.at(-1)).toMatchObject({ from: "armed", to: "armed" });
+    expect(retried!.status).toBe("running");
+    expect(ctx.h.log.all().filter((e) => e.name === "session.reminded")).toHaveLength(1);
+
+    // Still live, not parked: once the outage ends the pair carries on.
+    ctx.h.registry.bind(workingDm);
+    await advanceToNextTimer(ctx.h);
+    expect(ctx.h.log.all().filter((e) => e.name === "session.held")).toHaveLength(1);
+    expect(await statusOf(ctx.h)).toBe("running");
+
+    const escalations = ctx.h.log
+      .all()
+      .filter((e) => e.name === "saga.escalated" && e.payload["reason"] === "dm_undeliverable");
+    // The shared reminder to each party, plus each party's private heads-up.
+    expect(escalations).toHaveLength(4);
+    expect(
+      escalations.filter((e) => String(e.payload["detail"]).startsWith("shared message")),
+    ).toHaveLength(2);
+    expect(ctx.warnings.some((w) => /shared message not sent/.test(w))).toBe(true);
+  });
+
+  it("delivers the shared message to the reachable party exactly once when only the other's dm fails", async () => {
+    const ctx = await setup({ transcriptAvailableAfter: 1, omitSlots: ["conversation"] });
+    await bothAccept(ctx);
+    // Like Slack's chat.postMessage: no server-side dedupe on the key, so
+    // only the engine can stop a retry re-sending to the one who got it.
+    const sent: { to: string; body: string }[] = [];
+    ctx.h.registry.bind({
+      slot: "dm",
+      id: "half-down-dm",
+      probe: async () => ({}) as never,
+      send: async (input: { memberRef: string; body: string }) => {
+        if (input.memberRef === "U-PRIYA") throw new Error("dm outage: 503");
+        sent.push({ to: input.memberRef, body: input.body });
+        return { messageRef: `m${sent.length}` };
+      },
+    } as never);
+
+    await advanceToNextTimer(ctx.h); // reminder: Arjun gets it, Priya throws
+    await advanceToNextTimer(ctx.h); // retry: Arjun skipped, Priya degrades
+    const [instance] = await ctx.h.engine.instances();
+    expect(instance!.status).toBe("running");
+    expect(instance!.history.at(-1)).not.toHaveProperty("error");
+    expect(ctx.h.log.all().filter((e) => e.name === "session.reminded")).toHaveLength(1);
+
+    const reminders = sent.filter((m) => m.body.startsWith("Reminder:"));
+    expect(reminders).toEqual([expect.objectContaining({ to: "U-ARJUN" })]);
+    const headsUps = sent.filter((m) => m.body.startsWith("Heads up:"));
+    expect(headsUps).toEqual([expect.objectContaining({ to: "U-ARJUN" })]);
+    const escalations = ctx.h.log
+      .all()
+      .filter((e) => e.name === "saga.escalated" && e.payload["reason"] === "dm_undeliverable");
+    const pairing = await ctx.h.world.pairContext(ctx.pairingId);
+    const priya = pairing.participants.find((p) => p.memberRef === "U-PRIYA")!;
+    expect(escalations.map((e) => e.payload["participantId"])).toEqual([
+      priya.participantId, // the shared reminder
+      priya.participantId, // her private heads-up
+    ]);
+  });
 });
 
 describe("out-of-band changes and terminal conditions", () => {

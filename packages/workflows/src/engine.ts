@@ -26,6 +26,25 @@ export interface EffectContext {
    * see the `dm` case in `createEffectRunner`.
    */
   attempt: number;
+  /**
+   * A sub-ledger for an effect that fans out to several recipients — today
+   * only the no-thread `broadcast`, one DM per participant. `mark` records a
+   * part as done in the step's completed-effect ledger, under
+   * `{key}:{part}`, so a step that fails *after* some parts landed is saved
+   * with them (the engine keeps the ledger as far as it got) and a retry
+   * skips them. This is what stops a retried broadcast re-sending to the
+   * recipient who already got it on an adapter with no server-side dedupe
+   * (Slack's `chat.postMessage`). Like the ledger itself it cannot cover a
+   * process killed mid-step — the per-recipient idempotency key is the guard
+   * there (invariant 6).
+   *
+   * Optional so a runner can be driven without an engine (tests); absent, a
+   * fan-out falls back to the adapter key alone.
+   */
+  parts?: {
+    done(part: string): boolean;
+    mark(part: string): void;
+  };
 }
 
 export type EffectRunner = (
@@ -535,7 +554,18 @@ export class SagaEngine {
       }
       let value: unknown;
       try {
-        value = await this.runEffect(effect, { instance: row, key, now, attempt });
+        value = await this.runEffect(effect, {
+          instance: row,
+          key,
+          now,
+          attempt,
+          parts: {
+            done: (part) => `${key}:${part}` in completed,
+            mark: (part) => {
+              completed[`${key}:${part}`] = true;
+            },
+          },
+        });
       } catch (error) {
         throw new StepFailedError(error, row, completed, ran);
       }

@@ -99,6 +99,11 @@ export interface StageOptions {
     document?: boolean;
     /** `down`: bound and probed, and every send throws. */
     dm?: "up" | "down";
+    /**
+     * Default true. False: no conversation slot at all, so every shared
+     * message — the proposal included — degrades to a DM to each party.
+     */
+    conversation?: boolean;
   };
   llm?: LlmProvider;
   onTrace?: (line: TraceLine) => void;
@@ -219,7 +224,7 @@ export async function stage(options: StageOptions = {}): Promise<Stage> {
     : null;
 
   const registry = new IntegrationRegistry();
-  registry.bind(instrument(conversation, crash));
+  if (options.adapters?.conversation !== false) registry.bind(instrument(conversation, crash));
   registry.bind(instrument(dm, crash));
   registry.bind(instrument(calendar, crash));
   if (document) registry.bind(instrument(document, crash));
