@@ -220,3 +220,28 @@ export function applyPairPreferences(
   }
   return next;
 }
+
+/**
+ * The payload of `pair.preferences_updated`: who in the pair changed what,
+ * and the cadence that resolved afterwards. Written by the pair-preferences
+ * store in `apps/api` (and testkit's `World`); read by the cooling saga and
+ * by the admin view of preference changes (ADR-0009 action 7).
+ *
+ * Here rather than beside either reader because the writer and the readers
+ * live in different packages, and a payload they disagree about is exactly
+ * the drift a shared schema exists to stop. The ids are required to be UUIDs
+ * because a reader joins them against `uuid` columns — a stray string would
+ * be a cast error in Postgres, not a missing row.
+ */
+export const PairPreferencesUpdatedPayloadSchema = z.object({
+  pairingId: z.string().uuid(),
+  participantId: z.string().uuid(),
+  /** The pair's resolved cadence *after* the change, not just the delta. */
+  sessionMinutes: z.number().int().min(15).max(240),
+  everyDays: z.number().int().min(0).max(365),
+  /** Exactly what the participant submitted — the keys they touched. */
+  changed: PairPreferencesSchema,
+});
+export type PairPreferencesUpdatedPayload = z.infer<
+  typeof PairPreferencesUpdatedPayloadSchema
+>;

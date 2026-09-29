@@ -5,6 +5,7 @@ import type { MagicLinkStore } from "@mentorship/auth";
 import {
   createServer,
   notImplementedMatchingReads,
+  notImplementedPairPreferenceReads,
   notImplementedReads,
   type AdminListQuery,
   type AuthDeps,
@@ -107,6 +108,7 @@ describe("admin read routes over a real socket", () => {
             ...admin,
             stuckSagas: notImplementedReads(),
             deadLetters: notImplementedReads(),
+            pairPreferenceChanges: notImplementedPairPreferenceReads(),
             matchingRoundCandidates:
               admin.matchingRoundCandidates ?? notImplementedMatchingReads(),
           }
@@ -320,6 +322,7 @@ describe("matching-round candidates route over a real socket", () => {
             nudges: notImplementedReads(),
             stuckSagas: notImplementedReads(),
             deadLetters: notImplementedReads(),
+            pairPreferenceChanges: notImplementedPairPreferenceReads(),
             matchingRoundCandidates,
           }
         : undefined,

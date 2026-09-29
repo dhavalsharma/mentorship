@@ -45,6 +45,12 @@ const STAFF_ROUTES: readonly StaffRoute[] = [
   { name: "list stuck sagas", method: "GET", path: `/orgs/${ORG}/stuck-sagas`, allows: BOTH },
   { name: "list dead letters", method: "GET", path: `/orgs/${ORG}/dead-letters`, allows: BOTH },
   {
+    name: "list pair preference changes",
+    method: "GET",
+    path: `/orgs/${ORG}/pair-preference-changes`,
+    allows: BOTH,
+  },
+  {
     name: "read matching-round candidates",
     method: "GET",
     path: `/orgs/${ORG}/matching-rounds/${RUN}/candidates`,
@@ -163,6 +169,10 @@ function backends(links: FakeMagicLinkStore) {
         nudges: list("nudges"),
         stuckSagas: list("stuckSagas"),
         deadLetters: list("deadLetters"),
+        pairPreferenceChanges: async () => {
+          touched.push("pairPreferenceChanges");
+          return { changes: [], skipped: 0 };
+        },
         matchingRoundCandidates: async () => {
           touched.push("matchingRoundCandidates");
           return { runId: RUN, candidates: [] };
@@ -239,8 +249,8 @@ describe("staff roles gate every admin route", () => {
     return { base, call, sessionAs, touched, staff, issued };
   }
 
-  it("covers ten routes — a new staff route must be added to STAFF_ROUTES", () => {
-    expect(STAFF_ROUTES.map((r) => `${r.method} ${r.path}`)).toHaveLength(10);
+  it("covers eleven routes — a new staff route must be added to STAFF_ROUTES", () => {
+    expect(STAFF_ROUTES.map((r) => `${r.method} ${r.path}`)).toHaveLength(11);
   });
 
   describe.each(STAFF_ROUTES)("$method $name", (route) => {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { EventLog } from "@mentorship/events";
-import { organizations, riskFindings, withTenant } from "@mentorship/db";
+import { events as eventsTable, organizations, riskFindings, withTenant } from "@mentorship/db";
 import { connectTestDb, DATABASE_URL, type TestDb } from "@mentorship/db/testing";
 import { runDigestSweep, summarizeDigest } from "../digest.js";
 
@@ -21,12 +21,14 @@ describe("summarizeDigest", () => {
         { createdAt: new Date(), state: "dropped" },
         { createdAt: new Date(), state: "planned" },
       ],
+      pairPreferenceChangeRows: [{ createdAt: new Date() }, { createdAt: new Date() }],
     });
 
     expect(summary.riskFindings.total).toBe(3);
     expect(summary.riskFindings.requiresHuman).toBe(1);
     expect(summary.riskFindings.bySeverity).toEqual({ high: 2, low: 1 });
     expect(summary.nudges).toEqual({ total: 4, sent: 2, dropped: 1, planned: 1 });
+    expect(summary.pairPreferenceChanges).toEqual({ total: 2 });
   });
 
   it("is honest about an empty window rather than omitting the fields", () => {
@@ -35,10 +37,12 @@ describe("summarizeDigest", () => {
       windowEnd: "2026-09-02T00:00:00.000Z",
       riskFindingRows: [],
       nudgeRows: [],
+      pairPreferenceChangeRows: [],
     });
 
     expect(summary.riskFindings).toEqual({ total: 0, requiresHuman: 0, bySeverity: {} });
     expect(summary.nudges).toEqual({ total: 0, sent: 0, dropped: 0, planned: 0 });
+    expect(summary.pairPreferenceChanges).toEqual({ total: 0 });
   });
 });
 
@@ -88,9 +92,29 @@ describe.skipIf(!DATABASE_URL)("runDigestSweep, on Postgres", () => {
         });
       });
 
+      // Two preference changes for org A — one inside the window, one a
+      // week old — and one for org B. Only the first counts.
+      const preferenceEvent = (orgId: string, occurredAt: Date) => ({
+        orgId,
+        name: "pair.preferences_updated",
+        subjectRef: `pairing:${pairingId}`,
+        occurredAt,
+        payload: {},
+      });
+      await withTenant(db, orgA, (tx) =>
+        tx.insert(eventsTable).values([
+          preferenceEvent(orgA, new Date()),
+          preferenceEvent(orgA, new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)),
+        ]),
+      );
+      await withTenant(db, orgB, (tx) =>
+        tx.insert(eventsTable).values(preferenceEvent(orgB, new Date())),
+      );
+
       const log = new EventLog();
       const summary = await runDigestSweep({ db, orgId: orgA, sink: log });
 
+      expect(summary.pairPreferenceChanges).toEqual({ total: 1 });
       expect(summary.riskFindings.total).toBe(1);
       expect(summary.riskFindings.bySeverity).toEqual({ high: 1 });
 

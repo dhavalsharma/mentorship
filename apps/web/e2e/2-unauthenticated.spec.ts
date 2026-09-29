@@ -5,6 +5,7 @@ const DASHBOARD_ROUTES = [
   "/dashboard",
   "/dashboard/risk-findings",
   "/dashboard/nudges",
+  "/dashboard/pair-preferences",
   "/dashboard/stuck-sagas",
   "/dashboard/dead-letters",
   "/dashboard/matching-rounds",

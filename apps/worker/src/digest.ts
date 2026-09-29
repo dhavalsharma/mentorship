@@ -1,6 +1,6 @@
 import { and, eq, gte } from "drizzle-orm";
 import type { EventSink } from "@mentorship/events";
-import { nudges, riskFindings, withTenant, type Db } from "@mentorship/db";
+import { events, nudges, riskFindings, withTenant, type Db } from "@mentorship/db";
 
 /**
  * The scheduled digest.
@@ -9,7 +9,9 @@ import { nudges, riskFindings, withTenant, type Db } from "@mentorship/db";
  * no Slack summary, nothing an admin actually reads on a cadence. Rather than
  * silently no-op (or worse, invent a fake email adapter), this computes a
  * real summary from the two read models that already exist —
- * `risk_findings` and `nudges` — over the trailing window, and persists it
+ * `risk_findings` and `nudges` — plus a count of pairs changing their own
+ * length or rhythm (`pair.preferences_updated`, ADR-0009), over the
+ * trailing window, and persists it
  * durably as a `digest.computed` domain event: the outbox row a future
  * notification channel can subscribe to, exactly the way every other
  * automated action in this system already leaves a before-and-after record.
@@ -32,6 +34,13 @@ export interface DigestSummary {
     dropped: number;
     planned: number;
   };
+  /**
+   * How many times a pair changed its own session length or rhythm in the
+   * window. A count only: who changed what, against which program default,
+   * is the admin view (`/dashboard/pair-preferences`) — the digest just says
+   * whether there is anything there to look at.
+   */
+  pairPreferenceChanges: { total: number };
 }
 
 export interface DigestRow {
@@ -58,6 +67,7 @@ export function summarizeDigest(input: {
   windowEnd: string;
   riskFindingRows: RiskFindingDigestRow[];
   nudgeRows: NudgeDigestRow[];
+  pairPreferenceChangeRows: DigestRow[];
 }): DigestSummary {
   const bySeverity: Record<string, number> = {};
   let requiresHuman = 0;
@@ -84,6 +94,7 @@ export function summarizeDigest(input: {
       bySeverity,
     },
     nudges: { total: input.nudgeRows.length, sent, dropped, planned },
+    pairPreferenceChanges: { total: input.pairPreferenceChangeRows.length },
   };
 }
 
@@ -98,7 +109,8 @@ export interface DigestSweepOptions {
 }
 
 /**
- * Queries `risk_findings` and `nudges` for the window, computes the summary,
+ * Queries `risk_findings`, `nudges` and the `pair.preferences_updated`
+ * events for the window, computes the summary,
  * and emits it as a `digest.computed` event scoped to `orgId` — the unit
  * `Scheduler` calls on an interval.
  */
@@ -108,7 +120,7 @@ export async function runDigestSweep(options: DigestSweepOptions): Promise<Diges
   const windowStartDate = new Date(now.getTime() - windowMs);
   const { role } = options;
 
-  const { riskFindingRows, nudgeRows } = await withTenant(
+  const { riskFindingRows, nudgeRows, preferenceRows } = await withTenant(
     options.db,
     options.orgId,
     async (tx) => {
@@ -126,7 +138,20 @@ export async function runDigestSweep(options: DigestSweepOptions): Promise<Diges
         .from(nudges)
         .where(and(eq(nudges.orgId, options.orgId), gte(nudges.createdAt, windowStartDate)));
 
-      return { riskFindingRows: riskRows, nudgeRows };
+      // `occurred_at`, not `created_at`: the window is about when the pair
+      // made the change, which is what the event records.
+      const preferenceRows = await tx
+        .select({ createdAt: events.occurredAt })
+        .from(events)
+        .where(
+          and(
+            eq(events.orgId, options.orgId),
+            eq(events.name, "pair.preferences_updated"),
+            gte(events.occurredAt, windowStartDate),
+          ),
+        );
+
+      return { riskFindingRows: riskRows, nudgeRows, preferenceRows };
     },
     role === undefined ? {} : { role },
   );
@@ -143,6 +168,7 @@ export async function runDigestSweep(options: DigestSweepOptions): Promise<Diges
       createdAt: r.createdAt,
       state: r.state as NudgeDigestRow["state"],
     })),
+    pairPreferenceChangeRows: preferenceRows,
   });
 
   await options.sink.emit({
