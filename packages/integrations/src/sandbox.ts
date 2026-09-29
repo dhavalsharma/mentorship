@@ -4,6 +4,7 @@ import type {
   CalendarEventRef,
   ConversationAdapter,
   DmAdapter,
+  EmailSender,
   Interval,
   ThreadRef,
 } from "@mentorship/core";
@@ -132,6 +133,23 @@ export function guardCalendar(
       return inner.createEvent(input);
     },
     getEvent: (eventId) => inner.getEvent(eventId),
+  };
+}
+
+/**
+ * Email is the loudest thing this repo can do to a stranger — a sign-in link
+ * in a real inbox — and it is not a slot, so `guardAdapter` never sees it.
+ * The same check, at the same boundary: the recipient is compared to the
+ * allowlist before the transport exists to be called, and anything else
+ * throws. Wrapped by `buildEmailSender` whenever `SANDBOX_ALLOWLIST` is set.
+ */
+export function guardEmailSender(inner: EmailSender, guard: SandboxGuard): EmailSender {
+  return {
+    id: inner.id,
+    async send(input) {
+      guard.check(`${inner.id}.send`, [input.to]);
+      return inner.send(input);
+    },
   };
 }
 

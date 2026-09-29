@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { SlackTransport } from "../slack/conversation.js";
 import type { GoogleTransport } from "../google/calendar.js";
 import type { GoogleDocsTransport } from "../google/document.js";
+import type { GmailTransport } from "../google/gmail.js";
 import type { GoogleSheetsTransport } from "../google/sheet.js";
 import {
   classifyGoogle,
@@ -146,6 +147,16 @@ export class VendorReplay {
         method: init.method,
         path,
         ...(init.query ? { query: init.query } : {}),
+        ...(init.body === undefined ? {} : { body: wire(init.body) }),
+      });
+  }
+
+  googleGmail(): GmailTransport {
+    return async (path, init) =>
+      this.answer(classifyGoogle({ method: init.method, path }), {
+        vendor: "google-gmail",
+        method: init.method,
+        path,
         ...(init.body === undefined ? {} : { body: wire(init.body) }),
       });
   }

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { SlackTransport } from "../slack/conversation.js";
 import type { GoogleTransport } from "../google/calendar.js";
 import type { GoogleDocsTransport } from "../google/document.js";
+import type { GmailTransport } from "../google/gmail.js";
 import type { GoogleSheetsTransport } from "../google/sheet.js";
 import {
   classifyGoogle,
@@ -160,6 +161,38 @@ export function recordingGoogleTransport(
       },
       () => inner(path, init),
     );
+}
+
+/**
+ * Gmail's request body is one field, `raw`: the whole message, base64url. It
+ * carries the recipient, the subject and — for a sign-in mail — the link, in a
+ * form `redact` cannot see into. So the field is replaced with a fixed
+ * placeholder *before* redaction, and a captured fixture keeps the shape
+ * ("one raw field") and nothing else. Never record it, however harmless a
+ * test message looks.
+ */
+export const GMAIL_RAW_PLACEHOLDER = "BASE64URL_RFC5322_MESSAGE";
+
+export function recordingGoogleGmailTransport(
+  inner: GmailTransport,
+  options: RecordingOptions,
+): GmailTransport {
+  return (path, init) => {
+    const body =
+      init.body !== null && typeof init.body === "object" && "raw" in init.body
+        ? { ...(init.body as Record<string, unknown>), raw: GMAIL_RAW_PLACEHOLDER }
+        : init.body;
+    return recorded(
+      options,
+      classifyGoogle({ method: init.method, path }),
+      {
+        method: init.method,
+        path,
+        ...(body === undefined ? {} : { body: wire(body) }),
+      },
+      () => inner(path, init),
+    );
+  };
 }
 
 function recordingTwoApi<A extends string>(

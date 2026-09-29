@@ -20,6 +20,7 @@ export const VENDORS = [
   "google-drive",
   "google-docs",
   "google-sheets",
+  "google-gmail",
 ] as const;
 export type Vendor = (typeof VENDORS)[number];
 
@@ -115,6 +116,8 @@ const GOOGLE_ROUTES: Route[] = [
   { vendor: "google-calendar", method: "POST", template: "/freeBusy", call: "freebusy.query" },
   { vendor: "google-calendar", method: "POST", template: "/calendars/{calendarId}/events", call: "events.insert" },
   { vendor: "google-calendar", method: "GET", template: "/calendars/{calendarId}/events/{eventId}", call: "events.get" },
+  // Gmail — send only (`gmail.send` scope); no api key, like the Calendar transport.
+  { vendor: "google-gmail", method: "POST", template: "/users/me/messages/send", call: "messages.send" },
   // Drive — shared by the document and sheet adapters.
   {
     vendor: "google-drive",

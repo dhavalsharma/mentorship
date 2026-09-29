@@ -1,0 +1,18 @@
+{
+  "vendor": "google-gmail",
+  "call": "messages.send",
+  "variant": "error-insufficient-scope",
+  "capturedOn": "2026-09-29",
+  "source": "hand-written",
+  "notes": "Hand-written from Google's documented 403 shape for a token that lacks the gmail.send scope. Never observed live. The most likely first failure of a real setup: a refresh token minted for the Calendar/Drive scopes only.",
+  "request": {
+    "method": "POST",
+    "path": "/users/me/messages/send",
+    "body": {
+      "raw": "BASE64URL_RFC5322_MESSAGE"
+    }
+  },
+  "error": {
+    "message": "google gmail /users/me/messages/send failed: {\"error\":{\"code\":403,\"message\":\"Request had insufficient authentication scopes.\",\"status\":\"PERMISSION_DENIED\"}}"
+  }
+}
