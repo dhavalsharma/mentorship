@@ -89,6 +89,14 @@ const STAFF_ROUTES: readonly StaffRoute[] = [
     body: { folder: "FOLDER_1" },
     allows: ADMIN_ONLY,
   },
+  { name: "list staff", method: "GET", path: `/orgs/${ORG}/staff`, allows: ADMIN_ONLY },
+  {
+    name: "grant or revoke a staff role",
+    method: "PUT",
+    path: `/orgs/${ORG}/staff`,
+    body: { email: "lead@example.com", role: "program_lead" },
+    allows: ADMIN_ONLY,
+  },
 ];
 
 /** Links and sessions in memory; users by email. */
@@ -199,6 +207,21 @@ function backends(links: FakeMagicLinkStore) {
         },
       },
       enrollment,
+      staffAdmin: {
+        list: async () => {
+          touched.push("staffAdmin.list");
+          return [];
+        },
+        setRole: async (_orgId: string, change: { email: string; staffRole: StaffRole | null }) => {
+          touched.push("staffAdmin.setRole");
+          return {
+            ok: true as const,
+            member: { userId: "u", email: change.email, displayName: "u", role: change.staffRole },
+            changed: true,
+            createdUser: false,
+          };
+        },
+      },
     },
   };
 }
@@ -249,8 +272,8 @@ describe("staff roles gate every admin route", () => {
     return { base, call, sessionAs, touched, staff, issued };
   }
 
-  it("covers eleven routes — a new staff route must be added to STAFF_ROUTES", () => {
-    expect(STAFF_ROUTES.map((r) => `${r.method} ${r.path}`)).toHaveLength(11);
+  it("covers thirteen routes — a new staff route must be added to STAFF_ROUTES", () => {
+    expect(STAFF_ROUTES.map((r) => `${r.method} ${r.path}`)).toHaveLength(13);
   });
 
   describe.each(STAFF_ROUTES)("$method $name", (route) => {

@@ -39,6 +39,7 @@ import {
 import { planInvite, type InvitePlan } from "@mentorship/enrollment";
 import { InviteRequestSchema, defaultDisplayName } from "./invites.js";
 import type { PairPreferenceChanges } from "./pair-preference-changes.js";
+import { StaffRoleChangeRequestSchema, requestedStaffRole } from "./staff-requests.js";
 
 /**
  * Deliberately not a framework. The one thing that matters for this route is
@@ -202,6 +203,37 @@ export interface EnrollmentService {
   acceptPendingInvites(orgId: string, userId: string): Promise<{ accepted: string[] }>;
 }
 
+/** One row of `GET /orgs/:orgId/staff`, and the `member` of a PUT's response. */
+export interface StaffMemberView {
+  userId: string;
+  email: string;
+  displayName: string;
+  /** `null` only in a PUT's response, after "Remove access" — the list never holds one. */
+  role: StaffRole | null;
+}
+
+export type StaffRoleChangeOutcome =
+  | { ok: true; member: StaffMemberView; changed: boolean; createdUser: boolean }
+  /** The change would leave the org with no admin. Nothing was written. */
+  | { ok: false; reason: "last_admin" }
+  /** Revoking an email that has no user in this org. Nothing was written. */
+  | { ok: false; reason: "unknown_user" };
+
+/**
+ * Staff management from the dashboard (ADR-0010's "to revisit"). Postgres
+ * implements `setRole` with the same `grantStaffRole` the CLI runs, with the
+ * last-admin guard on and the acting admin as the audit actor
+ * (`staff-grants.ts`); the route never sees a transaction.
+ */
+export interface StaffAdminService {
+  list(orgId: string): Promise<StaffMemberView[]>;
+  setRole(
+    orgId: string,
+    change: { email: string; staffRole: StaffRole | null; displayName?: string },
+    actorUserId: string,
+  ): Promise<StaffRoleChangeOutcome>;
+}
+
 export interface ApiServerDeps {
   slackSigningSecret: string;
   identity: ChatIdentityResolver;
@@ -264,6 +296,12 @@ export interface ApiServerDeps {
    * `/auth/verify` signs people in without touching any invite.
    */
   enrollment?: EnrollmentService;
+  /**
+   * Listing, granting and revoking staff roles. Absent — the in-memory
+   * `main.ts`, which has no `users` table to write — both routes 501, after
+   * auth, like the other Postgres-only routes.
+   */
+  staffAdmin?: StaffAdminService;
 }
 
 const SESSION_COOKIE = "mentorship_session";
@@ -394,6 +432,14 @@ async function route(
     const orgId = matchInvitesRoute(req.url);
     if (orgId !== null) {
       await handleInvite(req, res, deps, orgId);
+      return;
+    }
+  }
+
+  if ((req.method === "GET" || req.method === "PUT") && req.url) {
+    const orgId = matchStaffRoute(req.url);
+    if (orgId !== null) {
+      await handleStaff(req, res, deps, orgId, req.method === "PUT");
       return;
     }
   }
@@ -755,6 +801,120 @@ async function handleInvite(
     alreadyInvited: outcome.alreadyInvited,
     state: outcome.state,
     signInLinkIssued,
+  });
+}
+
+/** `/orgs/:orgId/staff`. */
+function matchStaffRoute(url: string): string | null {
+  const parsed = new URL(url, "http://internal");
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length !== 3) return null;
+  const [orgs, orgId, resource] = segments as [string, string, string];
+  if (orgs !== "orgs" || resource !== "staff") return null;
+  return orgId;
+}
+
+/**
+ * `GET` lists everyone with a staff role; `PUT` grants, changes or revokes
+ * one person's (`{ email, role: "admin" | "program_lead" | "none",
+ * displayName? }`). Both admin-only (`staff.roles`): a role is what every
+ * other staff decision is made on, so changing it is the most privileged
+ * write this server has.
+ *
+ * 200 with the resulting member and `changed` (false for a no-op, which
+ * writes no audit row), 400 for a malformed body, 404 for revoking an email
+ * with no user here, 409 for a change that would leave no admin. The change
+ * is live on the target's very next request: `authenticateStaff` reads the
+ * role from the directory every time and nothing caches it.
+ */
+async function handleStaff(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ApiServerDeps,
+  orgId: string,
+  isWrite: boolean,
+): Promise<void> {
+  if (!UUID_RE.test(orgId)) {
+    writeJson(res, 400, { error: "orgId must be a UUID" });
+    return;
+  }
+
+  const staff = await authenticateStaff(req, res, deps, orgId);
+  if (!staff) return; // response already written (401 or 403)
+  if (!authorizeStaff(res, staff, { type: "staff.roles", orgId: asOrgId(orgId) })) {
+    return;
+  }
+
+  const service = deps.staffAdmin;
+  if (!service) {
+    writeJson(res, 501, { error: "staff management is not configured on this server" });
+    return;
+  }
+
+  if (!isWrite) {
+    writeJson(res, 200, await service.list(orgId));
+    return;
+  }
+
+  let rawBody: string;
+  try {
+    rawBody = await readBody(req, MAX_BODY_BYTES);
+  } catch {
+    res.writeHead(413, { "content-type": "text/plain" });
+    res.end("payload too large");
+    return;
+  }
+
+  let json: unknown;
+  try {
+    json = JSON.parse(rawBody);
+  } catch {
+    writeJson(res, 400, { error: "invalid JSON body" });
+    return;
+  }
+
+  const body = StaffRoleChangeRequestSchema.safeParse(json);
+  if (!body.success) {
+    const issues = body.error.issues.map((issue) => ({
+      field: String(issue.path[0] ?? ""),
+      message: issue.message,
+    }));
+    writeJson(res, 400, {
+      error: issues.map((i) => (i.field ? `${i.field}: ${i.message}` : i.message)).join("; "),
+      issues,
+    });
+    return;
+  }
+
+  const outcome = await service.setRole(
+    orgId,
+    {
+      email: body.data.email,
+      staffRole: requestedStaffRole(body.data.role),
+      ...(body.data.displayName !== undefined ? { displayName: body.data.displayName } : {}),
+    },
+    staff.userId,
+  );
+  if (!outcome.ok) {
+    if (outcome.reason === "last_admin") {
+      writeJson(res, 409, {
+        error:
+          "This would leave the organisation with no admin. Make someone else an admin first.",
+        reason: "last_admin",
+      });
+    } else {
+      writeJson(res, 404, {
+        error: "No one with that email has an account in this organisation.",
+        reason: "unknown_user",
+      });
+    }
+    return;
+  }
+
+  writeJson(res, 200, {
+    member: outcome.member,
+    changed: outcome.changed,
+    createdUser: outcome.createdUser,
   });
 }
 

@@ -28,6 +28,7 @@ import {
   PostgresSheetSettingsStore,
 } from "./postgres-settings.js";
 import type { ApiServerDeps } from "./server.js";
+import { PostgresStaffAdminService } from "./staff-grants.js";
 
 /**
  * The Postgres-backed `ApiServerDeps`, as one function, so the thing the
@@ -107,6 +108,7 @@ export function buildPostgresApiDeps(options: PostgresApiDepsOptions): ApiServer
       ...scoped,
       ...(options.now ? { now: options.now } : {}),
     }),
+    staffAdmin: new PostgresStaffAdminService(db, scoped),
     auth: {
       store: new PostgresMagicLinkStore(db, scoped),
       staff: new PostgresStaffDirectory(db, scoped),

@@ -73,9 +73,21 @@ The load-bearing wall. Everything after this assumes it.
       new admin-only resource. Granted out of band with `pnpm staff:grant`,
       audited as `staff.role_changed`; `apps/web` shows `/no-access` to a
       signed-in non-staff user.
-- [ ] Grant and revoke staff roles from the dashboard, by an existing admin
-      (admin-only route, same audit row). Today it is `pnpm staff:grant`
-      only.
+- [x] Grant and revoke staff roles from the dashboard, by an existing admin.
+      `GET`/`PUT /orgs/:orgId/staff` on `apps/api` (`authenticateStaff`, then
+      `authorize()` on a new admin-only `staff.roles` resource; strict Zod
+      body `{ email, role: admin | program_lead | none, displayName? }`),
+      through the same `grantStaffRole` the CLI runs — so the same
+      find-or-create, the same no-op-writes-nothing, and the same
+      `staff.role_changed` audit row, now naming the acting admin
+      (`actor_type: "admin"`, `actor_ref` their user id). An admin cannot
+      remove the org's last admin (409); the guard locks every admin row of
+      the org `FOR UPDATE` in id order inside the grant's transaction, so two
+      admins demoting each other at once leave one, proven on Postgres.
+      `apps/web`'s `/dashboard/settings/staff` lists staff and grants or
+      removes access. `pnpm staff:grant` stays the bootstrap for a tenant's
+      first admin, and is deliberately not guarded — an operator may still
+      revoke a sole admin.
 - [ ] Invite follow-ups, none needing a schema change: actually sending the
       link by email (it is printed today, like every magic link), a
       `GET` of cohorts/pending invites so the form need not take a cohort id,

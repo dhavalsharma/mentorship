@@ -229,6 +229,35 @@ describe("integration.settings is admin-only", () => {
   });
 });
 
+describe("staff.roles is admin-only", () => {
+  const roles = (orgId: OrgId = ORG_A): Resource => ({ type: "staff.roles", orgId });
+
+  it("allows an admin in their own org", () => {
+    const decision = authorize(admin(), roles());
+    expect(decision.allowed).toBe(true);
+    expect(decision.reason).toMatch(/grant and revoke/);
+  });
+
+  it("denies a program lead — being able to grant a role is being able to take any", () => {
+    const decision = authorize(programLead(), roles());
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toMatch(/only an admin/);
+  });
+
+  it("denies pair members, even of every pairing, and unnamed-role participants", () => {
+    expect(authorize(pairMember("mentor", [PAIRING_1]), roles()).allowed).toBe(false);
+    expect(authorize(pairMember("mentee", [PAIRING_1]), roles()).allowed).toBe(false);
+    expect(
+      authorize(pairMember("mentor", [PAIRING_1]), { ...roles(), pairingId: PAIRING_1 }).allowed,
+    ).toBe(false);
+    expect(authorize(outsider(), roles()).allowed).toBe(false);
+  });
+
+  it("denies an admin of another org", () => {
+    expect(authorize(admin(ORG_B), roles(ORG_A)).allowed).toBe(false);
+  });
+});
+
 describe("StaffRoleSchema", () => {
   it("is exactly the two org-chart roles", () => {
     expect(StaffRoleSchema.options).toEqual(["admin", "program_lead"]);

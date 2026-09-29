@@ -11,6 +11,11 @@ import { GRANT_STAFF_USAGE, grantStaffRole, parseGrantStaffArgs } from "./staff-
  *   DATABASE_URL=… ORG_ID=… pnpm staff:grant --email ada@example.com --role admin
  *   DATABASE_URL=… ORG_ID=… pnpm staff:grant --email ada@example.com --role none
  *
+ * This is the bootstrap: once an org has an admin, they grant and revoke
+ * everyone else from `/dashboard/settings/staff` (`PUT /orgs/:orgId/staff`,
+ * the same `grantStaffRole` below). Unlike the route, this command may remove
+ * an org's last admin — it is the operator, the authority that guard defers to.
+ *
  * Creates the user if they do not exist (so the first admin can sign in),
  * never overwrites an existing name or zone, and writes `staff.role_changed`
  * to `audit_log` in the same transaction. `TENANT_ROLE` is honoured like

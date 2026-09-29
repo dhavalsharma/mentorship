@@ -75,6 +75,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
           >
             Report spreadsheet
           </Link>
+          <Link href="/dashboard/settings/staff" className="text-sm hover:underline">
+            Staff
+          </Link>
         </nav>
       </header>
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">{children}</main>

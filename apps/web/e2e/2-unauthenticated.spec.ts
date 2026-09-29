@@ -11,6 +11,7 @@ const DASHBOARD_ROUTES = [
   "/dashboard/matching-rounds",
   "/dashboard/settings/document",
   "/dashboard/settings/sheet",
+  "/dashboard/settings/staff",
   "/dashboard/invites",
 ];
 
