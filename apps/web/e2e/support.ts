@@ -36,6 +36,8 @@ export interface Seed {
   nudgeBody: string;
   stuckSubjectRef: string;
   deadLetterError: string;
+  /** The display name of the participant who changed a seeded pair's cadence. */
+  preferenceChangedBy: string;
   matchingRunId: string;
   matchingMenteeId: string;
   matchingWinnerMentorId: string;

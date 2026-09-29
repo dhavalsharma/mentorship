@@ -154,8 +154,14 @@ The load-bearing wall. Everything after this assumes it.
       event in one transaction; a cooling saga re-times its next proposal and
       tells the thread. Roster import gained a `duration` column. Tested
       in-memory and on Postgres; **not yet run against a live workspace**.
-- [ ] Surface pair preference changes to admins — nothing reads
-      `pair.preferences_updated` outside the saga yet (ADR-0009 action 7).
+- [x] Surface pair preference changes to admins (ADR-0009 action 7) —
+      `listPairPreferenceChanges` (`apps/api/src/postgres-reads.ts`) reads
+      `pair.preferences_updated` off the event log inside `withTenant`, with
+      the pair's names, who changed what, and the program + cohort default
+      beside the result; `GET /orgs/:orgId/pair-preference-changes` (staff,
+      `pairing.activity`) and `/dashboard/pair-preferences`, which marks a
+      pair off the program default. The digest counts changes in its window.
+      Read-only — no "reset to default" action.
 - [x] Google Calendar adapter against a live tenant — `events.insert` with an
       idempotency-keyed id, a real (unmailed) invite, the reminder's
       calendar-verify path. Sandbox calendar, under `SandboxGuard`.

@@ -10,6 +10,7 @@ import { buildPostgresApiDeps } from "./postgres-deps.js";
 import {
   createServer,
   notImplementedMatchingReads,
+  notImplementedPairPreferenceReads,
   notImplementedReads,
   type ApiServerDeps,
 } from "./server.js";
@@ -265,6 +266,7 @@ async function memoryDeps(): Promise<ApiServerDeps> {
     admin: {
       riskFindings: notImplementedReads(),
       nudges: notImplementedReads(),
+      pairPreferenceChanges: notImplementedPairPreferenceReads(),
       stuckSagas: notImplementedReads(),
       deadLetters: notImplementedReads(),
       matchingRoundCandidates: notImplementedMatchingReads(),

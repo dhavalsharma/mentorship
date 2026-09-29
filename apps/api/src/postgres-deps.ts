@@ -18,6 +18,7 @@ import {
 import {
   getMatchingRoundCandidates,
   listDeadLetters,
+  listPairPreferenceChanges,
   listOpenRiskFindings,
   listRecentNudges,
   listStuckSagas,
@@ -92,6 +93,8 @@ export function buildPostgresApiDeps(options: PostgresApiDepsOptions): ApiServer
     admin: {
       riskFindings: (org, limit) => listOpenRiskFindings(db, org, limit, role),
       nudges: (org, limit) => listRecentNudges(db, org, limit, role),
+      pairPreferenceChanges: (org, limit) =>
+        listPairPreferenceChanges(db, org, limit, role),
       stuckSagas: (org, limit, olderThanDays) =>
         listStuckSagas(db, org, limit, olderThanDays, role),
       deadLetters: (org, limit) => listDeadLetters(db, org, limit, role),

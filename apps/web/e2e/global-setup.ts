@@ -42,6 +42,7 @@ const TENANT_TABLES = [
   "events",
   "ai_runs",
   "integration_bindings",
+  "pairings",
   "audit_log",
   "identity_links",
   "participants",
@@ -51,6 +52,15 @@ const TENANT_TABLES = [
   "auth_sessions",
   "users",
 ] as const;
+
+/**
+ * The smallest policy `StoredProgramPolicySchema` accepts — `consent` has no
+ * default, everything else does — so the pair-preferences page can resolve
+ * the program's default cadence (45 min, every 2 weeks) from it.
+ */
+const PREFERENCES_PROGRAM_POLICY = {
+  consent: { aiProcessing: "optional", recording: "off" },
+};
 
 export default async function globalSetup(): Promise<() => Promise<void>> {
   await mkdir(ARTIFACTS, { recursive: true });
@@ -184,6 +194,42 @@ async function seedDatabase(): Promise<Seed> {
   await sql`insert into events (org_id, name, subject_ref, payload, attempts, last_error, dead_lettered_at)
     values (${orgA}, 'pair.activated', ${`pairing:e2e-${tag}`}, ${sql.json({})}, 8, ${deadLetterError}, now())`;
 
+  // One pair that changed its own length (ADR-0009): a real cohort under a
+  // program with a complete policy, so the page can show the program's
+  // default (45 min, every 2 weeks) beside the pair's 30 minutes. The event
+  // is written directly, in the shape `PostgresPairPreferencesStore` writes,
+  // and marked relayed so no worker sharing this database picks it up.
+  const preferenceChangedBy = `E2E Mentee ${tag}`;
+  const [prefProgram] = await sql<{ id: string }[]>`
+    insert into programs (org_id, name, policy)
+    values (${orgA}, 'E2E preferences program', ${sql.json(PREFERENCES_PROGRAM_POLICY)}) returning id`;
+  const [prefCohort] = await sql<{ id: string }[]>`
+    insert into cohorts (org_id, program_id, name, starts_at, ends_at)
+    values (${orgA}, ${prefProgram!.id}, 'E2E cohort', now(), now() + interval '90 days') returning id`;
+  const prefPeople = await sql<{ id: string }[]>`
+    insert into users (org_id, email, display_name) values
+      (${orgA}, ${`e2e-mentor-${tag}@example.test`}, ${`E2E Mentor ${tag}`}),
+      (${orgA}, ${`e2e-mentee-${tag}@example.test`}, ${preferenceChangedBy})
+    returning id`;
+  const prefParticipants = await sql<{ id: string }[]>`
+    insert into participants (org_id, cohort_id, user_id, role) values
+      (${orgA}, ${prefCohort!.id}, ${prefPeople[0]!.id}, 'mentor'),
+      (${orgA}, ${prefCohort!.id}, ${prefPeople[1]!.id}, 'mentee')
+    returning id`;
+  const [prefPairing] = await sql<{ id: string }[]>`
+    insert into pairings (org_id, cohort_id, mentor_participant_id, mentee_participant_id, state, origin, pair_key, cadence_override)
+    values (${orgA}, ${prefCohort!.id}, ${prefParticipants[0]!.id}, ${prefParticipants[1]!.id},
+            'active', 'imported', ${`e2e-pair-${tag}`}, ${sql.json({ sessionMinutes: 30 })})
+    returning id`;
+  await sql`insert into events (org_id, name, subject_ref, payload, relayed_at)
+    values (${orgA}, 'pair.preferences_updated', ${`pairing:${prefPairing!.id}`}, ${sql.json({
+      pairingId: prefPairing!.id,
+      participantId: prefParticipants[1]!.id,
+      sessionMinutes: 30,
+      everyDays: 14,
+      changed: { sessionMinutes: 30 },
+    })}, now())`;
+
   const matchingMenteeId = `mentee-e2e-${tag}`;
   const matchingWinnerMentorId = `mentor-win-${tag}`;
   const matchingLoserMentorId = `mentor-lose-${tag}`;
@@ -245,6 +291,7 @@ async function seedDatabase(): Promise<Seed> {
     nudgeBody,
     stuckSubjectRef,
     deadLetterError,
+    preferenceChangedBy,
     matchingRunId: run!.id,
     matchingMenteeId,
     matchingWinnerMentorId,

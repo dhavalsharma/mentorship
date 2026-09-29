@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   daysSince,
+  describeChanged,
+  describeRhythm,
+  describeSessionCadence,
   formatTimestamp,
   nudgeStateTone,
   requiresHumanLabel,
@@ -73,5 +76,26 @@ describe("daysSince", () => {
 
   it("renders 'N days' for more than a day ago", () => {
     expect(daysSince("2026-09-15T12:00:00.000Z", now)).toBe("7 days");
+  });
+});
+
+describe("pair-preference formatting", () => {
+  it("describes a rhythm in weeks when it is whole weeks, else days", () => {
+    expect(describeRhythm(7)).toBe("every week");
+    expect(describeRhythm(14)).toBe("every 2 weeks");
+    expect(describeRhythm(10)).toBe("every 10 days");
+    expect(describeRhythm(1)).toBe("every day");
+    expect(describeRhythm(0)).toBe("ad hoc");
+  });
+
+  it("describes a cadence and only the halves a participant changed", () => {
+    expect(describeSessionCadence({ sessionMinutes: 30, everyDays: 28 })).toBe(
+      "30 min, every 4 weeks",
+    );
+    expect(describeChanged({ sessionMinutes: 30 })).toBe("length → 30 min");
+    expect(describeChanged({ sessionMinutes: 15, everyDays: 7 })).toBe(
+      "length → 15 min; rhythm → every week",
+    );
+    expect(describeChanged({})).toBe("—");
   });
 });

@@ -1,11 +1,28 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
-import { aiRuns, nudges, riskFindings, withTenant, type Db } from "@mentorship/db";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import {
+  aiRuns,
+  cohorts,
+  events,
+  nudges,
+  pairings,
+  participants,
+  programs,
+  riskFindings,
+  users,
+  withTenant,
+  type Db,
+} from "@mentorship/db";
 import {
   listDeadLetteredEvents,
   listStuckSagaInstances,
 } from "@mentorship/workflows/postgres";
 import { MatchingOutputSchema } from "@mentorship/primitive-matching";
 import type { CandidateRecord } from "@mentorship/primitive-matching";
+import {
+  parsePreferenceEvents,
+  shapePairPreferenceChanges,
+  type PairPreferenceChanges,
+} from "./pair-preference-changes.js";
 
 /**
  * Read-side queries for the admin GET routes. Deliberately separate from
@@ -66,6 +83,93 @@ export async function listRecentNudges(
         .where(eq(nudges.orgId, orgId))
         .orderBy(desc(nudges.createdAt))
         .limit(limit),
+    role === undefined ? {} : { role },
+  );
+}
+
+/**
+ * Recent `pair.preferences_updated` events for an org, newest first — the
+ * admin view ADR-0009 action 7 asks for. Read straight off the event log
+ * rather than a projection: the log already holds every change, immutable
+ * and ordered, and nothing else needs a table of them yet.
+ *
+ * `limit` bounds the events read, so a page with a malformed row among them
+ * shows `limit - skipped` changes rather than reaching further back — the
+ * `skipped` count says so. Names and the program default are resolved in
+ * three batched lookups, never one per row, all inside the same
+ * `withTenant` transaction (invariant 3).
+ */
+export async function listPairPreferenceChanges(
+  db: Db,
+  orgId: string,
+  limit: number,
+  role?: string,
+): Promise<PairPreferenceChanges> {
+  return withTenant(
+    db,
+    orgId,
+    async (tx) => {
+      const rows = await tx
+        .select({ id: events.id, occurredAt: events.occurredAt, payload: events.payload })
+        .from(events)
+        .where(and(eq(events.orgId, orgId), eq(events.name, "pair.preferences_updated")))
+        .orderBy(desc(events.occurredAt), desc(events.id))
+        .limit(limit);
+      const { valid, skipped } = parsePreferenceEvents(rows);
+      if (valid.length === 0) return { changes: [], skipped };
+
+      const pairingIds = [...new Set(valid.map((e) => e.payload.pairingId))];
+      const pairingRows = await tx
+        .select({
+          id: pairings.id,
+          cohortId: pairings.cohortId,
+          mentorParticipantId: pairings.mentorParticipantId,
+          menteeParticipantId: pairings.menteeParticipantId,
+        })
+        .from(pairings)
+        .where(and(eq(pairings.orgId, orgId), inArray(pairings.id, pairingIds)));
+
+      const participantIds = [
+        ...new Set([
+          ...valid.map((e) => e.payload.participantId),
+          ...pairingRows.flatMap((p) => [p.mentorParticipantId, p.menteeParticipantId]),
+        ]),
+      ];
+      const nameRows = await tx
+        .select({ participantId: participants.id, displayName: users.displayName })
+        .from(participants)
+        .innerJoin(
+          users,
+          and(eq(users.orgId, participants.orgId), eq(users.id, participants.userId)),
+        )
+        .where(and(eq(participants.orgId, orgId), inArray(participants.id, participantIds)));
+
+      const cohortIds = [...new Set(pairingRows.map((p) => p.cohortId))];
+      const cohortRows =
+        cohortIds.length === 0
+          ? []
+          : await tx
+              .select({
+                id: cohorts.id,
+                cadenceOverride: cohorts.cadenceOverride,
+                policy: programs.policy,
+              })
+              .from(cohorts)
+              .innerJoin(
+                programs,
+                and(eq(programs.orgId, cohorts.orgId), eq(programs.id, cohorts.programId)),
+              )
+              .where(and(eq(cohorts.orgId, orgId), inArray(cohorts.id, cohortIds)));
+
+      const changes = shapePairPreferenceChanges(valid, {
+        pairings: new Map(pairingRows.map((p) => [p.id, p])),
+        names: new Map(nameRows.map((n) => [n.participantId, n.displayName])),
+        cohorts: new Map(
+          cohortRows.map((c) => [c.id, { policy: c.policy, cadenceOverride: c.cadenceOverride }]),
+        ),
+      });
+      return { changes, skipped };
+    },
     role === undefined ? {} : { role },
   );
 }

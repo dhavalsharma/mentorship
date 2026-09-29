@@ -55,3 +55,35 @@ export function daysSince(value: string, now: () => Date = () => new Date()): st
   if (days === 1) return "1 day";
   return `${days} days`;
 }
+
+/**
+ * "every 2 weeks", "every 10 days", "ad hoc" — a pair's rhythm in the same
+ * words the Slack modal offers it (core's `describeEveryDays`; restated here
+ * because this app reads JSON, never `@mentorship/core`).
+ */
+export function describeRhythm(everyDays: number): string {
+  if (everyDays <= 0) return "ad hoc";
+  if (everyDays === 1) return "every day";
+  if (everyDays === 7) return "every week";
+  if (everyDays % 7 === 0) return `every ${everyDays / 7} weeks`;
+  return `every ${everyDays} days`;
+}
+
+/** "30 min, every 2 weeks". */
+export function describeSessionCadence(cadence: {
+  sessionMinutes: number;
+  everyDays: number;
+}): string {
+  return `${cadence.sessionMinutes} min, ${describeRhythm(cadence.everyDays)}`;
+}
+
+/** Only the halves the participant touched: "length → 30 min". */
+export function describeChanged(changed: {
+  sessionMinutes?: number;
+  everyDays?: number;
+}): string {
+  const parts: string[] = [];
+  if (changed.sessionMinutes !== undefined) parts.push(`length → ${changed.sessionMinutes} min`);
+  if (changed.everyDays !== undefined) parts.push(`rhythm → ${describeRhythm(changed.everyDays)}`);
+  return parts.length > 0 ? parts.join("; ") : "—";
+}

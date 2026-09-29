@@ -10,6 +10,7 @@ import {
   type AgreementResponse,
   type Cadence,
   type PairPreferences,
+  type PairPreferencesUpdatedPayload,
   type ProposalOption,
   type ResponseKind,
 } from "@mentorship/core";
@@ -630,7 +631,7 @@ export class PostgresPairPreferencesStore implements PairPreferencesStore {
             sessionMinutes: cadence.sessionMinutes,
             everyDays: cadence.everyDays,
             changed: input.preferences,
-          },
+          } satisfies PairPreferencesUpdatedPayload,
         });
         return {
           ok: true,

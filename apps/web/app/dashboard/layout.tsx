@@ -48,6 +48,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
           <Link href="/dashboard/nudges" className="text-sm hover:underline">
             Nudges
           </Link>
+          <Link href="/dashboard/pair-preferences" className="text-sm hover:underline">
+            Pair preferences
+          </Link>
           <Link href="/dashboard/stuck-sagas" className="text-sm hover:underline">
             Stuck sagas
           </Link>

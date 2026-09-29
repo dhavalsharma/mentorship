@@ -74,6 +74,35 @@ export interface DeadLetteredEvent {
   deadLetteredAt: string | null;
 }
 
+/**
+ * The body of `GET /orgs/:orgId/pair-preference-changes` — one row per
+ * `pair.preferences_updated` event (ADR-0009 action 7), shaped by
+ * `apps/api/src/pair-preference-changes.ts`. `skipped` counts events whose
+ * payload did not validate, so the page can say the list is incomplete.
+ */
+export interface PairPreferenceCadence {
+  sessionMinutes: number;
+  everyDays: number;
+}
+
+export interface PairPreferenceChange {
+  eventId: string;
+  occurredAt: string;
+  pairingId: string;
+  mentorName: string | null;
+  menteeName: string | null;
+  changedBy: { participantId: string; displayName: string | null };
+  changed: { sessionMinutes?: number; everyDays?: number };
+  result: PairPreferenceCadence;
+  programDefault: PairPreferenceCadence | null;
+  differsFromProgramDefault: boolean;
+}
+
+export interface PairPreferenceChanges {
+  changes: PairPreferenceChange[];
+  skipped: number;
+}
+
 export type VerifyFailureReason = "not_found" | "expired" | "already_used";
 
 /** The body `/orgs/:orgId/settings/document` returns and accepts. */

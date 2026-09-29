@@ -135,5 +135,8 @@ fair to a pair that deliberately meets every four weeks.
 4. [x] Cooling saga re-times on `pair.preferences_updated`
 5. [x] Roster `duration` column
 6. [ ] Run the modal against a live sandbox workspace
-7. [ ] Surface preference changes to admins (a digest line, or a dashboard view
-       over `pair.preferences_updated`)
+7. [x] Surface preference changes to admins — both: a dashboard view over
+       `pair.preferences_updated` (`GET /orgs/:orgId/pair-preference-changes`,
+       `/dashboard/pair-preferences`, each change beside the program's own
+       default for that cohort and marked when it differs) and a count in the
+       digest (`pairPreferenceChanges` in `apps/worker/src/digest.ts`)

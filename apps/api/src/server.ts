@@ -38,6 +38,7 @@ import {
 } from "@mentorship/auth";
 import { planInvite, type InvitePlan } from "@mentorship/enrollment";
 import { InviteRequestSchema, defaultDisplayName } from "./invites.js";
+import type { PairPreferenceChanges } from "./pair-preference-changes.js";
 
 /**
  * Deliberately not a framework. The one thing that matters for this route is
@@ -93,9 +94,20 @@ export type MatchingRoundCandidatesQuery = (
   runId: string,
 ) => Promise<unknown | null>;
 
+/**
+ * Recent `pair.preferences_updated` events shaped for the admin view
+ * (ADR-0009 action 7) — an object rather than a bare list, because it also
+ * reports how many events were skipped as malformed.
+ */
+export type PairPreferenceChangesQuery = (
+  orgId: string,
+  limit: number,
+) => Promise<PairPreferenceChanges>;
+
 export interface AdminReadsDeps {
   riskFindings: AdminListQuery;
   nudges: AdminListQuery;
+  pairPreferenceChanges: PairPreferenceChangesQuery;
   /** ROADMAP phase 1's monitoring gap — see `packages/workflows/src/postgres-reads.ts`. */
   stuckSagas: StuckSagaQuery;
   deadLetters: AdminListQuery;
@@ -263,6 +275,13 @@ export function notImplementedReads(): AdminListQuery {
   };
 }
 
+/** Same idea as `notImplementedReads`, for the pair-preference-changes query. */
+export function notImplementedPairPreferenceReads(): PairPreferenceChangesQuery {
+  return async () => {
+    throw new NotImplementedError();
+  };
+}
+
 /** Same idea as `notImplementedReads`, for the differently-shaped matching-rounds query. */
 export function notImplementedMatchingReads(): MatchingRoundCandidatesQuery {
   return async () => {
@@ -423,13 +442,19 @@ async function route(
   res.end("not found");
 }
 
-type AdminListKind = "risk-findings" | "nudges" | "stuck-sagas" | "dead-letters";
+type AdminListKind =
+  | "risk-findings"
+  | "nudges"
+  | "stuck-sagas"
+  | "dead-letters"
+  | "pair-preference-changes";
 
 const ADMIN_LIST_KINDS: readonly AdminListKind[] = [
   "risk-findings",
   "nudges",
   "stuck-sagas",
   "dead-letters",
+  "pair-preference-changes",
 ];
 
 /**
@@ -445,11 +470,15 @@ const ADMIN_LIST_RESOURCE_TYPE: Record<AdminListKind, ResourceType> = {
   nudges: "nudge",
   "stuck-sagas": "operational-monitoring",
   "dead-letters": "operational-monitoring",
+  // Who in a pair changed its length or rhythm, and to what: attributable
+  // activity, never sentiment (invariant 14) — so the same rule as a pair's
+  // other activity, org-wide for staff.
+  "pair-preference-changes": "pairing.activity",
 };
 
 /**
- * `/orgs/:orgId/{risk-findings,nudges,stuck-sagas,dead-letters}`, with an
- * optional `?limit=` (all four) and `?days=` (`stuck-sagas` only — how many
+ * `/orgs/:orgId/{risk-findings,nudges,stuck-sagas,dead-letters,pair-preference-changes}`,
+ * with an optional `?limit=` (all five) and `?days=` (`stuck-sagas` only — how many
  * days without progress counts as stuck).
  */
 function matchAdminRoute(
@@ -518,7 +547,9 @@ async function handleAdminList(
           ? await deps.admin.nudges(orgId, limit)
           : kind === "stuck-sagas"
             ? await deps.admin.stuckSagas(orgId, limit, olderThanDays)
-            : await deps.admin.deadLetters(orgId, limit);
+            : kind === "pair-preference-changes"
+              ? await deps.admin.pairPreferenceChanges(orgId, limit)
+              : await deps.admin.deadLetters(orgId, limit);
     writeJson(res, 200, rows);
   } catch (error) {
     if (error instanceof NotImplementedError) {
