@@ -16,8 +16,9 @@ import { GRANT_STAFF_USAGE, grantStaffRole, parseGrantStaffArgs } from "./staff-
  * the same `grantStaffRole` below). Unlike the route, this command may remove
  * an org's last admin — it is the operator, the authority that guard defers to.
  *
- * Creates the user if they do not exist (so the first admin can sign in),
- * never overwrites an existing name or zone, and writes `staff.role_changed`
+ * A grant creates the user if they do not exist (so the first admin can
+ * sign in); `--role none` for an email with no user here creates nothing and
+ * fails with `UnknownStaffUserError`. Never overwrites an existing name or zone, and writes `staff.role_changed`
  * to `audit_log` in the same transaction. `TENANT_ROLE` is honoured like
  * everywhere else, so this can run as `mentorship_app` under RLS.
  */

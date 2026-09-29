@@ -147,6 +147,25 @@ describe("staff management routes", () => {
     expect((await put(cy, { email: "cy@example.com", role: "admin" })).status).toBe(403);
   });
 
+  it("403s, writing nothing, when the actor is demoted between auth and the change", async () => {
+    const { ada, put, staffAdmin, directory } = await listen();
+    staffAdmin.addPerson("bo@example.com", "user-bo", "admin", "Bo");
+    // Bo demotes Ada after Ada's request passed `authenticateStaff` — the
+    // window the Postgres grant closes by re-checking under its lock.
+    staffAdmin.beforeSetRole = () => directory.set(ORG, "user-ada", null);
+    for (const body of [
+      { email: "ada@example.com", role: "admin" },
+      { email: "accomplice@example.com", role: "admin" },
+    ]) {
+      directory.set(ORG, "user-ada", "admin"); // so it is the re-check, not auth, that refuses
+      const res = await put(ada, body);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "forbidden" });
+    }
+    expect(staffAdmin.changes).toEqual([]);
+    expect(staffAdmin.people.has("accomplice@example.com")).toBe(false);
+  });
+
   it("404s revoking an email with no user here", async () => {
     const { ada, put } = await listen();
     const res = await put(ada, { email: "nobody@example.com", role: "none" });

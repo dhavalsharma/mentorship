@@ -7,7 +7,11 @@ import { StaffRoleSchema, type StaffRole } from "@mentorship/core";
  * same split `invites.ts` makes for the invite route.
  */
 
-/** Same normalisation `planInvite` applies, so the grant and the magic link find one row. */
+/**
+ * Same normalisation `planInvite` applies, and `requestMagicLink` applies to
+ * whatever is typed at /login — so a grant, an invite and a sign-in for one
+ * address all land on one row, whatever case it is typed in.
+ */
 export function normaliseEmail(email: string): string {
   return email.trim().toLowerCase();
 }

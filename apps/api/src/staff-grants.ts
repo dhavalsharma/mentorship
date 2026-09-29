@@ -23,32 +23,46 @@ import type {
  * find-or-create, or the audit row.
  */
 
-export interface GrantStaffInput {
+interface GrantStaffBase {
   orgId: string;
   email: string;
   /** `null` clears the role — "not staff" — without touching the user row otherwise. */
   staffRole: StaffRole | null;
   /** Used only when the user row does not exist yet; never overwrites a name. */
   displayName?: string;
-  /** Recorded as the audit row's `actor_ref` — who ran the grant. */
-  actorRef?: string | null;
-  /**
-   * The audit row's `actor_type`. `"operator"` (the default) is the CLI —
-   * someone holding the database URL, identified only by their OS user. The
-   * dashboard route passes `"admin"` with the acting admin's user id, the
-   * same pair `participant.invited` records for an invite.
-   */
-  actorType?: "operator" | "admin";
-  /**
-   * Refuse, with `LastAdminError`, a change that would leave the org with no
-   * admin at all. The dashboard route always sets it: an admin demoting the
-   * last admin — themselves, typically — locks the tenant out of every
-   * admin-only screen, and only an operator could undo it. The CLI does not:
-   * it *is* that operator, and revoking a compromised sole admin is exactly
-   * the kind of thing it exists for.
-   */
-  protectLastAdmin?: boolean;
 }
+
+/**
+ * `pnpm staff:grant` — the operator, someone holding the database URL. Not
+ * guarded: it may remove an org's last admin (revoking a compromised sole
+ * admin is exactly what it exists for), and its authority is the database
+ * URL, not a staff role, so there is no actor to re-check. `actorRef` is only
+ * what the audit row records (the OS user).
+ */
+export interface OperatorGrantStaffInput extends GrantStaffBase {
+  actorType?: "operator";
+  actorRef?: string | null;
+  protectLastAdmin?: false;
+}
+
+/**
+ * `PUT /orgs/:orgId/staff` — an admin acting from the dashboard. Guarded
+ * twice, both under the admin-set lock (see `grantStaffRole`): the actor must
+ * *still* be an admin (`ActorNotAdminError`), and the change may not leave the
+ * org with no admin (`LastAdminError` — an admin demoting the last admin,
+ * themselves typically, would lock the tenant out of every admin-only screen
+ * until an operator undid it). `actorRef` is required here because
+ * the first check is made against it — a guarded grant with no actor would
+ * have nobody's authority to re-check.
+ */
+export interface AdminGrantStaffInput extends GrantStaffBase {
+  actorType: "admin";
+  /** The acting admin's user id — re-checked under the lock, and the audit row's `actor_ref`. */
+  actorRef: string;
+  protectLastAdmin: true;
+}
+
+export type GrantStaffInput = OperatorGrantStaffInput | AdminGrantStaffInput;
 
 /**
  * The change asked for would leave the org with zero admins. Thrown inside
@@ -58,6 +72,20 @@ export class LastAdminError extends Error {
   constructor() {
     super("refusing to remove the organisation's last admin");
     this.name = "LastAdminError";
+  }
+}
+
+/**
+ * A guarded grant whose actor is no longer an admin by the time it holds the
+ * admin-set lock — demoted while this request was queued behind that very
+ * demotion. `authenticateStaff` checked the role in its own, earlier
+ * transaction; this is the check that counts. Nothing is written, including
+ * a user row the grant would have created.
+ */
+export class ActorNotAdminError extends Error {
+  constructor() {
+    super("the acting user is no longer an admin of this organisation");
+    this.name = "ActorNotAdminError";
   }
 }
 
@@ -153,6 +181,21 @@ export async function grantStaffRole(
             .orderBy(asc(users.id))
             .for("update")
         : [];
+
+      // The actor's authority, re-read under the same lock. The route's
+      // `authenticateStaff` read it in an earlier transaction, so a request
+      // that authenticated while another admin's demotion of this actor was
+      // still open would otherwise queue on the lock above and then run with
+      // stale authority — and since the last-admin guard only looks at the
+      // *target*, a promotion (of themselves, or of an accomplice) would go
+      // straight through. The lock makes that window reliable rather than
+      // rare, so the check has to be here. A demotion committed ahead of us
+      // has already dropped the actor's row out of `admins` (the READ
+      // COMMITTED re-check above). The CLI skips this: its authority is the
+      // database URL, not a role that can be revoked mid-request.
+      if (input.protectLastAdmin && !admins.some((a) => a.id === input.actorRef)) {
+        throw new ActorNotAdminError();
+      }
 
       // FOR UPDATE: two concurrent grants for one person must serialise, or
       // both audit rows would record the same `before`. (For a guarded grant
@@ -261,8 +304,8 @@ export async function listStaffMembers(
 
 /**
  * `StaffAdminService` over Postgres — the dashboard's door into
- * `grantStaffRole`. Always guarded (`protectLastAdmin`), always audited as
- * the acting admin, so a dashboard change and a CLI change differ only in
+ * `grantStaffRole`. Always guarded (`protectLastAdmin` — the actor re-check
+ * and the last-admin guard), always audited as the acting admin, so a dashboard change and a CLI change differ only in
  * who the audit row names and whether the org may end up with no admin.
  */
 export class PostgresStaffAdminService implements StaffAdminService {
@@ -306,6 +349,7 @@ export class PostgresStaffAdminService implements StaffAdminService {
         createdUser: result.createdUser,
       };
     } catch (error) {
+      if (error instanceof ActorNotAdminError) return { ok: false, reason: "actor_not_admin" };
       if (error instanceof LastAdminError) return { ok: false, reason: "last_admin" };
       if (error instanceof UnknownStaffUserError) return { ok: false, reason: "unknown_user" };
       throw error;

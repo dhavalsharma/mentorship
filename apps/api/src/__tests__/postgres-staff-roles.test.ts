@@ -19,7 +19,7 @@ import {
 import { connectTestDb, DATABASE_URL, type TestDb } from "@mentorship/db/testing";
 import { buildPostgresApiDeps } from "../postgres-deps.js";
 import { createServer } from "../server.js";
-import { grantStaffRole, LastAdminError } from "../staff-grants.js";
+import { ActorNotAdminError, grantStaffRole, LastAdminError } from "../staff-grants.js";
 
 /**
  * ADR-0010 against a real database, as `mentorship_app` so RLS is live:
@@ -214,6 +214,28 @@ describe.skipIf(!DATABASE_URL)("staff roles on Postgres", () => {
       );
       expect(again).toMatchObject({ changed: false, before: "admin", after: "admin" });
       expect(await audits(first.userId)).toHaveLength(1);
+    });
+  });
+
+  describe("magic-link sign-in and email case", () => {
+    it("someone granted in any case gets a link typing any case — and an unknown email is answered the same", async () => {
+      await grantStaffRole(
+        handle.db,
+        { orgId, email: "Case@Example.com", staffRole: "program_lead" },
+        { role: ROLE },
+      );
+      const ask = (email: string) =>
+        fetch(`${base}/auth/request-link`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email }),
+        });
+      const before = issued.length;
+      const known = await ask(" CASE@example.COM ");
+      const unknown = await ask("Nobody-Here@Example.com");
+      expect([known.status, unknown.status]).toEqual([200, 200]);
+      expect(await known.json()).toEqual(await unknown.json());
+      expect(issued.slice(before)).toHaveLength(1);
     });
   });
 
@@ -485,13 +507,16 @@ describe.skipIf(!DATABASE_URL)("staff roles on Postgres", () => {
 
       let settled: "pending" | "fulfilled" | "rejected" = "pending";
       let outcome: Promise<unknown> | undefined;
-      // Transaction 1 takes exactly the locks a guarded grant takes and
-      // demotes Y — but holds them open while transaction 2 (demote X) starts.
+      // Transaction 1 demotes Y and holds it open while transaction 2
+      // (demote X) starts. It locks *only Y's row* — not X's — so the one
+      // thing that can keep transaction 2 waiting is its lock on the whole
+      // admin set; its own `FOR UPDATE` on the target (X) is free to take.
+      // Without the admin-set lock, "pending" below is what fails first.
       await handle.sql.begin(async (tx) => {
         await tx.unsafe(`set local role ${ROLE}`);
         await tx`select set_config('app.current_org', ${mgmtOrgId}, true)`;
-        await tx`select id from users where org_id = ${mgmtOrgId} and staff_role = 'admin'
-                 order by id for update`;
+        await tx`select id from users where org_id = ${mgmtOrgId}
+                 and email = 'y@mgmt.example.com' for update`;
         await tx`update users set staff_role = null
                  where org_id = ${mgmtOrgId} and email = 'y@mgmt.example.com'`;
 
@@ -519,7 +544,7 @@ describe.skipIf(!DATABASE_URL)("staff roles on Postgres", () => {
           },
         );
         await new Promise((resolve) => setTimeout(resolve, 300));
-        // Blocked on transaction 1's row locks, not decided on a stale count.
+        // Blocked on transaction 1's lock on Y, not decided on a stale count.
         expect(settled).toBe("pending");
       });
 
@@ -527,6 +552,173 @@ describe.skipIf(!DATABASE_URL)("staff roles on Postgres", () => {
       expect(settled).toBe("rejected");
       expect(await roleOf("x@mgmt.example.com")).toBe("admin");
       expect(await adminCount()).toBe(1);
+    });
+
+    /**
+     * Settle a promise into a value either way, recording when, so a test
+     * can assert it is still waiting on a lock — and so a rejection is never
+     * unhandled while the transaction holding that lock is still open.
+     */
+    function track<T>(promise: Promise<T>) {
+      const state = { settled: false, value: undefined as unknown };
+      const done = promise.then(
+        (v) => {
+          state.settled = true;
+          state.value = v;
+          return v as unknown;
+        },
+        (e: unknown) => {
+          state.settled = true;
+          state.value = e;
+          return e;
+        },
+      );
+      return { state, done };
+    }
+
+    const guarded = (actorRef: string, email: string, staffRole: "admin" | "program_lead" | null) =>
+      grantStaffRole(
+        handle.db,
+        { orgId: mgmtOrgId, email, staffRole, actorType: "admin", actorRef, protectLastAdmin: true },
+        { role: ROLE },
+      );
+
+    it("an admin demoted while their request was queued cannot re-promote themselves or anyone else", async () => {
+      await reset();
+      const a = await bootstrapAdmin("a@mgmt.example.com");
+      await bootstrapAdmin("b@mgmt.example.com");
+      const auditsByA = async () =>
+        (
+          await handle.db
+            .select({ id: auditLog.id })
+            .from(auditLog)
+            .where(and(eq(auditLog.orgId, mgmtOrgId), eq(auditLog.actorRef, a.userId)))
+        ).length;
+      const auditsBefore = await auditsByA();
+
+      let selfPromote: ReturnType<typeof track> | undefined;
+      let accomplice: ReturnType<typeof track> | undefined;
+      // Transaction 1 is B's demotion of A, done the way a guarded grant does
+      // it: lock the admin set, demote. A's two requests have already passed
+      // auth (A *was* an admin) and are queued behind it.
+      await handle.sql.begin(async (tx) => {
+        await tx.unsafe(`set local role ${ROLE}`);
+        await tx`select set_config('app.current_org', ${mgmtOrgId}, true)`;
+        await tx`select id from users where org_id = ${mgmtOrgId} and staff_role = 'admin'
+                 order by id for update`;
+        await tx`update users set staff_role = null
+                 where org_id = ${mgmtOrgId} and email = 'a@mgmt.example.com'`;
+
+        selfPromote = track(guarded(a.userId, "a@mgmt.example.com", "admin"));
+        accomplice = track(guarded(a.userId, "c@mgmt.example.com", "admin"));
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(selfPromote.state.settled).toBe(false);
+        expect(accomplice.state.settled).toBe(false);
+      });
+
+      expect(await selfPromote!.done).toBeInstanceOf(ActorNotAdminError);
+      expect(await accomplice!.done).toBeInstanceOf(ActorNotAdminError);
+      expect(await roleOf("a@mgmt.example.com")).toBeNull();
+      // Not promoted, and not even created: the insert rolled back with the rest.
+      const c = await handle.db
+        .select()
+        .from(users)
+        .where(and(eq(users.orgId, mgmtOrgId), eq(users.email, "c@mgmt.example.com")));
+      expect(c).toHaveLength(0);
+      expect(await auditsByA()).toBe(auditsBefore);
+      expect(await adminCount()).toBe(1);
+    });
+
+    it("a self-demotion queued behind a promotion refuses — spuriously, never unsafely", async () => {
+      await reset();
+      const a = await bootstrapAdmin("a@mgmt.example.com");
+      await handle.db
+        .insert(users)
+        .values({ orgId: mgmtOrgId, email: "c@mgmt.example.com", displayName: "C" })
+        .onConflictDoNothing();
+
+      let demote: ReturnType<typeof track> | undefined;
+      // Transaction 1 is A promoting C, lock taken and write made, held open.
+      await handle.sql.begin(async (tx) => {
+        await tx.unsafe(`set local role ${ROLE}`);
+        await tx`select set_config('app.current_org', ${mgmtOrgId}, true)`;
+        await tx`select id from users where org_id = ${mgmtOrgId} and staff_role = 'admin'
+                 order by id for update`;
+        await tx`update users set staff_role = 'admin'
+                 where org_id = ${mgmtOrgId} and email = 'c@mgmt.example.com'`;
+
+        demote = track(guarded(a.userId, "a@mgmt.example.com", null));
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(demote.state.settled).toBe(false);
+      });
+
+      // Its snapshot predates C's promotion, so it counts only A: a refusal
+      // an admin can simply retry, where the opposite error would be a
+      // tenant with no admin.
+      expect(await demote!.done).toBeInstanceOf(LastAdminError);
+      expect(await roleOf("a@mgmt.example.com")).toBe("admin");
+      expect(await adminCount()).toBe(2);
+    });
+
+    it("a promotion racing a self-demotion never leaves the org with no admin", async () => {
+      for (let round = 0; round < 8; round++) {
+        await reset();
+        const a = await bootstrapAdmin("a@mgmt.example.com");
+        const [promote, demote] = await Promise.all([
+          put(a.cookie, { email: "c@mgmt.example.com", role: "admin" }),
+          put(a.cookie, { email: "a@mgmt.example.com", role: "none" }),
+        ]);
+        // Either order is fine; what is not is both succeeding with the
+        // demotion having counted a promotion that had not committed.
+        expect(await adminCount()).toBeGreaterThanOrEqual(1);
+        // The promotion always lands: A is still admin whenever it holds the
+        // lock (a demotion that committed first saw C, so C was already admin).
+        expect(promote.status).toBe(200);
+        expect([200, 409]).toContain(demote.status);
+        expect(await roleOf("c@mgmt.example.com")).toBe("admin");
+        expect(await roleOf("a@mgmt.example.com")).toBe(demote.status === 200 ? null : "admin");
+      }
+    });
+
+    it("two concurrent grants for one new email make one user and a consistent audit trail", async () => {
+      for (let round = 0; round < 8; round++) {
+        await reset();
+        const a = await bootstrapAdmin("a@mgmt.example.com");
+        const email = `new-${round}-${randomUUID().slice(0, 8)}@mgmt.example.com`;
+        const responses = await Promise.all([
+          put(a.cookie, { email, role: "program_lead" }),
+          put(a.cookie, { email, role: "admin" }),
+        ]);
+        expect(responses.map((r) => r.status)).toEqual([200, 200]);
+        const bodies = (await Promise.all(responses.map((r) => r.json()))) as {
+          member: { userId: string };
+          createdUser: boolean;
+          changed: boolean;
+        }[];
+
+        const rows = await handle.db
+          .select()
+          .from(users)
+          .where(and(eq(users.orgId, mgmtOrgId), eq(users.email, email)));
+        expect(rows).toHaveLength(1);
+        const userId = rows[0]!.id;
+        expect(bodies.map((b) => b.member.userId)).toEqual([userId, userId]);
+        expect(bodies.filter((b) => b.createdUser)).toHaveLength(1);
+
+        // Two different roles, so both change something: the trail must chain
+        // — one row starts from not-staff, the other's `before` is that row's
+        // `after` — and end on the role the user actually has. Chained by
+        // content, not sorted by `created_at`: that column is `now()`, the
+        // *transaction's* start, so the grant that waited on the other's lock
+        // can carry the earlier timestamp while having committed second.
+        const trail = await auditsIn(userId);
+        expect(trail).toHaveLength(2);
+        const first = trail.find((r) => (r.before as { staffRole: unknown }).staffRole === null);
+        const second = trail.find((r) => r !== first);
+        expect(first).toBeDefined();
+        expect(second!.before).toEqual(first!.after);
+        expect(second!.after).toEqual({ staffRole: rows[0]!.staffRole });
+      }
     });
 
     it("a revoked user's very next request is refused", async () => {

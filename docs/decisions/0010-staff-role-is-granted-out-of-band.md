@@ -169,6 +169,16 @@ now only how a tenant gets its *first* admin. After that an admin uses
   transaction: every admin row of the org is locked `FOR UPDATE` in id order
   before the target is read, so two admins demoting each other queue, and the
   second re-reads a count the first already changed.
+- **The actor's own authority is re-checked under that lock** — 403, nothing
+  written, if the acting admin is no longer among the locked admin rows.
+  `authenticateStaff` read their role in an earlier transaction, and the lock
+  makes that gap reliable rather than rare: a request that authenticated
+  while another admin's demotion of its actor was still open queues on the
+  lock and would otherwise run next with the stale authority. The last-admin
+  guard only looks at the target, so a promotion — re-promoting themselves,
+  or an accomplice — would have gone straight through, and revoking a
+  compromised admin from the dashboard could not be relied on. The guarded
+  path requires `actorRef` in its type, since this check is made against it.
 - **The CLI is deliberately not guarded.** The operator is the authority the
   guard defers to, and revoking a compromised sole admin is exactly the job
   it is for.

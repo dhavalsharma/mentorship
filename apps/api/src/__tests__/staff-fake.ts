@@ -9,12 +9,19 @@ import type {
 /**
  * A `StaffAdminService` that writes through to a `FakeStaffDirectory`, so a
  * route test can change a role over HTTP and watch the very next request see
- * it. The last-admin rule is the same one `grantStaffRole` enforces; the
- * race half of it can only be proved on Postgres (`postgres-staff-roles.test.ts`).
+ * it. The actor re-check and the last-admin rule are the same ones
+ * `grantStaffRole` enforces; the race half of them can only be proved on
+ * Postgres (`postgres-staff-roles.test.ts`).
  */
 export class FakeStaffAdmin implements StaffAdminService {
   readonly people = new Map<string, { userId: string; displayName: string }>();
   readonly changes: { email: string; staffRole: StaffRole | null; actorUserId: string }[] = [];
+  /**
+   * Runs at the top of `setRole` — after the route's `authenticateStaff`,
+   * before the re-check — so a test can demote the actor in exactly the
+   * window a queued Postgres grant would see.
+   */
+  beforeSetRole?: () => void;
 
   constructor(
     private readonly directory: FakeStaffDirectory,
@@ -40,6 +47,10 @@ export class FakeStaffAdmin implements StaffAdminService {
     change: { email: string; staffRole: StaffRole | null; displayName?: string },
     actorUserId: string,
   ): Promise<StaffRoleChangeOutcome> {
+    this.beforeSetRole?.();
+    if ((await this.directory.staffRoleOf(orgId, actorUserId)) !== "admin") {
+      return { ok: false, reason: "actor_not_admin" };
+    }
     const email = change.email.trim().toLowerCase();
     let person = this.people.get(email);
     if (!person && change.staffRole === null) return { ok: false, reason: "unknown_user" };

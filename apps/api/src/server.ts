@@ -216,6 +216,12 @@ export type StaffRoleChangeOutcome =
   | { ok: true; member: StaffMemberView; changed: boolean; createdUser: boolean }
   /** The change would leave the org with no admin. Nothing was written. */
   | { ok: false; reason: "last_admin" }
+  /**
+   * The acting admin was demoted after `authenticateStaff` let the request in
+   * and before the change took the admin-set lock. Nothing was written; the
+   * route answers exactly as if auth had caught it (403 `forbidden`).
+   */
+  | { ok: false; reason: "actor_not_admin" }
   /** Revoking an email that has no user in this org. Nothing was written. */
   | { ok: false; reason: "unknown_user" };
 
@@ -822,8 +828,10 @@ function matchStaffRoute(url: string): string | null {
  * write this server has.
  *
  * 200 with the resulting member and `changed` (false for a no-op, which
- * writes no audit row), 400 for a malformed body, 404 for revoking an email
- * with no user here, 409 for a change that would leave no admin. The change
+ * writes no audit row), 400 for a malformed body, 403 if the caller stopped
+ * being an admin while the request was in flight (re-checked under the
+ * grant's lock — `staff-grants.ts`), 404 for revoking an email with no user
+ * here, 409 for a change that would leave no admin. The change
  * is live on the target's very next request: `authenticateStaff` reads the
  * role from the directory every time and nothing caches it.
  */
@@ -896,7 +904,11 @@ async function handleStaff(
     staff.userId,
   );
   if (!outcome.ok) {
-    if (outcome.reason === "last_admin") {
+    if (outcome.reason === "actor_not_admin") {
+      // The same body every other 403 has: whether auth or the re-check under
+      // the lock caught it is not something the caller needs to learn.
+      writeJson(res, 403, { error: "forbidden" });
+    } else if (outcome.reason === "last_admin") {
       writeJson(res, 409, {
         error:
           "This would leave the organisation with no admin. Make someone else an admin first.",
