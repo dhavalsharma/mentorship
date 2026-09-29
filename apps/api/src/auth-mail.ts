@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { MAGIC_LINK_TTL_MINUTES } from "@mentorship/auth";
 import type { EmailMessage, EmailSender } from "@mentorship/core";
+import { createCooldown, DEFAULT_COOLDOWN_SECONDS } from "./mail-cooldown.js";
 import type { MagicLinkContext } from "./server.js";
 
 /**
@@ -29,6 +31,14 @@ export interface MagicLinkDeliveryOptions {
   /** Where the fallback line and the sent-confirmation go. Defaults to `console.log`. */
   log?: (line: string) => void;
   ttlMinutes?: number;
+  /**
+   * Minimum seconds between mails of one kind to one address (default 60, 0 =
+   * off). While cooling down the link is still valid but nothing is sent, and
+   * the requester cannot tell. See `mail-cooldown.ts`.
+   */
+  cooldownSeconds?: number;
+  cooldownMaxEntries?: number;
+  now?: () => number;
 }
 
 export function createMagicLinkDelivery(
@@ -50,7 +60,36 @@ export function createMagicLinkDelivery(
     throw new Error("createMagicLinkDelivery: a sender needs appBaseUrl to build the link");
   }
 
+  // Per kind: a sign-in flood (the unauthenticated attack) must not swallow an
+  // admin's invite to the same address, and an invite is staff-initiated.
+  const cooldown = createCooldown({
+    seconds: options.cooldownSeconds ?? DEFAULT_COOLDOWN_SECONDS,
+    ...(options.now ? { now: options.now } : {}),
+    ...(options.cooldownMaxEntries !== undefined ? { maxEntries: options.cooldownMaxEntries } : {}),
+  });
+
+  // A reporting hook that throws must neither mask a sent mail as failed nor
+  // become an unhandled rejection: this is the last line of the chain.
+  const safely = (fn: () => void): void => {
+    try {
+      fn();
+    } catch {
+      // Nothing left to report to.
+    }
+  };
+
   return (email, rawToken, context) => {
+    const kind = (context ?? { kind: "sign_in" }).kind;
+    if (!cooldown.allow(`${kind}:${email.trim().toLowerCase()}`)) {
+      // No address: which mailbox is being hammered is not an operator-log fact.
+      safely(() =>
+        options.onUnhandled("magic_link_email_cooldown", {
+          kind,
+          note: "link issued and valid; mail suppressed, a request after the cooldown sends",
+        }),
+      );
+      return;
+    }
     // Everything, including composing, happens after this call returns.
     void Promise.resolve()
       .then(async () => {
@@ -61,20 +100,23 @@ export function createMagicLinkDelivery(
           context: context ?? { kind: "sign_in" },
           ...(options.ttlMinutes !== undefined ? { ttlMinutes: options.ttlMinutes } : {}),
         });
-        const { messageRef } = await sender.send({
-          ...message,
-          idempotencyKey: `auth-mail:${randomUUID()}`,
-        });
-        // No address, no token, no link: which mailbox a sign-in went to is
-        // not something an operator log needs.
-        log(`[auth] ${(context ?? { kind: "sign_in" }).kind} email sent (${messageRef})`);
+        return sender.send({ ...message, idempotencyKey: `auth-mail:${randomUUID()}` });
       })
-      .catch((error: unknown) => {
-        options.onUnhandled("magic_link_email_failed", {
-          kind: (context ?? { kind: "sign_in" }).kind,
-          error: scrub(error, [rawToken, encodeURIComponent(rawToken)]),
-        });
-      });
+      .then(
+        ({ messageRef }) => {
+          // Sent. Only now do we log, and a throwing log cannot undo that.
+          safely(() => log(`[auth] ${kind} email sent (${messageRef})`));
+        },
+        (error: unknown) => {
+          safely(() =>
+            options.onUnhandled("magic_link_email_failed", {
+              kind,
+              // The recipient is scrubbed too: a SandboxRefusal names it.
+              error: scrub(error, [rawToken, encodeURIComponent(rawToken)], [email]),
+            }),
+          );
+        },
+      );
   };
 }
 
@@ -83,12 +125,24 @@ export function magicLinkUrl(appBaseUrl: string, rawToken: string): string {
 }
 
 /** A failure message that can never carry the credential it was sent with. */
-function scrub(error: unknown, secrets: string[]): string {
+function scrub(error: unknown, secrets: string[], addresses: string[] = []): string {
   let message = error instanceof Error ? error.message : String(error);
   for (const secret of secrets) {
     if (secret.length > 0) message = message.split(secret).join("[token]");
   }
+  for (const address of addresses) {
+    const trimmed = address.trim();
+    if (trimmed.length > 0) {
+      message = message.replace(new RegExp(trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "[address]");
+    }
+  }
   return message.slice(0, 300);
+}
+
+/** `ada@example.org` -> `***@example.org`: enough to see which domain was refused, not who. */
+export function redactAddress(address: string): string {
+  const at = address.lastIndexOf("@");
+  return at < 0 ? "[not-an-address]" : `***${address.slice(at)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,8 +175,11 @@ export function composeAuthEmail(input: {
   context: MagicLinkContext;
   ttlMinutes?: number;
 }): EmailMessage {
-  const ttl = input.ttlMinutes ?? 15;
-  const expiry = `The link works once and expires in ${ttl} minutes.`;
+  const ttl = input.ttlMinutes ?? MAGIC_LINK_TTL_MINUTES;
+  const expiry =
+    input.context.kind === "invite"
+      ? `The link works once and expires in ${ttl} minutes. If it has expired, ask the person who invited you to invite you again, or request a new sign-in link from the sign-in page.`
+      : `The link works once and expires in ${ttl} minutes.`;
   const ignore = "If you were not expecting this, you can ignore this email.";
 
   if (input.context.kind === "invite") {

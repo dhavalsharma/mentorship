@@ -6,8 +6,9 @@ import {
   httpSlackTransport,
   SlackWebApiModalOpener,
 } from "@mentorship/integrations";
-import { createMagicLinkDelivery } from "./auth-mail.js";
+import { createMagicLinkDelivery, redactAddress } from "./auth-mail.js";
 import { appBaseUrlFromEnv, buildGmailSender } from "./email-config.js";
+import { cooldownSecondsFromEnv } from "./mail-cooldown.js";
 import { buildPostgresApiDeps } from "./postgres-deps.js";
 import {
   createServer,
@@ -65,20 +66,31 @@ const magicLinkDelivery = (() => {
   try {
     const built = buildGmailSender(process.env, {
       onRefused: ({ refused }) =>
-        console.warn(`[auth] email refused by SANDBOX_ALLOWLIST: ${refused.join(", ")}`),
+        // Domains only: the local part is somebody's mailbox, and this line
+        // lands in operator logs.
+        console.warn(
+          `[auth] email refused by SANDBOX_ALLOWLIST: ${refused.map(redactAddress).join(", ")}`,
+        ),
     });
     const appBaseUrl = appBaseUrlFromEnv(process.env);
     if (built && !appBaseUrl) {
       throw new Error("GMAIL_SENDER_ADDRESS is set but APP_BASE_URL is not — the link needs an origin");
     }
+    if (built?.allowlistSize != null) {
+      console.warn(
+        `[auth] EMAIL ALLOWLIST ACTIVE (SANDBOX_ALLOWLIST, ${built.allowlistSize} entries): mail to any other address is refused. Unset it in production.`,
+      );
+    }
+    const cooldownSeconds = cooldownSecondsFromEnv(process.env);
     console.log(
       built
-        ? `Sign-in and invite links are emailed (${built.sender.id}), to ${appBaseUrl}/verify.`
+        ? `Sign-in and invite links are emailed (${built.sender.id}), to ${appBaseUrl}/verify (at most one per address per ${cooldownSeconds}s).`
         : "No GMAIL_SENDER_ADDRESS: sign-in and invite links are printed to this log.",
     );
     return createMagicLinkDelivery({
       sender: built?.sender ?? null,
       appBaseUrl,
+      cooldownSeconds,
       onUnhandled: (reason, detail) => console.warn(`[auth] ${reason}`, detail),
     });
   } catch (error) {

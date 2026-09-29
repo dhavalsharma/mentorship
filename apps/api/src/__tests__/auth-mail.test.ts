@@ -1,10 +1,11 @@
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import type { MagicLinkStore } from "@mentorship/auth";
+import { MAGIC_LINK_TTL_MINUTES, type MagicLinkStore } from "@mentorship/auth";
 import type { EmailMessage, EmailSender } from "@mentorship/core";
 import { FakeEmail, Recorder, SandboxRefusal } from "@mentorship/integrations";
 import { FakeStaffDirectory } from "./staff-fake.js";
-import { composeAuthEmail, createMagicLinkDelivery, magicLinkUrl } from "../auth-mail.js";
+import { composeAuthEmail, createMagicLinkDelivery, magicLinkUrl, redactAddress } from "../auth-mail.js";
+import { cooldownSecondsFromEnv, createCooldown } from "../mail-cooldown.js";
 import { appBaseUrlFromEnv, buildGmailSender } from "../email-config.js";
 import { createServer, type ApiServerDeps, type EnrollmentService } from "../server.js";
 
@@ -21,7 +22,10 @@ const TOKEN = "tok_SECRET-abc123";
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
 
-function harness(sender: EmailSender | null, overrides: { appBaseUrl?: string | null } = {}) {
+function harness(
+  sender: EmailSender | null,
+  overrides: { appBaseUrl?: string | null; cooldownSeconds?: number; now?: () => number; cooldownMaxEntries?: number } = {},
+) {
   const logs: string[] = [];
   const unhandled: { reason: string; detail: Record<string, unknown> }[] = [];
   const deliver = createMagicLinkDelivery({
@@ -29,6 +33,10 @@ function harness(sender: EmailSender | null, overrides: { appBaseUrl?: string | 
     appBaseUrl: overrides.appBaseUrl === undefined ? BASE : overrides.appBaseUrl,
     onUnhandled: (reason, detail) => unhandled.push({ reason, detail }),
     log: (line) => logs.push(line),
+    // Off unless a test is about the cooldown, so repeated sends stay independent.
+    cooldownSeconds: overrides.cooldownSeconds ?? 0,
+    ...(overrides.now ? { now: overrides.now } : {}),
+    ...(overrides.cooldownMaxEntries !== undefined ? { cooldownMaxEntries: overrides.cooldownMaxEntries } : {}),
   });
   return { deliver, logs, unhandled };
 }
@@ -124,6 +132,172 @@ describe("createMagicLinkDelivery — sender configured", () => {
 
   it("refuses to be built with a sender and no base URL", () => {
     expect(() => harness(new FakeEmail(new Recorder()), { appBaseUrl: null })).toThrow(/appBaseUrl/);
+  });
+});
+
+describe("createMagicLinkDelivery — per-address cooldown", () => {
+  it("suppresses a second send inside the window, allows one after it (fake clock)", async () => {
+    let t = 1_000_000;
+    const fake = new FakeEmail(new Recorder());
+    const { deliver, unhandled } = harness(fake, { cooldownSeconds: 60, now: () => t });
+
+    deliver("ada@example.com", "tok-1");
+    await settle();
+    t += 59_000;
+    deliver("ada@example.com", "tok-2");
+    await settle();
+    expect(fake.sent).toHaveLength(1);
+    // Warned, without the address or either token.
+    expect(unhandled.map((u) => u.reason)).toEqual(["magic_link_email_cooldown"]);
+    expect(JSON.stringify(unhandled)).not.toMatch(/ada@|tok-/);
+
+    t += 1_000;
+    deliver("ada@example.com", "tok-3");
+    await settle();
+    expect(fake.sent).toHaveLength(2);
+    expect(String((fake.sent[1]!.detail as unknown as EmailMessage).text)).toContain("tok-3");
+  });
+
+  it("normalises the address, and is per address and per kind", async () => {
+    const fake = new FakeEmail(new Recorder());
+    const { deliver } = harness(fake, { cooldownSeconds: 60, now: () => 1 });
+    deliver("Ada@Example.com ", "t1");
+    deliver("ada@example.com", "t2"); // same mailbox: suppressed
+    deliver("grace@example.com", "t3"); // another address: sent
+    deliver("ada@example.com", "t4", {
+      kind: "invite",
+      inviterName: "G",
+      cohortName: "C",
+      programName: "P",
+      role: "mentee",
+    }); // an invite is not swallowed by a sign-in flood
+    await settle();
+    expect(fake.sent).toHaveLength(3);
+  });
+
+  it("0 disables it", async () => {
+    const fake = new FakeEmail(new Recorder());
+    const { deliver } = harness(fake, { cooldownSeconds: 0 });
+    deliver("ada@example.com", "a");
+    deliver("ada@example.com", "b");
+    await settle();
+    expect(fake.sent).toHaveLength(2);
+  });
+
+  it("is bounded: the map never exceeds maxEntries, expired entries go first, then the oldest", () => {
+    let t = 0;
+    const c = createCooldown({ seconds: 60, maxEntries: 3, now: () => t });
+    for (const k of ["a", "b", "c", "d", "e"]) {
+      expect(c.allow(k)).toBe(true);
+      expect(c.size).toBeLessThanOrEqual(3);
+    }
+    expect(c.size).toBe(3);
+    expect(c.allow("e")).toBe(false); // still cooling
+    expect(c.allow("a")).toBe(true); // evicted, so it may be mailed again early
+    t = 61_000;
+    expect(c.allow("z")).toBe(true);
+    expect(c.size).toBe(1); // everything else had expired and was swept
+  });
+
+  it("parses MAGIC_LINK_EMAIL_COOLDOWN_SECONDS: default 60, 0 off, junk refused at boot", () => {
+    expect(cooldownSecondsFromEnv({})).toBe(60);
+    expect(cooldownSecondsFromEnv({ MAGIC_LINK_EMAIL_COOLDOWN_SECONDS: "0" })).toBe(0);
+    expect(cooldownSecondsFromEnv({ MAGIC_LINK_EMAIL_COOLDOWN_SECONDS: "120" })).toBe(120);
+    for (const bad of ["-1", "1.5", "abc", "999999"]) {
+      expect(() => cooldownSecondsFromEnv({ MAGIC_LINK_EMAIL_COOLDOWN_SECONDS: bad })).toThrow(/COOLDOWN/);
+    }
+  });
+});
+
+describe("createMagicLinkDelivery — the reporting chain cannot lie or reject", () => {
+  it("a throwing log does not report a sent mail as failed", async () => {
+    const fake = new FakeEmail(new Recorder());
+    const unhandled: string[] = [];
+    const deliver = createMagicLinkDelivery({
+      sender: fake,
+      appBaseUrl: BASE,
+      cooldownSeconds: 0,
+      log: () => {
+        throw new Error("log sink down");
+      },
+      onUnhandled: (reason) => unhandled.push(reason),
+    });
+    deliver("ada@example.com", TOKEN);
+    await settle();
+    expect(fake.sent).toHaveLength(1);
+    expect(unhandled).toEqual([]);
+  });
+
+  it("a throwing onUnhandled is swallowed: no unhandled rejection", async () => {
+    const seen: unknown[] = [];
+    const onRejection = (reason: unknown) => seen.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const failing: EmailSender = {
+        id: "g",
+        send: async () => {
+          throw new Error("quota");
+        },
+      };
+      const deliver = createMagicLinkDelivery({
+        sender: failing,
+        appBaseUrl: BASE,
+        cooldownSeconds: 0,
+        onUnhandled: () => {
+          throw new Error("reporter down");
+        },
+      });
+      deliver("ada@example.com", TOKEN);
+      await settle();
+      await settle();
+      expect(seen).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+});
+
+describe("addresses in failure reports", () => {
+  it("a SandboxRefusal's message is scrubbed of the recipient, so no address reaches onUnhandled", async () => {
+    const built = buildGmailSender(
+      { GOOGLE_ACCESS_TOKEN: "x", GMAIL_SENDER_ADDRESS: "noreply@example.org", SANDBOX_ALLOWLIST: "me@example.org" },
+      { transport: async () => ({ id: "m" }) },
+    )!;
+    const { deliver, unhandled } = harness(built.sender);
+    deliver("Stranger@Example.net", TOKEN);
+    await settle();
+    expect(unhandled).toHaveLength(1);
+    expect(JSON.stringify(unhandled)).not.toMatch(/stranger/i);
+    expect(String(unhandled[0]!.detail["error"])).toContain("[address]");
+  });
+
+  it("redactAddress keeps the domain and drops the mailbox", () => {
+    expect(redactAddress("ada.lovelace@example.net")).toBe("***@example.net");
+    expect(redactAddress("junk")).toBe("[not-an-address]");
+  });
+
+  it("reports how many allowlist entries are active, for the startup line", () => {
+    const env = { GOOGLE_ACCESS_TOKEN: "x", GMAIL_SENDER_ADDRESS: "n@example.org" };
+    const opts = { transport: async () => ({ id: "m" }) };
+    expect(buildGmailSender({ ...env, SANDBOX_ALLOWLIST: "a@x.org, b@x.org," }, opts)!.allowlistSize).toBe(2);
+    expect(buildGmailSender(env, opts)!.allowlistSize).toBeNull();
+  });
+});
+
+describe("the stated expiry", () => {
+  it("is the one the magic-link store enforces, by construction", () => {
+    const m = composeAuthEmail({ to: "a@example.com", link: "https://x/verify?token=t", context: { kind: "sign_in" } });
+    expect(m.text).toContain(`expires in ${MAGIC_LINK_TTL_MINUTES} minutes`);
+    expect(MAGIC_LINK_TTL_MINUTES).toBe(15);
+  });
+
+  it("an invite says what to do once it has expired", () => {
+    const m = composeAuthEmail({
+      to: "a@example.com",
+      link: "https://x/verify?token=t",
+      context: { kind: "invite", inviterName: "G", cohortName: "C", programName: "P", role: "mentee" },
+    });
+    expect(m.text).toMatch(/expired.*invite you again.*new sign-in link/);
   });
 });
 
@@ -302,28 +476,55 @@ describe("over a real socket", () => {
       body: JSON.stringify({ email }),
     });
 
-  it("request-link is byte-identical for a known email, an unknown one, and a known one whose send fails", async () => {
+  it("request-link is byte-identical: known + send ok, known + send fails, known + cooling down, known + seam throws, unknown", async () => {
     const failing: EmailSender = {
       id: "gmail",
       send: async () => {
         throw new Error("quota exceeded");
       },
     };
-    const { deliver, unhandled } = harness(failing);
-    const base = await listen(deliver);
+    const capture = async (deliver: Parameters<typeof listen>[0], email: string) => {
+      const base = await listen(deliver);
+      const res = await request(base, email);
+      const out = { status: res.status, type: res.headers.get("content-type"), body: await res.text() };
+      close?.();
+      close = undefined;
+      return out;
+    };
 
-    const responses = await Promise.all(
-      ["known@example.com", "nobody@example.com"].map(async (email) => {
-        const res = await request(base, email);
-        return { status: res.status, type: res.headers.get("content-type"), body: await res.text() };
-      }),
-    );
-    expect(responses[0]).toEqual(responses[1]);
-    expect(responses[0]!.body).toBe(JSON.stringify({ requested: true }));
-
+    const ok = harness(new FakeEmail(new Recorder()));
+    const bad = harness(failing);
+    const cooling = harness(new FakeEmail(new Recorder()), { cooldownSeconds: 60 });
+    cooling.deliver("known@example.com", "earlier-token"); // opens the window
+    const responses = {
+      knownSendOk: await capture(ok.deliver, "known@example.com"),
+      knownSendFails: await capture(bad.deliver, "known@example.com"),
+      knownCoolingDown: await capture(cooling.deliver, "known@example.com"),
+      knownSeamThrows: await capture(() => {
+        throw new Error("seam blew up");
+      }, "known@example.com"),
+      unknown: await capture(ok.deliver, "nobody@example.com"),
+    };
     await settle();
-    // The failure is visible to operators, and only to them.
-    expect(unhandled.map((u) => u.reason)).toEqual(["magic_link_email_failed"]);
+
+    for (const r of Object.values(responses)) expect(r).toEqual(responses.unknown);
+    expect(responses.unknown.status).toBe(200);
+    expect(responses.unknown.body).toBe(JSON.stringify({ requested: true }));
+    // Operators, and only operators, can see the difference.
+    expect(bad.unhandled.map((u) => u.reason)).toEqual(["magic_link_email_failed"]);
+    expect(cooling.unhandled.map((u) => u.reason)).toEqual(["magic_link_email_cooldown"]);
+    expect(ok.unhandled).toEqual([]);
+  });
+
+  it("hammering request-link for a known address mails once per window", async () => {
+    const fake = new FakeEmail(new Recorder());
+    const { deliver } = harness(fake, { cooldownSeconds: 60 });
+    const base = await listen(deliver);
+    const bodies = new Set<string>();
+    for (let i = 0; i < 20; i++) bodies.add(await (await request(base, "known@example.com")).text());
+    await settle();
+    expect(fake.sent).toHaveLength(1);
+    expect(bodies.size).toBe(1);
   });
 
   it("request-link stays 200 and identical even if the delivery seam itself throws", async () => {

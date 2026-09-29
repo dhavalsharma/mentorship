@@ -43,6 +43,8 @@ export interface EmailEnv {
   SANDBOX_ALLOWLIST?: string | undefined;
   CAPTURE_VENDOR_FIXTURES?: string | undefined;
   VENDOR_FIXTURE_DIR?: string | undefined;
+  /** Seconds between mails of one kind to one address; see `mail-cooldown.ts`. */
+  MAGIC_LINK_EMAIL_COOLDOWN_SECONDS?: string | undefined;
 }
 
 export interface EmailSenderBuildOptions {
@@ -59,7 +61,7 @@ const DEFAULT_VENDOR_FIXTURE_DIR = fileURLToPath(
 export function buildGmailSender(
   env: EmailEnv,
   options: EmailSenderBuildOptions = {},
-): { sender: EmailSender; capturedFixtures: string[] } | null {
+): { sender: EmailSender; capturedFixtures: string[]; allowlistSize: number | null } | null {
   if (!env.GMAIL_SENDER_ADDRESS?.trim()) return null;
 
   const hasRefreshCreds =
@@ -100,15 +102,18 @@ export function buildGmailSender(
   // The same seatbelt the worker's live adapters wear. Unlike the worker,
   // the api does not *require* an allowlist — production has none — so the
   // guard is applied exactly when one is configured.
+  let allowlistSize: number | null = null;
   if (env.SANDBOX_ALLOWLIST?.trim()) {
+    const allowlist = env.SANDBOX_ALLOWLIST.split(",").map((s) => s.trim()).filter(Boolean);
+    allowlistSize = allowlist.length;
     const guard = new SandboxGuard({
-      allowlist: env.SANDBOX_ALLOWLIST.split(",").map((s) => s.trim()).filter(Boolean),
+      allowlist,
       ...(options.onRefused ? { onRefused: options.onRefused } : {}),
     });
     sender = guardEmailSender(sender, guard);
   }
 
-  return { sender, capturedFixtures: sink?.written ?? [] };
+  return { sender, capturedFixtures: sink?.written ?? [], allowlistSize };
 }
 
 /**
