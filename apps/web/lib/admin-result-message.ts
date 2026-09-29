@@ -16,8 +16,12 @@ export function adminResultMessage(
     case "not_implemented":
       return `This backend doesn't track ${resourceLabel} yet — it's running the in-memory dev world, which predates this table. Point apps/api at Postgres (DATABASE_URL) to see real data here.`;
     case "unauthorized":
-    case "forbidden":
       return "Your session can no longer read this org's data. Try signing in again.";
+    case "forbidden":
+      // The layout already turned away anyone who is not staff at all, so a
+      // 403 here is a staff role this page asks more of — integration
+      // settings are admin-only, and a program lead lands here.
+      return `Your role doesn't include ${resourceLabel}. Ask an admin of this organisation.`;
     case "unreachable":
       return "Couldn't reach the API server. Check that apps/api is running.";
     case "error":

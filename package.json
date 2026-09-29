@@ -26,6 +26,7 @@
     "dev:web": "pnpm --filter @mentorship/web dev",
     "serve:worker:live": "tsx apps/worker/src/main-live.ts",
     "seed:live-pair": "tsx apps/worker/src/seed-live-pair.ts",
+    "staff:grant": "tsx apps/api/src/grant-staff.ts",
     "deps:check": "depcruise --config .dependency-cruiser.cjs packages apps"
   },
   "devDependencies": {

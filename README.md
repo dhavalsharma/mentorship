@@ -221,8 +221,18 @@ already-running `apps/api`.
 3. Set `ORG_ID` to the exact same value `apps/api`/`apps/worker` are running
    with — a mismatch here doesn't error, it just shows a 403 on every table
    (sessions are tenant-scoped; see `apps/api/src/server.ts`'s
-   `authenticateAdmin`).
-4. `pnpm dev:web`, then sign in at `/login` — since there's no email sending
+   `authenticateStaff`).
+4. Make yourself staff of that org — nobody is by default, and a signed-in
+   user who is not staff sees "No admin access" instead of the dashboard
+   ([ADR-0010](./docs/decisions/0010-staff-role-is-granted-out-of-band.md)):
+   `DATABASE_URL=… ORG_ID=… pnpm staff:grant --email you@example.com --role admin`.
+   It creates the user if they don't exist and records the grant in
+   `audit_log`; `--role program_lead` gives the lists and invites but not the
+   settings pages, and `--role none` revokes. (The in-memory `pnpm serve:api`
+   with no `DATABASE_URL` needs none of this: its seeded
+   `arjun.rao@wekancode.com` is the admin, and `priya.menon@…` is a mentee
+   who is refused.)
+5. `pnpm dev:web`, then sign in at `/login` — since there's no email sending
    configured yet, the sign-in link is printed to the *`apps/api`* server's
    console as `[auth] magic link for <email>: <token>`; open
    `/verify?token=<token>` with that token to complete sign-in.

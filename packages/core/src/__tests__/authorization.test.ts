@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   authorize,
   filterAuthorized,
+  StaffRoleSchema,
   type Actor,
   type Resource,
 } from "@mentorship/core";
@@ -198,6 +199,52 @@ describe("enrolment.invite is an org-chart-only write", () => {
 
   it("denies an admin of another org", () => {
     expect(authorize(admin(ORG_B), invite(ORG_A)).allowed).toBe(false);
+  });
+});
+
+describe("integration.settings is admin-only", () => {
+  const settings = (orgId: OrgId = ORG_A): Resource => ({
+    type: "integration.settings",
+    orgId,
+  });
+
+  it("allows an admin in their own org", () => {
+    expect(authorize(admin(), settings()).allowed).toBe(true);
+  });
+
+  it("denies a program lead — running cohorts is not owning the tenant's wiring", () => {
+    const decision = authorize(programLead(), settings());
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toMatch(/only an admin/);
+  });
+
+  it("denies pair members and unnamed-role participants", () => {
+    expect(authorize(pairMember("mentor", [PAIRING_1]), settings()).allowed).toBe(false);
+    expect(authorize(pairMember("mentee", [PAIRING_1]), settings()).allowed).toBe(false);
+    expect(authorize(outsider(), settings()).allowed).toBe(false);
+  });
+
+  it("denies an admin of another org", () => {
+    expect(authorize(admin(ORG_B), settings(ORG_A)).allowed).toBe(false);
+  });
+});
+
+describe("StaffRoleSchema", () => {
+  it("is exactly the two org-chart roles", () => {
+    expect(StaffRoleSchema.options).toEqual(["admin", "program_lead"]);
+  });
+
+  it("refuses a pair role — a mentee is never staff by virtue of being a mentee", () => {
+    expect(StaffRoleSchema.safeParse("mentee").success).toBe(false);
+    expect(StaffRoleSchema.safeParse("mentor").success).toBe(false);
+    expect(StaffRoleSchema.safeParse("participant").success).toBe(false);
+  });
+
+  it("every staff role is treated as org-chart by authorize()", () => {
+    for (const role of StaffRoleSchema.options) {
+      const actor: Actor = { orgId: ORG_A, role, pairingIds: [] };
+      expect(authorize(actor, { type: "risk-finding", orgId: ORG_A }).allowed).toBe(true);
+    }
   });
 });
 

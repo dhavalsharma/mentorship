@@ -4,9 +4,10 @@ import { db, readMagicLinkToken, seed, signIn } from "./support";
 
 /**
  * Admin invites someone through the form; the invitee follows the link
- * `apps/api` printed for them, and that sign-in is what enrols them.
+ * `apps/api` printed for them, and that sign-in is what enrols them — and
+ * lands them on `/no-access`, never the admin dashboard (ADR-0010).
  */
-test("invite form → invited participant → invitee follows the link → enrolled", async ({
+test("invite form → invited participant → invitee follows the link → enrolled, and not an admin", async ({
   page,
   context,
   browser,
@@ -47,14 +48,34 @@ test("invite form → invited participant → invitee follows the link → enrol
   const token = await readMagicLinkToken(email);
   const invitee = await browser.newContext();
   const inviteePage = await invitee.newPage();
-  // Waits on the verify call itself rather than where the page lands: today
-  // any session opens the admin dashboard (no role model yet — see the
-  // Enrolment row in CLAUDE.md), and this spec should not pin that down.
   const verified = inviteePage.waitForResponse(
     (r) => r.url().includes("/auth/verify") && r.request().method() === "POST",
   );
   await inviteePage.goto(`/verify?token=${token}`);
   expect((await verified).status()).toBe(200);
+
+  // Signed in for real, and not staff: `/verify` sends them to `/dashboard`,
+  // whose layout turns them away to `/no-access` — not back to `/login`,
+  // which would loop them through another link to the same refusal.
+  await expect(inviteePage).toHaveURL(/\/no-access$/);
+  await expect(
+    inviteePage.getByText("You're signed in, but you don't have admin access to this organisation."),
+  ).toBeVisible();
+  await expect(inviteePage.getByRole("link", { name: "Risk findings" })).toHaveCount(0);
+
+  // Every dashboard route, typed in directly, ends in the same place.
+  for (const route of ["/dashboard/risk-findings", "/dashboard/invites", "/dashboard/settings/document"]) {
+    await inviteePage.goto(route);
+    await expect(inviteePage, `${route} should refuse the invitee`).toHaveURL(/\/no-access$/);
+  }
+
+  // And the API itself refuses their session — the dashboard is not the gate.
+  const cookie = (await invitee.cookies()).find((c) => c.name === "mentorship_session");
+  expect(cookie).toBeDefined();
+  const direct = await inviteePage.request.post(`/api/orgs/${s.orgA}/invites`, {
+    data: { email: `e2e-friend-${tag}@example.test`, cohortId: cohort!.id, role: "mentee" },
+  });
+  expect(direct.status()).toBe(403);
   await invitee.close();
 
   expect(await participantState()).toBe("enrolled");

@@ -99,12 +99,19 @@ describe.skipIf(!DATABASE_URL)("cohort invites on Postgres", () => {
       { id: otherCohortId, orgId: otherOrgId, programId: otherProgramId, name: "2026", ...span },
     ]);
     await handle.db.insert(users).values([
-      { id: adminUserId, orgId, email: "admin@example.com", displayName: "Admin" },
+      {
+        id: adminUserId,
+        orgId,
+        email: "admin@example.com",
+        displayName: "Admin",
+        staffRole: "admin",
+      },
       {
         id: otherAdminUserId,
         orgId: otherOrgId,
         email: "admin@other.example.com",
         displayName: "Other admin",
+        staffRole: "admin",
       },
     ]);
     adminCookie = await sessionFor(orgId, adminUserId);

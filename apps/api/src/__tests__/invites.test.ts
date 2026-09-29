@@ -1,5 +1,6 @@
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
+import { FakeStaffDirectory } from "./staff-fake.js";
 import type { MagicLinkStore } from "@mentorship/auth";
 import type { InvitePlan } from "@mentorship/enrollment";
 import {
@@ -129,6 +130,7 @@ describe("POST /orgs/:orgId/invites", () => {
       responder: { respond: async () => {} },
       auth: {
         store,
+        staff: new FakeStaffDirectory("admin"),
         orgId: ORG,
         onMagicLinkIssued: (email, token) => issued.push({ email, token }),
       },

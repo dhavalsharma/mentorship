@@ -57,6 +57,13 @@
       "when": 1790346381114,
       "tag": "0016_session_notes_transcript",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790666067782,
+      "tag": "0017_users_staff_role",
+      "breakpoints": true
     }
   ]
 }

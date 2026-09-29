@@ -1,5 +1,6 @@
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
+import { FakeStaffDirectory } from "./staff-fake.js";
 import type { MagicLinkStore } from "@mentorship/auth";
 import {
   createServer,
@@ -15,7 +16,7 @@ import {
  * Slack deps (`identity`/`responder`) are never exercised by these routes,
  * so they get harmless stand-ins rather than a full seeded harness.
  *
- * These routes now require a real session (see `authenticateAdmin` in
+ * These routes now require a real session (see `authenticateStaff` in
  * `server.ts`), so every test that expects to reach the query needs a valid
  * `mentorship_session` cookie for `VALID_ORG_ID` — `sessionCookieFor` below
  * mints one against a Map-based fake `MagicLinkStore`, the same fake shape
@@ -93,7 +94,7 @@ describe("admin read routes over a real socket", () => {
     matchingRoundCandidates?: MatchingRoundCandidatesQuery;
   }): Promise<{ base: string; auth: AuthDeps; store: FakeMagicLinkStore }> {
     const store = new FakeMagicLinkStore();
-    const auth: AuthDeps = { store, orgId: VALID_ORG_ID };
+    const auth: AuthDeps = { store, staff: new FakeStaffDirectory("admin"), orgId: VALID_ORG_ID };
     const server = createServer({
       slackSigningSecret: "test-signing-secret",
       identity: noopIdentity(),
@@ -308,7 +309,7 @@ describe("matching-round candidates route over a real socket", () => {
     matchingRoundCandidates?: MatchingRoundCandidatesQuery,
   ): Promise<{ base: string; store: FakeMagicLinkStore }> {
     const store = new FakeMagicLinkStore();
-    const auth: AuthDeps = { store, orgId: VALID_ORG_ID };
+    const auth: AuthDeps = { store, staff: new FakeStaffDirectory("admin"), orgId: VALID_ORG_ID };
     const server = createServer({
       slackSigningSecret: "test-signing-secret",
       identity: noopIdentity(),

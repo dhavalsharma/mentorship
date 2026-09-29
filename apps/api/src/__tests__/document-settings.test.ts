@@ -1,5 +1,6 @@
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
+import { FakeStaffDirectory } from "./staff-fake.js";
 import type { MagicLinkStore } from "@mentorship/auth";
 import {
   createServer,
@@ -88,7 +89,7 @@ describe("document settings route", () => {
       slackSigningSecret: "test-signing-secret",
       identity: { resolveParticipantId: async () => null },
       responder: { respond: async () => {} },
-      auth: { store, orgId: VALID_ORG_ID },
+      auth: { store, staff: new FakeStaffDirectory("admin"), orgId: VALID_ORG_ID },
       ...(documentSettings ? { documentSettings } : {}),
     });
     await new Promise<void>((resolve) => server.listen(0, resolve));

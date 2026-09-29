@@ -25,13 +25,16 @@ import {
   authorize,
   DocumentPolicySchema,
   type Actor,
+  type Resource,
   type ResourceType,
+  type StaffRole,
 } from "@mentorship/core";
 import {
   requestMagicLink,
   verifyMagicLink,
   verifySession,
   type MagicLinkStore,
+  type StaffDirectory,
 } from "@mentorship/auth";
 import { planInvite, type InvitePlan } from "@mentorship/enrollment";
 import { InviteRequestSchema, defaultDisplayName } from "./invites.js";
@@ -143,11 +146,19 @@ export interface SheetSettingsStore {
  * pattern `postgres-ports.ts`'s `PostgresPortOptions` already uses for
  * `identity`/`responder`. `verifySession` is called with *this* `orgId`, not
  * whatever `:orgId` a request's URL names, so a session issued for a
- * different org simply cannot resolve here — see `authenticateAdmin` below
+ * different org simply cannot resolve here — see `authenticateStaff` below
  * for how that becomes the 401-vs-403 split invariant 3 requires.
  */
 export interface AuthDeps {
   store: MagicLinkStore;
+  /**
+   * Who in this org is staff (ADR-0010). Required, not optional: a valid
+   * session proves only that someone controls an email address — every
+   * invited mentee has one — so a deployment that wired `store` without this
+   * would hand the admin routes to anyone with a sign-in link. Making it a
+   * compile error to omit is the point.
+   */
+  staff: StaffDirectory;
   orgId: string;
   /**
    * Fires only when `requestMagicLink` actually minted a token (a known
@@ -481,32 +492,14 @@ async function handleAdminList(
     return;
   }
 
-  // Authenticate first, then authorize the specific :orgId — see
-  // `authenticateAdmin` for why a session's own org (not the URL) is the
-  // source of truth, and CLAUDE.md invariant 3 for why that boundary is
-  // non-negotiable even when the orgId in the URL is a real, guessable UUID.
-  const authed = await authenticateAdmin(req, res, deps, orgId);
-  if (!authed) return; // response already written (401 or 403)
-
-  // Authenticated and org-matched is necessary but no longer sufficient on
-  // its own — invariant 14 (docs/decisions, CLAUDE.md, `packages/core`'s
-  // `authorize`): org membership alone must never be read as "may see
-  // everything about every pairing in the org." These two resources are
-  // activity/attendance data (did a pair meet, how many nudges fired), which
-  // the matrix grants org-chart roles org-wide — unlike an individual's
-  // feedback sentiment, which it never does, for anyone. A session
-  // authenticated through this route is currently the only role apps/api
-  // knows how to establish, so it authorizes as `admin`; a future route that
-  // reads something pair-scoped (feedback sentiment, a per-participant
-  // signal) must resolve the caller's actual pairing membership and role
-  // before calling `authorize`, never assume this shortcut.
-  const actor: Actor = { orgId: asOrgId(orgId), role: "admin", pairingIds: [] };
-  const decision = authorize(actor, {
-    type: ADMIN_LIST_RESOURCE_TYPE[kind],
-    orgId: asOrgId(orgId),
-  });
-  if (!decision.allowed) {
-    writeJson(res, 403, { error: "forbidden" });
+  // Authenticate, resolve the caller's staff role, then authorize the
+  // specific resource — see `authenticateStaff` for why a session's own org
+  // (not the URL) is the source of truth (invariant 3), and
+  // `authorizeStaff` for why authorization runs even though every staff
+  // role can read these lists today (invariant 14).
+  const staff = await authenticateStaff(req, res, deps, orgId);
+  if (!staff) return; // response already written (401 or 403)
+  if (!authorizeStaff(res, staff, { type: ADMIN_LIST_RESOURCE_TYPE[kind], orgId: asOrgId(orgId) })) {
     return;
   }
 
@@ -570,24 +563,13 @@ async function handleMatchingRoundCandidates(
     return;
   }
 
-  // Same authenticate-then-authorize order as `handleAdminList`, and for the
-  // same reason (invariant 3): a session's own org, never the URL's, is what
-  // decides whether this request may proceed.
-  const authed = await authenticateAdmin(req, res, deps, orgId);
-  if (!authed) return; // response already written (401 or 403)
-
-  // Same visibility-matrix gate `handleAdminList` runs — a matching round's
-  // candidates are org-wide operational/appeal data (`matching-candidates`),
-  // never a named person's sentiment, but authorization is invariant 14's
-  // whole point: no route should skip it just because it happens not to
-  // carry attributable feedback today.
-  const actor: Actor = { orgId: asOrgId(orgId), role: "admin", pairingIds: [] };
-  const decision = authorize(actor, {
-    type: "matching-candidates",
-    orgId: asOrgId(orgId),
-  });
-  if (!decision.allowed) {
-    writeJson(res, 403, { error: "forbidden" });
+  // Same authenticate-then-authorize order as `handleAdminList`. A matching
+  // round's candidates are org-wide appeal data (`matching-candidates`),
+  // never a named person's sentiment — but no route skips `authorize` just
+  // because it happens not to carry attributable feedback today.
+  const staff = await authenticateStaff(req, res, deps, orgId);
+  if (!staff) return; // response already written (401 or 403)
+  if (!authorizeStaff(res, staff, { type: "matching-candidates", orgId: asOrgId(orgId) })) {
     return;
   }
 
@@ -650,17 +632,12 @@ async function handleInvite(
     return;
   }
 
-  const authed = await authenticateAdmin(req, res, deps, orgId);
-  if (!authed) return; // response already written (401 or 403)
-
-  // Same admin shortcut, and the same caveat, as `handleAdminList`: a
-  // session is the only role apps/api can establish today, so it authorizes
-  // as `admin`. `enrolment.invite` is the resource that will start refusing
-  // the day a session can resolve to a participant instead.
-  const actor: Actor = { orgId: asOrgId(orgId), role: "admin", pairingIds: [] };
-  const decision = authorize(actor, { type: "enrolment.invite", orgId: asOrgId(orgId) });
-  if (!decision.allowed) {
-    writeJson(res, 403, { error: "forbidden" });
+  // Inviting decides who is in the program, so it is the route an invited
+  // participant must least be able to reach — `authenticateStaff` refuses
+  // any session whose user has no staff role before this is ever asked.
+  const staff = await authenticateStaff(req, res, deps, orgId);
+  if (!staff) return; // response already written (401 or 403)
+  if (!authorizeStaff(res, staff, { type: "enrolment.invite", orgId: asOrgId(orgId) })) {
     return;
   }
 
@@ -715,7 +692,7 @@ async function handleInvite(
     return;
   }
 
-  const outcome = await deps.enrollment.invite(orgId, planned.plan, authed.userId);
+  const outcome = await deps.enrollment.invite(orgId, planned.plan, staff.userId);
   if (!outcome.ok) {
     const issue =
       outcome.reason === "unknown_cohort"
@@ -779,8 +756,13 @@ async function handleDocumentSettings(
     return;
   }
 
-  const authed = await authenticateAdmin(req, res, deps, orgId);
-  if (!authed) return; // response already written (401 or 403)
+  // Reads as well as writes: the folder and guideline ids are the tenant's
+  // wiring, and `integration.settings` is admin-only in the matrix.
+  const staff = await authenticateStaff(req, res, deps, orgId);
+  if (!staff) return; // response already written (401 or 403)
+  if (!authorizeStaff(res, staff, { type: "integration.settings", orgId: asOrgId(orgId) })) {
+    return;
+  }
 
   const store = deps.documentSettings;
   if (!store) {
@@ -851,8 +833,12 @@ async function handleSheetSettings(
     return;
   }
 
-  const authed = await authenticateAdmin(req, res, deps, orgId);
-  if (!authed) return; // response already written (401 or 403)
+  // Same gate as `handleDocumentSettings`, for the same reason.
+  const staff = await authenticateStaff(req, res, deps, orgId);
+  if (!staff) return; // response already written (401 or 403)
+  if (!authorizeStaff(res, staff, { type: "integration.settings", orgId: asOrgId(orgId) })) {
+    return;
+  }
 
   const store = deps.sheetSettings;
   if (!store) {
@@ -966,6 +952,13 @@ function parseDocumentSettings(
   };
 }
 
+/** A signed-in, org-matched caller who is staff — see `authenticateStaff`. */
+interface StaffCaller {
+  userId: string;
+  orgId: string;
+  role: StaffRole;
+}
+
 /**
  * No valid session -> 401. A valid session whose own org does not match the
  * `:orgId` in the URL -> 403 rather than proceeding — a session issued for
@@ -974,13 +967,19 @@ function parseDocumentSettings(
  * `deps.auth.orgId` already *is* the session's org: `verifySession` is
  * called scoped to it, never to the URL's `orgId`, so the org comparison
  * below is a plain equality check rather than a second trip to the store.
+ *
+ * A valid, org-matched session whose user is not staff -> 403 as well, with
+ * the identical body (ADR-0010). A magic link proves who someone is, and
+ * every invited participant can get one; it never proves they run the
+ * program. The body does not say *which* 403 this is: a participant probing
+ * the API learns nothing about whether the org id was right.
  */
-async function authenticateAdmin(
+async function authenticateStaff(
   req: IncomingMessage,
   res: ServerResponse,
   deps: ApiServerDeps,
   urlOrgId: string,
-): Promise<{ userId: string } | null> {
+): Promise<StaffCaller | null> {
   if (!deps.auth) {
     writeJson(res, 401, { error: "unauthorized" });
     return null;
@@ -1008,7 +1007,40 @@ async function authenticateAdmin(
     return null;
   }
 
-  return { userId: result.userId };
+  const role = await deps.auth.staff.staffRoleOf(deps.auth.orgId, result.userId);
+  if (role === null) {
+    writeJson(res, 403, { error: "forbidden" });
+    return null;
+  }
+
+  return { userId: result.userId, orgId: deps.auth.orgId, role };
+}
+
+/**
+ * The visibility-matrix check every staff route runs after
+ * `authenticateStaff`, with the caller's *resolved* role — never an assumed
+ * one. Being staff gets a caller to the door; `authorize` decides which
+ * doors (a program lead may list and invite, only an admin may touch
+ * integration settings). Writes the 403 itself and returns false on deny.
+ *
+ * `pairingIds` is empty because a staff caller is authorized as org-chart
+ * staff, not as a pair member. A future route that reads something
+ * pair-scoped (feedback sentiment, a participant-attributed signal) must
+ * resolve the caller's real pairing membership first — for staff that
+ * membership grants nothing extra here, and for invariant 14 it must not.
+ */
+function authorizeStaff(
+  res: ServerResponse,
+  caller: StaffCaller,
+  resource: Resource,
+): boolean {
+  const actor: Actor = { orgId: asOrgId(caller.orgId), role: caller.role, pairingIds: [] };
+  const decision = authorize(actor, resource);
+  if (!decision.allowed) {
+    writeJson(res, 403, { error: "forbidden" });
+    return false;
+  }
+  return true;
 }
 
 async function handleRequestLink(

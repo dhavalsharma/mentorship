@@ -267,6 +267,13 @@ pnpm serve:worker:live
 # 4. The endpoint, in another shell, behind the tunnel from "Reaching your
 #    laptop from Slack" below.
 DATABASE_URL=… ORG_ID=$ORG_ID SLACK_SIGNING_SECRET=… SLACK_BOT_TOKEN=… pnpm serve:api
+
+# 5. Only if you will use the dashboard (apps/web) against this org: make
+#    yourself staff first. Nobody is staff by default (ADR-0010) — the seeded
+#    mentor and mentee are participants, and a participant who signs in gets
+#    "No admin access", not the dashboard. Use an address that is *not* one
+#    of the pair's, or the mentor/mentee becomes an admin of the test org.
+DATABASE_URL=… ORG_ID=$ORG_ID pnpm staff:grant --email you@example.com --role admin
 ```
 
 `SLACK_BOT_TOKEN` is optional here and needed for exactly one thing:

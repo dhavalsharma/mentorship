@@ -57,20 +57,25 @@ The load-bearing wall. Everything after this assumes it.
       `planInvite`/`commitInvite`: one admin, one email, one cohort, one role,
       deduped against a repeat invite. No schema change; built entirely on
       `cohorts`/`users`/`participants`/`identityLinks`, which already existed.
-      Wired: `POST /orgs/:orgId/invites` on `apps/api` (`authenticateAdmin`,
+      Wired: `POST /orgs/:orgId/invites` on `apps/api` (`authenticateStaff`,
       then `authorize()` on `enrolment.invite`, Zod body, cohort and role
       checked against this org's own data inside `withTenant`; 201 / 200
       dedupe / 400 field errors), a magic link issued per invite while the
       person is still `invited`, and `apps/web`'s `/dashboard/invites`.
-- [ ] **Open: admin is not a role yet.** Every session authorizes as
-      `admin` (`handleAdminList`'s shortcut, now also `handleInvite`'s). That
-      was already true of any roster-imported user who requested a link;
-      invites make it worse by *issuing* each invitee a working session.
-      Closing it needs a schema change — somewhere to say who is staff
-      (an `org_members`/role table, or a role on `users`) — and
-      `authenticateAdmin` resolving the session to that role before
-      `authorize()`; the `enrolment.invite` resource already refuses pair
-      roles, so nothing else in the route changes. Not guessed at here.
+- [x] **Staff roles** ([ADR-0010](decisions/0010-staff-role-is-granted-out-of-band.md)).
+      A session used to authorize as `admin` on every admin route, so an
+      invitee who followed their link got the dashboard and could invite
+      others. Now `users.staff_role` (`admin` | `program_lead` | NULL,
+      migration `0017`, no backfill) is read on every staff request by
+      `authenticateStaff` through the required `StaffDirectory` port; a
+      non-staff session is a 403 with the same body as a wrong-org one, and
+      `authorize()` runs with the resolved role. Integration settings are a
+      new admin-only resource. Granted out of band with `pnpm staff:grant`,
+      audited as `staff.role_changed`; `apps/web` shows `/no-access` to a
+      signed-in non-staff user.
+- [ ] Grant and revoke staff roles from the dashboard, by an existing admin
+      (admin-only route, same audit row). Today it is `pnpm staff:grant`
+      only.
 - [ ] Invite follow-ups, none needing a schema change: actually sending the
       link by email (it is printed today, like every magic link), a
       `GET` of cohorts/pending invites so the form need not take a cohort id,
@@ -165,7 +170,7 @@ The load-bearing wall. Everything after this assumes it.
       `listStuckSagaInstances`/`listDeadLetteredEvents`
       (`packages/workflows/src/postgres-reads.ts`, org-scoped, run inside
       `withTenant`), `GET /orgs/:orgId/{stuck-sagas,dead-letters}` on
-      `apps/api` (same `authenticateAdmin` 401/403 gating as risk-findings/
+      `apps/api` (same `authenticateStaff` 401/403 gating as risk-findings/
       nudges, `stuck-sagas` taking an optional `?days=`, default 3), and
       `apps/web`'s `/dashboard/{stuck-sagas,dead-letters}` pages. No
       acknowledgement/replay action yet — read-only, same as risk-findings.
@@ -249,7 +254,7 @@ risk, and it is the only one that *generates* the labelled data the others need.
       round's full candidate set (winners and losers, features, explanation,
       `won`) straight back out of `ai_runs` by run id, behind
       `GET /orgs/:orgId/matching-rounds/:runId/candidates`
-      (`authenticateAdmin`-gated, same as `risk-findings`/`nudges`).
+      (`authenticateStaff`-gated, same as `risk-findings`/`nudges`).
       `/dashboard/matching-rounds` renders it as a table. No list of past
       rounds exists yet — it is a lookup by run id, not a browsable index —
       since nothing yet writes a round-to-cohort index a listing could read.
@@ -309,7 +314,7 @@ blocked while this waits.
       invariant-14 case CLAUDE.md flagged as missing. Wired into
       `apps/api/src/server.ts`'s `handleAdminList` — `GET
       /orgs/:orgId/risk-findings` and `/nudges` now call `authorize` after
-      `authenticateAdmin`, org membership no longer being read as "sees
+      `authenticateStaff`, org membership no longer being read as "sees
       everything." Not yet wired to a route that reads anything pair-scoped
       (feedback sentiment, a per-participant `signal`), because none exists
       yet — there is no session-to-participant/pairing-membership resolution
