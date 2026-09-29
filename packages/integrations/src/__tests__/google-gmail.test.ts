@@ -126,10 +126,61 @@ describe("guardEmailSender (the allowlist)", () => {
   });
 });
 
+describe("guardEmailSender + address validation: recipient bypass strings", () => {
+  const ALLOWED = "me@example.org";
+  const wire = () => {
+    const raws: string[] = [];
+    const transport = async (_p: string, init: { body?: unknown }) => {
+      raws.push(Buffer.from((init.body as { raw: string }).raw, "base64url").toString("utf8"));
+      return { id: "m" };
+    };
+    const guard = new SandboxGuard({ allowlist: [ALLOWED] });
+    return { raws, sender: guardEmailSender(new GmailEmailAdapter(transport, config), guard) };
+  };
+
+  // Each string either is refused by the guard (not the allowlisted address),
+  // or slips the guard's trim/prefix normalisation and is refused by
+  // assertAddress. Either way nothing reaches the transport.
+  it.each([
+    ["display-name form", `Me <${ALLOWED}>`],
+    ["multiple recipients, comma", `${ALLOWED}, evil@example.net`],
+    ["multiple recipients, semicolon", `${ALLOWED}; evil@example.net`],
+    ["mailto: prefix", `mailto:${ALLOWED}`],
+    ["email: prefix (the guard strips it)", `email:${ALLOWED}`],
+    ["plus variant", "me+x@example.org"],
+    ["dot variant", "m.e@example.org"],
+    ["trailing CRLF (the guard trims it)", `${ALLOWED}\r\n`],
+    ["CRLF header injection", `${ALLOWED}\r\nBcc: evil@example.net`],
+    ["LF header injection", `${ALLOWED}\nBcc: evil@example.net`],
+    ["NUL byte", `${ALLOWED}\0evil@example.net`],
+    ["quoted local part", `"me"@example.org`],
+    ["inner whitespace", "me @example.org"],
+    ["surrounding whitespace (guard trims, addr-spec refuses)", "  me@example.org  "],
+  ])("never reaches the transport: %s", async (_name, to) => {
+    const { raws, sender } = wire();
+    await expect(sender.send({ ...message, to, idempotencyKey: "k" })).rejects.toBeInstanceOf(Error);
+    expect(raws).toEqual([]);
+  });
+
+  it.each([
+    ["mixed case", "ME@Example.ORG"],
+  ])("still delivers, to exactly the allowlisted address: %s", async (_name, to) => {
+    const { raws, sender } = wire();
+    await sender.send({ ...message, to, idempotencyKey: "k" });
+    expect(raws).toHaveLength(1);
+    expect(raws[0]).toMatch(/^To: me@example\.org$/im);
+    expect(raws[0]).not.toMatch(/evil/i);
+  });
+});
+
 describe("recordingGoogleGmailTransport", () => {
   it("never writes the raw message — recipient and link — into a fixture", async () => {
     const sink = memoryFixtureSink();
-    const inner = async () => ({ id: "18c3f5a7b2d1e4f0", threadId: "18c3f5a7b2d1e4f0", labelIds: ["SENT"] });
+    let sentRaw = "";
+    const inner = async (_path: string, init: { body?: unknown }) => {
+      sentRaw = (init.body as { raw: string }).raw;
+      return { id: "18c3f5a7b2d1e4f0", threadId: "18c3f5a7b2d1e4f0", labelIds: ["SENT"] };
+    };
     const adapter = new GmailEmailAdapter(
       recordingGoogleGmailTransport(inner, { sink, now: () => new Date("2026-09-29T00:00:00Z") }),
       config,
@@ -144,7 +195,17 @@ describe("recordingGoogleGmailTransport", () => {
       source: "live",
       request: { body: { raw: GMAIL_RAW_PLACEHOLDER } },
     });
-    expect(text).not.toContain("priya");
+    // Negative control: the message the transport really got, decoded, does
+    // carry the recipient and link — so their absence below means something.
+    const decoded = Buffer.from(sentRaw, "base64url").toString("utf8");
+    expect(decoded).toContain("priya@example.com");
+    // Bodies are base64 inside the MIME message, so check the encoded form.
+    expect(decoded).toContain(Buffer.from(message.text).toString("base64"));
+    // The fixture holds neither the encoded message nor anything decoded from it.
+    expect(text).not.toContain(sentRaw);
+    expect(text).not.toContain(Buffer.from("priya@example.com").toString("base64url"));
+    expect(text).not.toContain("priya@example.com");
+    expect(text).not.toContain(Buffer.from(message.text).toString("base64"));
     expect(text).not.toContain("token=abc");
   });
 });
