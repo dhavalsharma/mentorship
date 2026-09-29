@@ -6,7 +6,9 @@ import {
   withTenant,
   type Db,
 } from "@mentorship/db";
+import { StaffRoleSchema, type StaffRole } from "@mentorship/core";
 import type { MagicLinkStore } from "./magic-link.js";
+import type { StaffDirectory } from "./staff.js";
 
 /**
  * `magic_links` and `auth_sessions`, backing `MagicLinkStore` — the Postgres
@@ -138,5 +140,41 @@ export class PostgresMagicLinkStore implements MagicLinkStore {
         revokedAt: row.revokedAt?.toISOString() ?? null,
       };
     });
+  }
+}
+
+/**
+ * `users.staff_role` (migration 0017), backing `StaffDirectory`. Same
+ * constructor shape and the same `withTenant` discipline as the store above,
+ * so a user id from another org reads as `null` — not staff — rather than as
+ * whatever role that org gave them.
+ *
+ * The value is parsed, not cast: the column's CHECK already refuses anything
+ * but the two roles, but a role this code does not recognise must fail
+ * closed (not staff) rather than reach `authorize()` as an unknown string.
+ */
+export class PostgresStaffDirectory implements StaffDirectory {
+  constructor(
+    private readonly db: Db,
+    private readonly options: { role?: string } = {},
+  ) {}
+
+  async staffRoleOf(orgId: string, userId: string): Promise<StaffRole | null> {
+    const { role } = this.options;
+    const row = await withTenant(
+      this.db,
+      orgId,
+      async (tx) => {
+        const [found] = await tx
+          .select({ staffRole: users.staffRole })
+          .from(users)
+          .where(and(eq(users.orgId, orgId), eq(users.id, userId)))
+          .limit(1);
+        return found ?? null;
+      },
+      role === undefined ? {} : { role },
+    );
+    const parsed = StaffRoleSchema.safeParse(row?.staffRole);
+    return parsed.success ? parsed.data : null;
   }
 }

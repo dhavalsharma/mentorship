@@ -42,6 +42,10 @@ const TENANT_TABLES = [
   "events",
   "ai_runs",
   "integration_bindings",
+  "audit_log",
+  "identity_links",
+  "participants",
+  "cohorts",
   "programs",
   "magic_links",
   "auth_sessions",
@@ -122,12 +126,16 @@ async function seedDatabase(): Promise<Seed> {
     { id: orgA, name: `E2E org A ${tag}`, slug: `e2e-a-${orgA}` },
     { id: orgB, name: `E2E org B ${tag}`, slug: `e2e-b-${orgB}` },
   ])}`;
+  // Both are granted `admin` directly (ADR-0010): a signed-in user with no
+  // staff role is refused by every admin route, and these two are the
+  // dashboard's operators. `7-invites.spec.ts` is where a non-staff session
+  // earns its way in and is turned away.
   const [userA] = await sql<{ id: string }[]>`
-    insert into users (org_id, email, display_name)
-    values (${orgA}, ${adminEmail}, 'E2E Admin') returning id`;
+    insert into users (org_id, email, display_name, staff_role)
+    values (${orgA}, ${adminEmail}, 'E2E Admin', 'admin') returning id`;
   const [userB] = await sql<{ id: string }[]>`
-    insert into users (org_id, email, display_name)
-    values (${orgB}, ${`e2e-other-${tag}@example.test`}, 'E2E Other Admin') returning id`;
+    insert into users (org_id, email, display_name, staff_role)
+    values (${orgB}, ${`e2e-other-${tag}@example.test`}, 'E2E Other Admin', 'admin') returning id`;
 
   // A program, so the document form's naming template has a policy to live
   // in (`PostgresDocumentSettingsStore.write` saves it nowhere without one).

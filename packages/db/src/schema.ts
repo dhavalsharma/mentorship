@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -68,8 +69,23 @@ export const users = pgTable(
     email: text("email").notNull(),
     displayName: text("display_name").notNull(),
     tzOffsetMinutes: integer("tz_offset_minutes").notNull().default(0),
+    /**
+     * Org-chart staff role — `admin` | `program_lead` (core's
+     * `StaffRoleSchema`) — or NULL for everyone else. This, and only this,
+     * is what lets a signed-in session into the admin routes: a magic link
+     * proves who someone is, never that they run the program. Granted out of
+     * band (`pnpm staff:grant`, ADR-0010), never inferred from
+     * `participants.role`, which is a cohort-scoped *pair* role.
+     */
+    staffRole: text("staff_role"),
   },
-  (t) => [uniqueIndex("users_org_email_idx").on(t.orgId, t.email)],
+  (t) => [
+    uniqueIndex("users_org_email_idx").on(t.orgId, t.email),
+    check(
+      "users_staff_role_check",
+      sql`${t.staffRole} IS NULL OR ${t.staffRole} IN ('admin', 'program_lead')`,
+    ),
+  ],
 );
 
 /**

@@ -46,8 +46,24 @@ export const ActorRoleSchema = z.enum([
 ]);
 export type ActorRole = z.infer<typeof ActorRoleSchema>;
 
+/**
+ * The org-chart half of `ActorRoleSchema`: what `users.staff_role` may hold
+ * (migration 0017, ADR-0010), and so the only roles a signed-in session can
+ * resolve to at a staff route. Extracted from `ActorRoleSchema` so a staff
+ * role is always a valid `Actor` role, and `ORG_CHART_ROLES` below is built
+ * from it so the two cannot drift. The column's CHECK constraint is the third
+ * spelling of this list; change all three together.
+ *
+ * A pair role is never a staff role. `mentor`/`mentee` describe someone's
+ * place in a cohort's pairing (`participants.role`), which says nothing
+ * about whether they run the program — reading one as the other is exactly
+ * how every invited mentee once got the admin dashboard.
+ */
+export const StaffRoleSchema = ActorRoleSchema.extract(["admin", "program_lead"]);
+export type StaffRole = z.infer<typeof StaffRoleSchema>;
+
 /** Org-chart roles. Everyone else is treated as a pair-role actor. */
-const ORG_CHART_ROLES: ReadonlySet<ActorRole> = new Set(["admin", "program_lead"]);
+const ORG_CHART_ROLES: ReadonlySet<ActorRole> = new Set(StaffRoleSchema.options);
 
 /**
  * `orgId`/`participantId`/`pairingId` are branded strings, not the zod-schema
@@ -98,6 +114,20 @@ export const ResourceTypeSchema = z.enum([
   "operational-monitoring",
   /** A matching round's candidate pairs, features and scores — appeal data. */
   "matching-candidates",
+  /**
+   * Inviting someone into a cohort — a *write* that decides who is in the
+   * program. Org-chart staff only: unlike activity, a pair member being party
+   * to some pairing is no reason at all to let them add people to a cohort.
+   */
+  "enrolment.invite",
+  /**
+   * An org's integration configuration — the `document`/`sheet` slots'
+   * Drive folder, guideline doc, spreadsheet and naming template, read or
+   * written. `admin` only: pointing the program's shared docs at a different
+   * folder decides where every pair's notes land, which is a tenant-owner
+   * decision, not a program lead's.
+   */
+  "integration.settings",
 ]);
 export type ResourceType = z.infer<typeof ResourceTypeSchema>;
 
@@ -199,6 +229,25 @@ export function authorize(actor: Actor, resource: Resource): AuthorizationDecisi
         return allow("activity/attendance data is visible to org-chart staff and pair members");
       }
       return deny("actor is neither org-chart staff nor a party to this pairing");
+    }
+
+    case "enrolment.invite": {
+      // No `isPairMember` branch, on purpose — see the resource type's doc.
+      // Membership of a pairing is about reading your own pair's data, never
+      // about changing who else is in the cohort.
+      if (isOrgChart) {
+        return allow("org-chart staff may invite people into their org's cohorts");
+      }
+      return deny("only org-chart staff may invite people into a cohort");
+    }
+
+    case "integration.settings": {
+      // Deliberately narrower than `isOrgChart`: a program lead runs cohorts,
+      // an admin owns the tenant's wiring. No pair-member branch either.
+      if (actor.role === "admin") {
+        return allow("an admin may read and change their org's integration settings");
+      }
+      return deny("only an admin may read or change integration settings");
     }
 
     default: {

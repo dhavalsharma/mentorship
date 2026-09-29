@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   acceptInvite,
+  acceptPendingInvites,
   commitInvite,
   planInvite,
   type AuditSink,
   type EnrollmentSink,
+  type PendingInviteSource,
 } from "@mentorship/enrollment";
 
-class FakeEnrollmentSink implements EnrollmentSink {
+class FakeEnrollmentSink implements EnrollmentSink, PendingInviteSource {
   users = new Map<string, { userId: string; email: string; displayName: string; tzOffsetMinutes: number }>();
   participants = new Map<
     string,
@@ -51,6 +53,13 @@ class FakeEnrollmentSink implements EnrollmentSink {
   async linkIdentity(input: { userId: string; provider: string; externalId: string; verifiedAt: string }) {
     this.calls++;
     this.identityLinks.push(input);
+  }
+
+  async listInvitedParticipants(input: { userId: string }) {
+    this.calls++;
+    return [...this.participants.values()]
+      .filter((p) => p.userId === input.userId && p.state === "invited")
+      .map((p) => ({ participantId: p.participantId }));
   }
 
   async updateParticipantState(input: { participantId: string; state: string }) {
@@ -244,6 +253,63 @@ describe("acceptInvite", () => {
         sink,
       ),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("commitInvite result state and actor", () => {
+  it("reports invited for a new invite and the existing state for a repeat", async () => {
+    const sink = new FakeEnrollmentSink();
+    const plan = mustPlan(validPlanInput());
+    const first = await commitInvite(plan, sink);
+    expect(first.state).toBe("invited");
+    await sink.updateParticipantState({ participantId: first.participantId, state: "enrolled" });
+    expect((await commitInvite(plan, sink)).state).toBe("enrolled");
+  });
+
+  it("stamps the inviting admin on the audit row when given", async () => {
+    const sink = new FakeEnrollmentSink();
+    const audit = new FakeAuditSink();
+    await commitInvite(mustPlan(validPlanInput()), sink, audit, { actorRef: "admin-user-1" });
+    expect(audit.records[0]?.actorRef).toBe("admin-user-1");
+  });
+});
+
+describe("acceptPendingInvites", () => {
+  it("enrols every pending invite for the user with an email identity, then is a no-op", async () => {
+    const sink = new FakeEnrollmentSink();
+    const audit = new FakeAuditSink();
+    const a = await commitInvite(mustPlan(validPlanInput()), sink);
+    const b = await commitInvite(mustPlan({ ...validPlanInput(), role: "mentor" }), sink);
+    const userId = [...sink.users.values()][0]!.userId;
+
+    const first = await acceptPendingInvites(
+      { userId, email: "Ada@Example.com", now: () => "2026-09-16T00:00:00.000Z", orgId: "org_1" },
+      sink,
+      audit,
+    );
+
+    expect(first.accepted.sort()).toEqual([a.participantId, b.participantId].sort());
+    expect(sink.participants.get(a.participantId)?.state).toBe("enrolled");
+    expect(sink.participants.get(b.participantId)?.state).toBe("enrolled");
+    expect(sink.identityLinks[0]).toMatchObject({ provider: "email", externalId: "ada@example.com" });
+    expect(audit.records.map((r) => r.action)).toEqual(["identity.verified", "identity.verified"]);
+
+    const second = await acceptPendingInvites(
+      { userId, email: "ada@example.com", now: () => "2026-09-17T00:00:00.000Z", orgId: "org_1" },
+      sink,
+      audit,
+    );
+    expect(second.accepted).toEqual([]);
+    expect(audit.records).toHaveLength(2);
+  });
+
+  it("accepts nothing for a user with no invites", async () => {
+    const sink = new FakeEnrollmentSink();
+    const result = await acceptPendingInvites(
+      { userId: "nobody", email: "x@example.com", now: () => "2026-09-16T00:00:00.000Z" },
+      sink,
+    );
+    expect(result.accepted).toEqual([]);
   });
 });
 

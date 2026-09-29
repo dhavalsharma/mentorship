@@ -10,6 +10,7 @@ const DASHBOARD_ROUTES = [
   "/dashboard/matching-rounds",
   "/dashboard/settings/document",
   "/dashboard/settings/sheet",
+  "/dashboard/invites",
 ];
 
 test("each /dashboard route redirects to /login without a session", async ({ page }) => {

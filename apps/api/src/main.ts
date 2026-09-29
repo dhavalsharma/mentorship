@@ -1,5 +1,5 @@
 import { createClient } from "@mentorship/db";
-import type { MagicLinkStore } from "@mentorship/auth";
+import type { MagicLinkStore, StaffDirectory } from "@mentorship/auth";
 import { commitRosterImport, planRosterImport } from "@mentorship/roster";
 import { bootstrap } from "@mentorship/testkit";
 import {
@@ -161,6 +161,20 @@ function inMemoryMagicLinkStore(users: { userId: string; email: string }[]): Mag
   };
 }
 
+/**
+ * The in-memory counterpart to `users.staff_role`. Arjun is the seeded
+ * admin; Priya is the mentee of the same pair and deliberately *not* staff,
+ * so `pnpm serve:api` with no database still shows the 403 a signed-in
+ * participant gets from every admin route (ADR-0010).
+ */
+function inMemoryStaffDirectory(admins: ReadonlySet<string>): StaffDirectory {
+  return {
+    async staffRoleOf(_orgId, userId) {
+      return admins.has(userId) ? "admin" : null;
+    },
+  };
+}
+
 async function memoryDeps(): Promise<ApiServerDeps> {
   const harness = bootstrap();
   const plan = planRosterImport(ONE_PAIR, {
@@ -260,6 +274,7 @@ async function memoryDeps(): Promise<ApiServerDeps> {
         { userId: "user-arjun", email: "arjun.rao@wekancode.com" },
         { userId: "user-priya", email: "priya.menon@wekancode.com" },
       ]),
+      staff: inMemoryStaffDirectory(new Set(["user-arjun"])),
       orgId: MEMORY_ORG_ID,
       onMagicLinkIssued: (email, rawToken) => {
         console.log(`[auth] magic link for ${email}: ${rawToken}`);

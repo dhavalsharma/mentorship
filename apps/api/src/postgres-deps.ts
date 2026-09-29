@@ -1,10 +1,11 @@
 import type { Db } from "@mentorship/db";
 import { PostgresAiRunSink } from "@mentorship/ai/postgres";
-import { PostgresMagicLinkStore } from "@mentorship/auth/postgres";
+import { PostgresMagicLinkStore, PostgresStaffDirectory } from "@mentorship/auth/postgres";
 import {
   SlackWebApiModalOpener,
   type SlackTransport,
 } from "@mentorship/integrations";
+import { PostgresEnrollmentService } from "./postgres-enrollment.js";
 import {
   PostgresAgreementResponder,
   PostgresChatIdentityResolver,
@@ -99,8 +100,13 @@ export function buildPostgresApiDeps(options: PostgresApiDepsOptions): ApiServer
     },
     documentSettings: new PostgresDocumentSettingsStore(db, scoped),
     sheetSettings: new PostgresSheetSettingsStore(db, scoped),
+    enrollment: new PostgresEnrollmentService(db, {
+      ...scoped,
+      ...(options.now ? { now: options.now } : {}),
+    }),
     auth: {
       store: new PostgresMagicLinkStore(db, scoped),
+      staff: new PostgresStaffDirectory(db, scoped),
       orgId,
       ...(options.onMagicLinkIssued
         ? { onMagicLinkIssued: options.onMagicLinkIssued }

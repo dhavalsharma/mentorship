@@ -16,10 +16,14 @@ export const dynamic = "force-dynamic";
  * available: make a real, cheap request to a protected data route and read
  * the status. `limit=1` keeps it cheap regardless of which page renders
  * next, since every dashboard page re-fetches its own full list anyway.
- * A 401 means no/invalid session -> bounce to /login. A 403 would mean the
- * session belongs to a different org than `ORG_ID`, which for this
- * single-tenant deployment is a misconfiguration, not a normal user path —
- * it still routes to /login rather than crashing the layout.
+ * A 401 means no/invalid session -> bounce to /login. A 403 means a real
+ * session that is not staff here (ADR-0010) — most often an invited
+ * participant who followed their magic link, which lands on `/dashboard`.
+ * That goes to `/no-access`, not `/login`: sending a signed-in person back
+ * to sign in again only loops them through another link to the same 403.
+ * (A session for a different org than `ORG_ID` is also a 403; for this
+ * single-tenant deployment that is a misconfiguration, and "no access to
+ * this organisation" is still the true thing to say.)
  */
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   if (!ORG_ID) {
@@ -30,9 +34,8 @@ export default async function DashboardLayout({ children }: { children: React.Re
   }
 
   const probe = await fetchAdminRoute(`/orgs/${ORG_ID}/risk-findings?limit=1`);
-  if (probe.status === "unauthorized" || probe.status === "forbidden") {
-    redirect("/login");
-  }
+  if (probe.status === "unauthorized") redirect("/login");
+  if (probe.status === "forbidden") redirect("/no-access");
 
   return (
     <div className="flex flex-1 flex-col">
@@ -53,6 +56,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
           </Link>
           <Link href="/dashboard/matching-rounds" className="text-sm hover:underline">
             Matching rounds
+          </Link>
+          <Link href="/dashboard/invites" className="text-sm hover:underline">
+            Invites
           </Link>
           <Link
             href="/dashboard/settings/document"

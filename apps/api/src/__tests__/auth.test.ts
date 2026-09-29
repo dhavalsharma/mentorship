@@ -1,5 +1,6 @@
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
+import { FakeStaffDirectory } from "./staff-fake.js";
 import type { MagicLinkStore } from "@mentorship/auth";
 import { createServer, type ApiServerDeps } from "../server.js";
 
@@ -116,6 +117,7 @@ describe("magic-link auth routes over a real socket", () => {
       responder: noopResponder(),
       auth: {
         store,
+        staff: new FakeStaffDirectory("admin"),
         orgId: ORG_ID,
         onMagicLinkIssued: (email, rawToken) => issued.push({ email, rawToken }),
       },

@@ -8,11 +8,13 @@
     "@mentorship/auth": "workspace:*",
     "@mentorship/core": "workspace:*",
     "@mentorship/db": "workspace:*",
+    "@mentorship/enrollment": "workspace:*",
     "@mentorship/integrations": "workspace:*",
     "@mentorship/primitive-matching": "workspace:*",
     "@mentorship/roster": "workspace:*",
     "@mentorship/testkit": "workspace:*",
     "@mentorship/workflows": "workspace:*",
-    "drizzle-orm": "^0.38.3"
+    "drizzle-orm": "^0.38.3",
+    "zod": "^3.24.1"
   }
 }
