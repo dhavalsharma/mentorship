@@ -18,6 +18,7 @@ A decision that had no plausible alternative does not need a record here.
 | [0007](0007-scores-are-deterministic.md) | Scores are deterministic; the model explains them | Accepted |
 | [0008](0008-postgres-only.md) | Postgres only — pgvector, pg-boss, RLS | Accepted |
 | [0009](0009-pairs-choose-their-own-cadence.md) | Pairs choose their own session length and rhythm | Accepted |
+| [0011](0011-email-is-a-port-not-a-slot.md) | Outbound email is a port bound from the environment, not a ninth slot | Accepted |
 
 ## Adding one
 

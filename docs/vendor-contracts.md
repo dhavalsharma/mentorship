@@ -17,7 +17,7 @@ below against a real account.
 | Piece | Where | What it does |
 | --- | --- | --- |
 | Fixtures | `tests/fixtures/vendor/<vendor>/<call>[--variant].json` | One request/response (or error) per vendor call, with `capturedOn` and `source: "live" \| "hand-written"`. Request paths are route templates (`/files/{fileId}/revisions`), never ids. |
-| Recording transport | `packages/integrations/src/contracts/recording-transport.ts` | Wraps `httpSlackTransport` / `httpGoogleTransport` / `httpGoogleDocsTransport` / `httpGoogleSheetsTransport`, writes each pair it carries, redacted (`redact.ts`: tokens, secrets, emails, Slack user/bot/team/enterprise ids — whole values and embedded in text, e.g. `<@U…>` mentions in echoed `text`/`blocks`, ids in URLs, credential query parameters, webhook paths; channel ids kept). Re-redacting a fixture is a no-op, and a test holds every committed fixture to that. Best-effort: a failed write warns and never fails the live call. |
+| Recording transport | `packages/integrations/src/contracts/recording-transport.ts` | Wraps `httpSlackTransport` / `httpGoogleTransport` / `httpGoogleDocsTransport` / `httpGoogleSheetsTransport` / `httpGmailTransport`, writes each pair it carries, redacted (`redact.ts`: tokens, secrets, emails, Slack user/bot/team/enterprise ids — whole values and embedded in text, e.g. `<@U…>` mentions in echoed `text`/`blocks`, ids in URLs, credential query parameters, webhook paths; channel ids kept). Re-redacting a fixture is a no-op, and a test holds every committed fixture to that. Best-effort: a failed write warns and never fails the live call. |
 | Replay transport | `packages/integrations/src/contracts/replay-transport.ts` | Serves fixtures to the adapter tests. Throws `ContractDriftError` if an adapter sends a query or body field no fixture recorded, or a stateful test handler returns a response field the fixture does not have; throws `MissingFixtureError` for a call with no fixture. |
 | Capture switch | `apps/worker/src/live-registry.ts` | `CAPTURE_VENDOR_FIXTURES=1` wraps every live transport in the recorder (`VENDOR_FIXTURE_DIR` overrides the destination). **Off by default.** The recorder sits *under* `SandboxGuard`, so a refused recipient is never recorded because it is never sent. |
 | Live contract suite | `tests/contracts/live/vendors.contract.ts`, `pnpm test:contracts:live` | Drives every call below through `buildLiveRegistry` with capture forced on. Refuses to start (preflight, then again at import) without credentials **and** a `SANDBOX_ALLOWLIST` naming two Slack members and an email. Never collected by `pnpm test`. |
@@ -25,7 +25,7 @@ below against a real account.
 
 Tests replaying fixtures: `google-sheet.test.ts`, `google-document.test.ts`
 (including `isEchoRevision`/`revisions.list`), `slack-dm.test.ts`,
-`slack-conversation.test.ts`, `google-calendar.test.ts`, and
+`slack-conversation.test.ts`, `google-calendar.test.ts`, `google-gmail.test.ts`, and
 `vendor-contracts.test.ts` for the machinery itself (every fixture routes to
 its own call, every known Google route has a fixture, redaction, drift).
 
@@ -94,6 +94,20 @@ live session (it precedes a call that did) but was never named as checked.
 | `spreadsheets.values.clear` | `writeTab` | **never** | hand-written |
 | `spreadsheets.values.update` | `writeTab` | **never** | hand-written |
 
+### Gmail (`GmailEmailAdapter`) — sign-in and invite email
+
+Not a slot and not the calendar: see [email-setup.md](./email-setup.md). The
+recording transport (`recordingGoogleGmailTransport`) replaces the request's
+`raw` field — the whole message, recipient and sign-in link included — with a
+fixed placeholder *before* redaction, because `redact` cannot see into base64.
+
+| Call | Used by | Last verified live | Fixture |
+| --- | --- | --- | --- |
+| `users.messages.send` (`gmail.send` scope, body `{ raw }`) | `GmailEmailAdapter.send` | **never** | hand-written |
+| `users.messages.send` with a token lacking `gmail.send` | first failure of a real setup | **never** | hand-written (`--error-insufficient-scope`), body from Google's documented 403 shape |
+| Gmail rewriting a `From` that is not the mailbox or a verified alias | `GMAIL_SENDER_ADDRESS` | **never** — from the docs only | none |
+| `Message-ID` we set surviving Gmail's send | dedupe by mail clients (advisory only) | **never** | none |
+
 When a row changes, change it here in the same commit as the captured fixture:
 the date, and `live` in the fixture column.
 
@@ -113,6 +127,11 @@ GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=… GOOGLE_REFRESH_TOKEN=…   # or GO
 pnpm test:contracts:live
 git diff tests/fixtures/vendor   # review: redaction is automatic, not infallible
 ```
+
+With `GMAIL_SENDER_ADDRESS` also set it adds a Gmail block: one real email with
+a dead link to the first email on the allowlist (and a check that any other
+address is refused before a request). It is skipped otherwise, so a refresh
+token minted before `gmail.send` was added does not fail the rest of the run.
 
 It leaves behind, in the sandbox only: a few bot messages in one group DM and
 one 1:1 DM, one unmailed event in 2030 on the dedicated calendar, one doc and
