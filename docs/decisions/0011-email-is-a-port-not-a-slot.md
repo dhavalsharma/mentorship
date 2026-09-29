@@ -70,3 +70,27 @@ refuses to start rather than falling back to printing tokens.
   is a follow-up, not a regression.
 - Calendar invitations are unrelated and unchanged: they go through
   `GoogleCalendarAdapter` (`sendUpdates: "none"` in live tests), not this port.
+- **Mail-bomb and quota exhaustion, and what limits it.** `/auth/request-link`
+  is unauthenticated and now costs a real mail per request for a known
+  address. `createMagicLinkDelivery` therefore keeps a per-address cooldown
+  (`MAGIC_LINK_EMAIL_COOLDOWN_SECONDS`, default 60, `0` = off), separate for
+  sign-in and invite so a flood cannot swallow an admin's invite. Inside the
+  window the link is still minted and valid but **not mailed**; the response
+  is byte-identical, and a non-address-bearing `magic_link_email_cooldown`
+  warning is logged. A re-invite, or a sign-in request, after the window
+  sends again — nothing is swallowed forever. The table is bounded (10 000
+  entries; expired first, then the oldest, so it cannot be a memory lever).
+  **Residual risk, accepted:** the map is in-process, so N api processes each
+  allow one mail per window, and a restart forgets it; an attacker who knows
+  many valid addresses can still spread the quota; and there is no per-IP
+  limit. A shared limit (Postgres row, or a proxy/WAF rule on
+  `/auth/request-link`) is the follow-up and should be in place at scale.
+- **Logs.** The mail path never logs a token or a link. It logs no
+  recipient address either: a `SandboxRefusal` names the recipient, so the
+  failure report replaces it with `[address]` and the boot-time refusal
+  warning prints `***@domain`. The one exception is the no-sender fallback,
+  which prints the address and token by design (local dev).
+- **Expiry** is one constant, `MAGIC_LINK_TTL_MINUTES` (`packages/auth`), used
+  by the store and by the wording, so the mail cannot state another value. An
+  invite mail says what to do after it expires (ask to be invited again, or
+  request a sign-in link).

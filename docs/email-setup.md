@@ -100,7 +100,8 @@ project, consent screen and OAuth client below are the same ones it creates.
    GOOGLE_CLIENT_ID=…
    GOOGLE_CLIENT_SECRET=…
    GOOGLE_REFRESH_TOKEN=…            # or GOOGLE_ACCESS_TOKEN for a one-off (expires in an hour)
-   SANDBOX_ALLOWLIST=you@your-domain.example   # optional; see below
+   SANDBOX_ALLOWLIST=you@your-domain.example   # testing only; see below — UNSET in production
+   MAGIC_LINK_EMAIL_COOLDOWN_SECONDS=60        # optional; default 60, 0 = off; see "What sending guarantees"
    ```
 
    `APP_BASE_URL` must be `https` unless it is `localhost`: the token is in
@@ -110,8 +111,11 @@ project, consent screen and OAuth client below are the same ones it creates.
 
 9. **The sandbox allowlist.** If `SANDBOX_ALLOWLIST` is set, mail to any
    address not on it is refused before a request is made (`SandboxRefusal`,
-   logged as `magic_link_email_failed`; the person requesting sees the normal
-   response). Entries are matched case-insensitively; Slack ids in the same
+   logged as `magic_link_email_failed` with the address replaced by `[address]`;
+   the person requesting sees the normal response). At boot the api prints a
+   loud `EMAIL ALLOWLIST ACTIVE` line whenever it is set — if you see it in
+   production, that is the bug. `.env.example` ships the variable commented
+   out for the same reason. Entries are matched case-insensitively; Slack ids in the same
    list are ignored for email. Set it while testing so a stray address in a
    roster cannot receive a real sign-in link; **leave it unset in
    production**, where the allowlist would refuse everyone.
@@ -188,5 +192,24 @@ move. (`buildMimeMessage` is vendor-neutral and reusable for an SMTP sender.)
 - **The response never depends on the send.** `/auth/request-link` returns the
   same bytes for a known email, an unknown one, and a known one whose send
   failed.
-- **The link is never logged** once a sender is configured. The printed
+- **A cooldown limits mail-bombing, not eliminates it.** `/auth/request-link`
+  is unauthenticated, so without a limit anyone could flood a known address's
+  inbox and burn the mailbox's daily Gmail quota (about 500 recipients
+  regular, 2000 Workspace), after which real sign-ins fail. The api sends at
+  most one mail of a kind to one address per
+  `MAGIC_LINK_EMAIL_COOLDOWN_SECONDS` (default 60). Inside the window the link
+  is still issued and valid but no mail goes out (the response is unchanged;
+  the log shows `magic_link_email_cooldown`, no address). Sign-in and invite
+  have separate windows, and **a re-invite or a new sign-in request after the
+  window sends again** — an invite is never lost, only delayed, and the invite
+  mail tells the person to ask for a new one when the link expires. Residual
+  risk: the map is per api process (N processes = N mails per window, restart
+  forgets it), it is bounded at 10 000 addresses (oldest evicted), and there
+  is **no per-IP limit** — put a rate limit on `/auth/request-link` at your
+  proxy/WAF for anything public. See ADR-0011.
+- **Links expire in 15 minutes** (`MAGIC_LINK_TTL_MINUTES`, the same constant
+  the email states). An invitee opening the mail later gets a dead link and
+  should use "email me a link" on the sign-in page, or ask to be re-invited.
+- **The link is never logged** once a sender is configured, and neither is
+  the recipient address (refusals log `***@domain`; failures show `[address]`). The printed
   `[auth] magic link for …` line exists only when no sender is.
