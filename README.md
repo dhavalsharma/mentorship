@@ -228,7 +228,10 @@ already-running `apps/api`.
    `DATABASE_URL=… ORG_ID=… pnpm staff:grant --email you@example.com --role admin`.
    It creates the user if they don't exist and records the grant in
    `audit_log`; `--role program_lead` gives the lists and invites but not the
-   settings pages, and `--role none` revokes. (The in-memory `pnpm serve:api`
+   settings pages, and `--role none` revokes. That first admin is the only
+   one that needs the command: after that, an admin grants and revokes
+   everyone else from `/dashboard/settings/staff` (and cannot remove the
+   org's last admin there). (The in-memory `pnpm serve:api`
    with no `DATABASE_URL` needs none of this: its seeded
    `arjun.rao@wekancode.com` is the admin, and `priya.menon@…` is a mentee
    who is refused.)

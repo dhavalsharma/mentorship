@@ -27,6 +27,9 @@ export interface Seed {
   orgA: string;
   userA: string;
   adminEmail: string;
+  /** A user in org A with no staff role, for the staff-management spec. */
+  staffCandidateId: string;
+  staffCandidateEmail: string;
   /** A second, foreign org — never configured anywhere, only guessed at. */
   orgB: string;
   userB: string;

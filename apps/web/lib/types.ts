@@ -152,3 +152,13 @@ export interface MatchingRoundCandidates {
   createdAt: string;
   candidates: MatchingRoundCandidate[];
 }
+
+/** A row of `GET /orgs/:orgId/staff` — someone with an org-chart role (ADR-0010). */
+export type StaffRole = "admin" | "program_lead";
+
+export interface StaffMember {
+  userId: string;
+  email: string;
+  displayName: string;
+  role: StaffRole;
+}

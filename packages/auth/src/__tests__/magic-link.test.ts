@@ -137,6 +137,32 @@ describe("requestMagicLink", () => {
   });
 });
 
+describe("requestMagicLink email normalisation", () => {
+  const now = () => new Date("2026-01-01T00:00:00Z");
+
+  it("finds a user stored lowercase when they type their email in mixed case, with spaces", async () => {
+    // Every writer (staff grant, invite, roster import) stores lowercase.
+    const store = new FakeMagicLinkStore();
+    store.addUser(ORG, "grace@example.com", "user-grace");
+
+    const result = await requestMagicLink({ store, orgId: ORG, email: "  Grace@Example.COM ", now });
+
+    expect(result.rawToken).not.toBeNull();
+    expect(store.links.map((l) => l.userId)).toEqual(["user-grace"]);
+  });
+
+  it("an unknown email in mixed case still gets the same generic shape and creates nothing", async () => {
+    const store = new FakeMagicLinkStore();
+    store.addUser(ORG, "grace@example.com", "user-grace");
+
+    const result = await requestMagicLink({ store, orgId: ORG, email: "Nobody@Example.com", now });
+
+    expect(store.links).toHaveLength(0);
+    expect(Object.keys(result).sort()).toEqual(["rawToken", "requested"]);
+    expect(result).toEqual({ requested: true, rawToken: null });
+  });
+});
+
 describe("verifyMagicLink", () => {
   it("succeeds for a fresh token and returns a session", async () => {
     const store = new FakeMagicLinkStore();

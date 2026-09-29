@@ -128,6 +128,14 @@ export const ResourceTypeSchema = z.enum([
    * decision, not a program lead's.
    */
   "integration.settings",
+  /**
+   * Who in an org is staff, and granting or revoking that (ADR-0010) — read
+   * or written. `admin` only: a staff role is what every other staff-only
+   * resource above is decided on, so whoever can change it can give
+   * themselves anything else. A program lead who could promote someone
+   * would be an admin with one extra step.
+   */
+  "staff.roles",
 ]);
 export type ResourceType = z.infer<typeof ResourceTypeSchema>;
 
@@ -248,6 +256,15 @@ export function authorize(actor: Actor, resource: Resource): AuthorizationDecisi
         return allow("an admin may read and change their org's integration settings");
       }
       return deny("only an admin may read or change integration settings");
+    }
+
+    case "staff.roles": {
+      // Same shape as `integration.settings`, and for a stronger reason: this
+      // resource decides every other staff decision. Pair members never.
+      if (actor.role === "admin") {
+        return allow("an admin may list, grant and revoke their org's staff roles");
+      }
+      return deny("only an admin may list, grant or revoke staff roles");
     }
 
     default: {

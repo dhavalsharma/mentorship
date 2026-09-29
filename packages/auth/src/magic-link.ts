@@ -82,8 +82,9 @@ export type RequestMagicLinkResult =
   | { requested: true; rawToken: null };
 
 /**
- * Looks up the user, and — only if one exists — creates a link and returns
- * its raw token.
+ * Looks up the user by their email (trimmed and lowercased, the form every
+ * writer stores), and — only if one exists — creates a link and returns its
+ * raw token.
  *
  * Enumeration safety: the shape returned to an HTTP-facing caller must not
  * let an attacker distinguish "that email has an account" from "it doesn't"
@@ -106,7 +107,15 @@ export async function requestMagicLink(input: {
   now: () => Date;
   ttlMinutes?: number;
 }): Promise<RequestMagicLinkResult> {
-  const { store, orgId, email, now, ttlMinutes = 15 } = input;
+  const { store, orgId, now, ttlMinutes = 15 } = input;
+  // Every writer of `users.email` — a staff grant, an invite, a roster
+  // import — stores it trimmed and lowercased, so the lookup has to ask in
+  // the same form, or someone granted as `Grace@Example.com` who types it
+  // that way at /login silently gets no link (and, by design, no hint why).
+  // Here rather than in each store so every store benefits. It changes only
+  // *which* row is found, never the shape returned: an unknown email still
+  // takes the same path to the same `rawToken: null`.
+  const email = input.email.trim().toLowerCase();
   const user = await store.findUserByEmail(orgId, email);
   if (user === null) {
     return { requested: true, rawToken: null };

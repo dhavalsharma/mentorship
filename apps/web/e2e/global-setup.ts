@@ -147,6 +147,13 @@ async function seedDatabase(): Promise<Seed> {
     insert into users (org_id, email, display_name, staff_role)
     values (${orgB}, ${`e2e-other-${tag}@example.test`}, 'E2E Other Admin', 'admin') returning id`;
 
+  // A signed-up user who is not staff — `8-staff.spec.ts` has the admin make
+  // them a program lead from the dashboard and then take it away again.
+  const staffCandidateEmail = `e2e-candidate-${tag}@example.test`;
+  const [staffCandidate] = await sql<{ id: string }[]>`
+    insert into users (org_id, email, display_name)
+    values (${orgA}, ${staffCandidateEmail}, ${`E2E Candidate ${tag}`}) returning id`;
+
   // A program, so the document form's naming template has a policy to live
   // in (`PostgresDocumentSettingsStore.write` saves it nowhere without one).
   await sql`insert into programs (org_id, name, policy)
@@ -283,6 +290,8 @@ async function seedDatabase(): Promise<Seed> {
     orgA,
     userA: userA!.id,
     adminEmail,
+    staffCandidateId: staffCandidate!.id,
+    staffCandidateEmail,
     orgB,
     userB: userB!.id,
     riskSummary,

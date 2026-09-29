@@ -141,7 +141,8 @@ and it is written to `audit_log`.
   staff roles it admits, call `authorizeStaff` — the role is already resolved.
 - Answering "who made this person an admin, and when": `audit_log`,
   `action = 'staff.role_changed'`.
-- Revoking access: `--role none`, effective on the next request.
+- Revoking access: `--role none`, or "Remove access" on the staff page,
+  effective on the next request.
 
 **Harder**
 - First-run setup has one more step, and forgetting it looks like "the
@@ -151,10 +152,43 @@ and it is written to `audit_log`.
   participant-attributed signal) still has to resolve pairing membership
   itself; a staff role deliberately grants nothing there (invariant 14).
 
+**Since built: granting and revoking from the dashboard.** Out of band is
+now only how a tenant gets its *first* admin. After that an admin uses
+`GET`/`PUT /orgs/:orgId/staff` (`apps/web`'s `/dashboard/settings/staff`):
+- `staff.roles` is a new resource type, **admin only** — a program lead who
+  could grant roles could grant themselves admin, so there is no sense in
+  which the resource could be lead-visible but lead-safe.
+- The route calls the same `grantStaffRole` as `pnpm staff:grant`. The audit
+  row is the same `staff.role_changed`, with `actor_type: "admin"` and the
+  acting admin's user id as `actor_ref` (the pair `participant.invited`
+  already uses) instead of `operator` / `cli:<os user>`.
+- **The last admin cannot be removed from the dashboard** — 409, nothing
+  written. Without it, one click (usually an admin demoting themselves) locks
+  a tenant out of every admin-only screen until an operator runs the CLI.
+  The guard is a count, so it is made race-safe inside the grant's own
+  transaction: every admin row of the org is locked `FOR UPDATE` in id order
+  before the target is read, so two admins demoting each other queue, and the
+  second re-reads a count the first already changed.
+- **The actor's own authority is re-checked under that lock** — 403, nothing
+  written, if the acting admin is no longer among the locked admin rows.
+  `authenticateStaff` read their role in an earlier transaction, and the lock
+  makes that gap reliable rather than rare: a request that authenticated
+  while another admin's demotion of its actor was still open queues on the
+  lock and would otherwise run next with the stale authority. The last-admin
+  guard only looks at the target, so a promotion — re-promoting themselves,
+  or an accomplice — would have gone straight through, and revoking a
+  compromised admin from the dashboard could not be relied on. The guarded
+  path requires `actorRef` in its type, since this check is made against it.
+- **The CLI is deliberately not guarded.** The operator is the authority the
+  guard defers to, and revoking a compromised sole admin is exactly the job
+  it is for.
+- Revoking an email with no user row is a 404 (and a CLI error) rather than
+  creating a user just to record that they are not staff.
+
 **To revisit**
-- Granting and revoking staff from the dashboard, by an existing admin — the
-  route would be admin-only and audited the same way. Not built.
 - A table (Option B) if roles ever need a scope below the org.
+- No "who changed what" view over `staff.role_changed` in the dashboard yet;
+  `audit_log` is the record.
 
 ## Action Items
 
@@ -164,4 +198,6 @@ and it is written to `audit_log`.
 4. [x] `authenticateStaff` + `authorize()` with the resolved role on every staff route
 5. [x] `pnpm staff:grant`, audited
 6. [x] `apps/web` `/no-access`
-7. [ ] Grant/revoke staff from the UI
+7. [x] Grant/revoke staff from the UI — `staff.roles` (admin-only),
+   `GET`/`PUT /orgs/:orgId/staff`, `/dashboard/settings/staff`, the
+   race-safe last-admin guard

@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 import { WEB_ORIGIN } from "./e2e/support";
 
 /**
- * Tier 3 of docs/e2e-testing-strategy.md: six browser journeys against
+ * Tier 3 of docs/e2e-testing-strategy.md: eight browser journeys against
  * `next build && next start`, with `apps/api` and a seeded Postgres behind
  * it. `e2e/global-setup.ts` seeds and starts both servers; see it for why
  * that is not Playwright's `webServer`.
