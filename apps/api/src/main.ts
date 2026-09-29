@@ -6,6 +6,8 @@ import {
   httpSlackTransport,
   SlackWebApiModalOpener,
 } from "@mentorship/integrations";
+import { createMagicLinkDelivery } from "./auth-mail.js";
+import { appBaseUrlFromEnv, buildGmailSender } from "./email-config.js";
 import { buildPostgresApiDeps } from "./postgres-deps.js";
 import {
   createServer,
@@ -53,6 +55,37 @@ const TENANT_ROLE = process.env["TENANT_ROLE"];
 const onUnhandled = (reason: string, detail: Record<string, unknown>): void => {
   console.warn(`[slack] ${reason}`, detail);
 };
+
+/**
+ * Sign-in and invite links: mailed through Gmail when `GMAIL_SENDER_ADDRESS`
+ * is set (docs/email-setup.md), printed to stdout otherwise. A half-configured
+ * sender exits here instead of falling back to printing tokens.
+ */
+const magicLinkDelivery = (() => {
+  try {
+    const built = buildGmailSender(process.env, {
+      onRefused: ({ refused }) =>
+        console.warn(`[auth] email refused by SANDBOX_ALLOWLIST: ${refused.join(", ")}`),
+    });
+    const appBaseUrl = appBaseUrlFromEnv(process.env);
+    if (built && !appBaseUrl) {
+      throw new Error("GMAIL_SENDER_ADDRESS is set but APP_BASE_URL is not — the link needs an origin");
+    }
+    console.log(
+      built
+        ? `Sign-in and invite links are emailed (${built.sender.id}), to ${appBaseUrl}/verify.`
+        : "No GMAIL_SENDER_ADDRESS: sign-in and invite links are printed to this log.",
+    );
+    return createMagicLinkDelivery({
+      sender: built?.sender ?? null,
+      appBaseUrl,
+      onUnhandled: (reason, detail) => console.warn(`[auth] ${reason}`, detail),
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
+})();
 
 const ONE_PAIR = [
   "mentor_email,mentor_name,mentee_email,mentee_name,cadence,mentor_slack,mentee_slack,mentor_tz,mentee_tz",
@@ -105,12 +138,7 @@ function postgresDeps(url: string): ApiServerDeps {
     ...(TENANT_ROLE === undefined ? {} : { role: TENANT_ROLE }),
     ...(SLACK_BOT_TOKEN ? { slackTransport: httpSlackTransport(SLACK_BOT_TOKEN) } : {}),
     onUnhandled,
-    // No email-sending infrastructure in this repo — print it for a human
-    // to paste manually, the same pattern
-    // `apps/worker/src/seed-live-pair.ts` uses elsewhere.
-    onMagicLinkIssued: (email, rawToken) => {
-      console.log(`[auth] magic link for ${email}: ${rawToken}`);
-    },
+    onMagicLinkIssued: magicLinkDelivery,
   });
 }
 
@@ -278,9 +306,7 @@ async function memoryDeps(): Promise<ApiServerDeps> {
       ]),
       staff: inMemoryStaffDirectory(new Set(["user-arjun"])),
       orgId: MEMORY_ORG_ID,
-      onMagicLinkIssued: (email, rawToken) => {
-        console.log(`[auth] magic link for ${email}: ${rawToken}`);
-      },
+      onMagicLinkIssued: magicLinkDelivery,
     },
   };
 }

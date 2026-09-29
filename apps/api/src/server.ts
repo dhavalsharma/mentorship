@@ -177,13 +177,35 @@ export interface AuthDeps {
    * Fires only when `requestMagicLink` actually minted a token (a known
    * email) — never for an unknown one, so this callback's own invocation is
    * as enumeration-sensitive as `rawToken` itself and must never be wired to
-   * anything the requester can observe. There is no email-sending
-   * infrastructure in this repo (out of scope to build here); this is the
-   * same "print it for a human to use" seam `apps/worker/src/seed-live-pair.ts`
-   * already uses for a different manual-handoff step.
+   * anything the requester can observe. `main.ts` wires it to
+   * `createMagicLinkDelivery` (`auth-mail.ts`): a Gmail send when
+   * `GMAIL_SENDER_ADDRESS` is configured, the printed line otherwise. It must
+   * return promptly and never throw — the route ignores both, and a slow or
+   * failing implementation is exactly the timing difference between a known
+   * and an unknown email that the response is built not to have.
    */
-  onMagicLinkIssued?: (email: string, rawToken: string) => void;
+  onMagicLinkIssued?: (
+    email: string,
+    rawToken: string,
+    context?: MagicLinkContext,
+  ) => void;
 }
+
+/**
+ * Why a link was issued, for the wording of the email that carries it. Sign-in
+ * (`/auth/request-link`) passes nothing; an invite passes who invited them and
+ * to what. It carries names only — never anything the requester could not
+ * already see — and nothing here influences a response body.
+ */
+export type MagicLinkContext =
+  | { kind: "sign_in" }
+  | {
+      kind: "invite";
+      inviterName: string;
+      cohortName: string;
+      programName: string;
+      role: string;
+    };
 
 /**
  * What `POST /orgs/:orgId/invites` commits, and what `POST /auth/verify`
@@ -192,7 +214,18 @@ export interface AuthDeps {
  * route never sees a sink or a transaction.
  */
 export type InviteOutcome =
-  | { ok: true; participantId: string; alreadyInvited: boolean; state: string }
+  | {
+      ok: true;
+      participantId: string;
+      alreadyInvited: boolean;
+      state: string;
+      /**
+       * Names for the invite email. Optional so a service that cannot look
+       * them up still works — the email then falls back to its generic
+       * sign-in wording rather than failing the invite.
+       */
+      invitation?: { inviterName: string; cohortName: string; programName: string };
+    }
   /** No cohort with that id in *this* org — which, under RLS, includes another org's. */
   | { ok: false; reason: "unknown_cohort" }
   /** The cohort's program does not define that role (ADR-0001: roles are policy data). */
@@ -797,7 +830,14 @@ async function handleInvite(
       now: deps.now ?? (() => new Date()),
     });
     if (link.rawToken !== null) {
-      deps.auth.onMagicLinkIssued?.(planned.plan.email, link.rawToken);
+      notifyLinkIssued(
+        deps,
+        planned.plan.email,
+        link.rawToken,
+        outcome.invitation
+          ? { kind: "invite", role: planned.plan.role, ...outcome.invitation }
+          : { kind: "sign_in" },
+      );
       signInLinkIssued = true;
     }
   }
@@ -1288,10 +1328,32 @@ async function handleRequestLink(
     now: deps.now ?? (() => new Date()),
   });
   if (result.rawToken !== null) {
-    deps.auth.onMagicLinkIssued?.(email, result.rawToken);
+    notifyLinkIssued(deps, email, result.rawToken);
   }
 
   writeJson(res, 200, { requested: true });
+}
+
+/**
+ * Calls the delivery seam and swallows anything it throws. A throw here would
+ * surface as a 500 for a *known* email only — the unknown-email path never
+ * reaches this line — which is precisely the difference `/auth/request-link`
+ * is built not to have. The failure is reported to `onUnhandled` with the
+ * reason only: no email, no token.
+ */
+function notifyLinkIssued(
+  deps: ApiServerDeps,
+  email: string,
+  rawToken: string,
+  context?: MagicLinkContext,
+): void {
+  try {
+    deps.auth?.onMagicLinkIssued?.(email, rawToken, context);
+  } catch (error) {
+    deps.onUnhandled?.("magic_link_delivery_threw", {
+      error: error instanceof Error ? error.message.slice(0, 200) : "non-error thrown",
+    });
+  }
 }
 
 async function handleVerify(

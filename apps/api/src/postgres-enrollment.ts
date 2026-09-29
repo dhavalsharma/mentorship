@@ -218,7 +218,11 @@ export class PostgresEnrollmentService implements EnrollmentService {
       // invite to a mistyped (or another org's) cohort id would create a
       // participant nothing can ever find.
       const [cohort] = await tx
-        .select({ policy: programs.policy })
+        .select({
+          policy: programs.policy,
+          cohortName: cohorts.name,
+          programName: programs.name,
+        })
         .from(cohorts)
         .innerJoin(programs, eq(programs.id, cohorts.programId))
         .where(and(eq(cohorts.orgId, orgId), eq(cohorts.id, plan.cohortId)))
@@ -245,7 +249,27 @@ export class PostgresEnrollmentService implements EnrollmentService {
         new PostgresAuditSink(tx),
         { actorRef: actorUserId },
       );
-      return { ok: true, ...result };
+      // Names for the invite email. The inviter is read inside the same
+      // transaction and tenant scope; a missing row (an admin deleted mid-
+      // request) just yields the generic wording, never a failed invite.
+      const [inviter] = await tx
+        .select({ name: users.displayName })
+        .from(users)
+        .where(and(eq(users.orgId, orgId), eq(users.id, actorUserId)))
+        .limit(1);
+      return {
+        ok: true,
+        ...result,
+        ...(inviter
+          ? {
+              invitation: {
+                inviterName: inviter.name,
+                cohortName: cohort.cohortName,
+                programName: cohort.programName,
+              },
+            }
+          : {}),
+      };
     });
   }
 

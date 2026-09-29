@@ -52,7 +52,7 @@ export interface PostgresApiDepsOptions {
   slackTransport?: SlackTransport;
   now?: () => Date;
   onUnhandled?: ApiServerDeps["onUnhandled"];
-  onMagicLinkIssued?: (email: string, rawToken: string) => void;
+  onMagicLinkIssued?: NonNullable<NonNullable<ApiServerDeps["auth"]>["onMagicLinkIssued"]>;
 }
 
 export function buildPostgresApiDeps(options: PostgresApiDepsOptions): ApiServerDeps {
