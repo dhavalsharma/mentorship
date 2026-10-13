@@ -201,8 +201,13 @@ move. (`buildMimeMessage` is vendor-neutral and reusable for an SMTP sender.)
   is still issued and valid but no mail goes out (the response is unchanged;
   the log shows `magic_link_email_cooldown`, no address). Sign-in and invite
   have separate windows, and **a re-invite or a new sign-in request after the
-  window sends again** — an invite is never lost, only delayed, and the invite
-  mail tells the person to ask for a new one when the link expires. Residual
+  window sends again**. Only a mail that was actually sent starts the window:
+  a send that fails (a Gmail 5xx, an expired token, a sandbox refusal) releases
+  its slot, so the next request is mailed immediately. **Nothing resends on
+  its own**, though: after a failed send the person (or the admin, by
+  re-inviting) has to ask again, and the invite response still says a link was
+  issued. The invite mail tells the person to ask for a new one when the link
+  expires. Residual
   risk: the map is per api process (N processes = N mails per window, restart
   forgets it), it is bounded at 10 000 addresses (oldest evicted), and there
   is **no per-IP limit** — put a rate limit on `/auth/request-link` at your

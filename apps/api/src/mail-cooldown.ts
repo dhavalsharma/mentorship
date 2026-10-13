@@ -31,6 +31,13 @@ export const DEFAULT_COOLDOWN_MAX_ENTRIES = 10_000;
 
 export interface Cooldown {
   allow(key: string): boolean;
+  /**
+   * Give back the slot `allow` took, so the next `allow(key)` succeeds. For a
+   * send that failed: the window exists to cap mail actually delivered, and a
+   * mail that never left must not make the person's retry wait. Safe on a key
+   * that was never taken, already expired or already evicted (a no-op).
+   */
+  release(key: string): void;
   readonly size: number;
 }
 
@@ -65,6 +72,9 @@ export function createCooldown(options: CooldownOptions): Cooldown {
       }
       until.set(key, t + windowMs);
       return true;
+    },
+    release(key) {
+      until.delete(key);
     },
   };
 }

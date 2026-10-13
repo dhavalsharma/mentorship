@@ -17,7 +17,9 @@ import type { MagicLinkContext } from "./server.js";
  * send runs on the next tick) adds nothing an attacker can time. A failed
  * send goes to `onUnhandled`, never to the requester.
  *
- * Nothing retries. A lost sign-in mail costs the person one more click on
+ * Nothing retries on its own, and a failed send does not start the cooldown
+ * window (its slot is released), so the person's own next request is mailed
+ * at once. A lost sign-in mail costs the person one more click on
  * "email me a link"; a retry on top of a vendor with no idempotency key (see
  * `GmailEmailAdapter`) would cost a duplicate. That trade is deliberate.
  */
@@ -80,7 +82,8 @@ export function createMagicLinkDelivery(
 
   return (email, rawToken, context) => {
     const kind = (context ?? { kind: "sign_in" }).kind;
-    if (!cooldown.allow(`${kind}:${email.trim().toLowerCase()}`)) {
+    const slot = `${kind}:${email.trim().toLowerCase()}`;
+    if (!cooldown.allow(slot)) {
       // No address: which mailbox is being hammered is not an operator-log fact.
       safely(() =>
         options.onUnhandled("magic_link_email_cooldown", {
@@ -108,6 +111,16 @@ export function createMagicLinkDelivery(
           safely(() => log(`[auth] ${kind} email sent (${messageRef})`));
         },
         (error: unknown) => {
+          // A rejected send releases its slot, before anything that could
+          // throw: the window caps mail that was delivered, and a transient
+          // Gmail failure must not make the user's retry wait out 60s. A
+          // sandbox refusal releases too, deliberately: it never reaches
+          // Gmail, so it spends no quota and no inbox, and an attacker
+          // retrying against a refusing guard only gets more refusals. The
+          // trade accepted: a send that fails *after* Gmail accepted it
+          // (a lost response) can be followed by a second mail on retry —
+          // the same at-least-once window every vendor call here has.
+          cooldown.release(slot);
           safely(() =>
             options.onUnhandled("magic_link_email_failed", {
               kind,

@@ -77,8 +77,13 @@ refuses to start rather than falling back to printing tokens.
   sign-in and invite so a flood cannot swallow an admin's invite. Inside the
   window the link is still minted and valid but **not mailed**; the response
   is byte-identical, and a non-address-bearing `magic_link_email_cooldown`
-  warning is logged. A re-invite, or a sign-in request, after the window
-  sends again — nothing is swallowed forever. The table is bounded (10 000
+  warning is logged. Only a send that succeeded starts the window: a
+  rejected send (including a sandbox refusal, which never reaches Gmail and
+  so spends no quota) releases its slot, so the person's retry is mailed at
+  once. Nothing resends on its own, so after a failed send somebody must
+  ask again (a sign-in request, or an admin re-invite); an invite is
+  delayed until they do, not lost, and is never silently suppressed by a
+  failure. The table is bounded (10 000
   entries; expired first, then the oldest, so it cannot be a memory lever).
   **Residual risk, accepted:** the map is in-process, so N api processes each
   allow one mail per window, and a restart forgets it; an attacker who knows

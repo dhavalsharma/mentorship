@@ -175,6 +175,82 @@ describe("createMagicLinkDelivery — per-address cooldown", () => {
     expect(fake.sent).toHaveLength(3);
   });
 
+  it("a failed send releases its slot: an immediate retry sends; a successful one stays suppressed", async () => {
+    let t = 1_000_000;
+    let failing = true;
+    const sent: string[] = [];
+    const sender: EmailSender = {
+      id: "g",
+      send: async (m) => {
+        if (failing) throw new Error("gmail 503");
+        sent.push(m.to);
+        return { messageRef: "m1" };
+      },
+    };
+    const { deliver, unhandled } = harness(sender, { cooldownSeconds: 60, now: () => t });
+    deliver("ada@example.com", "tok-1");
+    await settle();
+    expect(unhandled.map((u) => u.reason)).toEqual(["magic_link_email_failed"]);
+
+    failing = false;
+    t += 1_000; // well inside the window
+    deliver("ada@example.com", "tok-2");
+    await settle();
+    expect(sent).toHaveLength(1); // the retry was mailed
+
+    t += 1_000;
+    deliver("ada@example.com", "tok-3");
+    await settle();
+    expect(sent).toHaveLength(1); // success started the window: still suppressed
+    expect(unhandled.map((u) => u.reason)).toEqual(["magic_link_email_failed", "magic_link_email_cooldown"]);
+  });
+
+  it("releases even when the failure reporter throws", async () => {
+    let failing = true;
+    const sent: string[] = [];
+    const sender: EmailSender = {
+      id: "g",
+      send: async (m) => {
+        if (failing) throw new Error("boom");
+        sent.push(m.to);
+        return { messageRef: "m" };
+      },
+    };
+    const deliver = createMagicLinkDelivery({
+      sender,
+      appBaseUrl: BASE,
+      cooldownSeconds: 60,
+      now: () => 1,
+      onUnhandled: () => {
+        throw new Error("reporter down");
+      },
+    });
+    deliver("ada@example.com", "a");
+    await settle();
+    failing = false;
+    deliver("ada@example.com", "b");
+    await settle();
+    expect(sent).toHaveLength(1);
+  });
+
+  it("release is a no-op for an unknown, expired or evicted key", () => {
+    let t = 0;
+    const c = createCooldown({ seconds: 60, maxEntries: 2, now: () => t });
+    expect(() => c.release("never")).not.toThrow();
+    c.allow("a");
+    c.allow("b");
+    c.allow("c"); // evicts a
+    c.release("a");
+    c.release("a");
+    expect(c.size).toBe(2);
+    c.release("b");
+    expect(c.size).toBe(1);
+    expect(c.allow("b")).toBe(true);
+    t = 61_000;
+    c.release("c"); // expired
+    expect(c.allow("c")).toBe(true);
+  });
+
   it("0 disables it", async () => {
     const fake = new FakeEmail(new Recorder());
     const { deliver } = harness(fake, { cooldownSeconds: 0 });
