@@ -82,6 +82,14 @@ export type RequestMagicLinkResult =
   | { requested: true; rawToken: null };
 
 /**
+ * How long a magic link lives. One exported value, because the email that
+ * carries the link states it: `apps/api`'s `composeAuthEmail` reads this same
+ * constant, so the mail can never promise a different expiry than the store
+ * enforces.
+ */
+export const MAGIC_LINK_TTL_MINUTES = 15;
+
+/**
  * Looks up the user by their email (trimmed and lowercased, the form every
  * writer stores), and — only if one exists — creates a link and returns its
  * raw token.
@@ -107,7 +115,7 @@ export async function requestMagicLink(input: {
   now: () => Date;
   ttlMinutes?: number;
 }): Promise<RequestMagicLinkResult> {
-  const { store, orgId, now, ttlMinutes = 15 } = input;
+  const { store, orgId, now, ttlMinutes = MAGIC_LINK_TTL_MINUTES } = input;
   // Every writer of `users.email` — a staff grant, an invite, a roster
   // import — stores it trimmed and lowercased, so the lookup has to ask in
   // the same form, or someone granted as `Grace@Example.com` who types it

@@ -7,7 +7,8 @@ import type {
   SheetAdapter,
   ThreadRef,
 } from "@mentorship/core";
-import { SandboxGuard } from "@mentorship/integrations";
+import { SandboxGuard, SandboxRefusal } from "@mentorship/integrations";
+import { buildGmailSender } from "../../../apps/api/src/email-config.js";
 import { buildLiveRegistry } from "../../../apps/worker/src/live-registry.js";
 import { requireLiveContractEnv } from "./env.js";
 
@@ -264,5 +265,48 @@ describe("Google Sheets", () => {
     });
     const titles = (meta["sheets"] as { properties: { title: string } }[]).map((s) => s.properties.title);
     expect(titles).toContain("Contract run");
+  });
+});
+
+/**
+ * Sign-in and invite mail (`GmailEmailAdapter`). Opt-in on top of the rest of
+ * the suite: it runs only when `GMAIL_SENDER_ADDRESS` is set, because a
+ * refresh token minted before the `gmail.send` scope was added to the consent
+ * would otherwise turn every other vendor's run red for an unrelated reason
+ * (docs/email-setup.md). It sends one real email, to the first email on
+ * the allowlist and nobody else — the sender is built through the same
+ * `SANDBOX_ALLOWLIST` guard the api applies, and the message carries a dead
+ * link, never a real token.
+ */
+describe.skipIf(!process.env["GMAIL_SENDER_ADDRESS"])("Gmail", () => {
+  const built = () =>
+    buildGmailSender({
+      ...process.env,
+      CAPTURE_VENDOR_FIXTURES: "1",
+      SANDBOX_ALLOWLIST: env.SANDBOX_ALLOWLIST,
+    })!;
+
+  it("messages.send: one message to an allowlisted address is accepted and returns an id", async () => {
+    const { sender, capturedFixtures } = built();
+    const { messageRef } = await sender.send({
+      to: env.emails[0]!,
+      subject: `[contract run ${stamp}] sign-in email`,
+      text: "Contract run. This link is dead: https://example.invalid/verify?token=CONTRACT",
+      html: "<p>Contract run. This link is dead.</p>",
+      idempotencyKey: `contract:${stamp}:email`,
+    });
+    expect(messageRef).toMatch(/\S+/);
+    expect(capturedFixtures.some((f) => f.endsWith("messages.send.json"))).toBe(true);
+  });
+
+  it("refuses an address outside the allowlist before any request leaves", async () => {
+    await expect(
+      built().sender.send({
+        to: "not-on-the-allowlist@example.invalid",
+        subject: "must never be sent",
+        text: "refused",
+        idempotencyKey: `contract:${stamp}:email-refused`,
+      }),
+    ).rejects.toBeInstanceOf(SandboxRefusal);
   });
 });

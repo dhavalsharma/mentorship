@@ -5,6 +5,8 @@ import type {
   ConversationAdapter,
   DmAdapter,
   DocumentAdapter,
+  EmailMessage,
+  EmailSender,
   Interval,
   ProposalOption,
   SheetAdapter,
@@ -565,4 +567,43 @@ export function readManagedRegion(text: string): string | null {
   const end = text.indexOf(MANAGED_END, contentStart);
   if (end === -1) return null;
   return text.slice(contentStart, end).replace(/^\n/, "").replace(/\n$/, "");
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Records what would have been mailed, and — unlike Gmail — dedupes on the
+ * idempotency key, the way `FakeCalendar` mirrors the real Google adapter
+ * rather than being a test convenience. Here it is the *other* direction:
+ * this fake is stricter than the real sender (Gmail cannot dedupe), so a test
+ * that passes against it proves the caller sent once, not that the vendor
+ * would have coped with twice.
+ */
+export class FakeEmail implements EmailSender {
+  readonly id = "fake-email";
+  private readonly byKey = new Map<string, string>();
+
+  constructor(readonly recorder: Recorder) {}
+
+  /** Every message actually sent (a deduped repeat is not one). */
+  get sent(): Recorded[] {
+    return this.recorder.of("email.sent");
+  }
+
+  async send(
+    input: EmailMessage & { idempotencyKey: string },
+  ): Promise<{ messageRef: string }> {
+    const existing = this.byKey.get(input.idempotencyKey);
+    if (existing !== undefined) return { messageRef: existing };
+    const messageRef = `email_${this.byKey.size + 1}`;
+    this.byKey.set(input.idempotencyKey, messageRef);
+    this.recorder.record("email.sent", {
+      to: input.to,
+      subject: input.subject,
+      text: input.text,
+      ...(input.html !== undefined ? { html: input.html } : {}),
+      idempotencyKey: input.idempotencyKey,
+    });
+    return { messageRef };
+  }
 }

@@ -1,0 +1,19 @@
+{
+  "vendor": "google-gmail",
+  "call": "messages.send",
+  "capturedOn": "2026-09-29",
+  "source": "hand-written",
+  "notes": "Hand-written from the users.messages.send reference. This call has NEVER run against a live account. The request body is one base64url RFC 5322 message in `raw`; it is a placeholder here, and the recording transport replaces it with the same placeholder on capture, because the real value holds the recipient and the sign-in link. Gmail's documented response is { id, threadId, labelIds }. Replace with a capture from pnpm test:contracts:live.",
+  "request": {
+    "method": "POST",
+    "path": "/users/me/messages/send",
+    "body": {
+      "raw": "BASE64URL_RFC5322_MESSAGE"
+    }
+  },
+  "response": {
+    "id": "MESSAGE_ID",
+    "threadId": "THREAD_ID",
+    "labelIds": ["SENT"]
+  }
+}

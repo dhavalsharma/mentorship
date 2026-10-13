@@ -106,6 +106,14 @@ GOOGLE_DRIVE_GUIDELINE_DOC_ID=…   # optional — template copied per pair
 SANDBOX_ALLOWLIST=dhavals+mentor@wekancode.com,dhavals+mentee@wekancode.com,U-…,U-…
 ```
 
+**Sign-in and invite email** is a separate, opt-in piece of this setup: the api
+sends magic links and cohort invites through the Gmail API when
+`GMAIL_SENDER_ADDRESS` is set, and prints them otherwise. It needs one more
+scope (`gmail.send`) on the refresh token and shares `SANDBOX_ALLOWLIST` — the
+steps are in [email-setup.md](./email-setup.md). It has nothing to do with
+calendar invitations, which are still created by `GoogleCalendarAdapter` with
+`sendUpdates: "none"`.
+
 Slack bot scopes, and no more: `chat:write` to post, `im:write` for the private
 feedback DMs, `mpim:write` for the per-pair group DM, and — for the inbound
 half — `im:history` and `mpim:history`, which are what let the bot *read* the

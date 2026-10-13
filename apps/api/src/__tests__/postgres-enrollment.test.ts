@@ -44,7 +44,7 @@ describe.skipIf(!DATABASE_URL)("cohort invites on Postgres", () => {
   const otherAdminUserId = randomUUID();
 
   const servers: Server[] = [];
-  const issued: { email: string; token: string }[] = [];
+  const issued: { email: string; token: string; context?: unknown }[] = [];
   let base: string;
   let otherBase: string;
   let adminCookie: string;
@@ -57,7 +57,7 @@ describe.skipIf(!DATABASE_URL)("cohort invites on Postgres", () => {
         orgId: boundOrg,
         slackSigningSecret: "unused",
         role: ROLE,
-        onMagicLinkIssued: (email, token) => issued.push({ email, token }),
+        onMagicLinkIssued: (email, token, context) => issued.push({ email, token, context }),
       }),
     );
     await new Promise<void>((resolve) => server.listen(0, resolve));
@@ -145,6 +145,15 @@ describe.skipIf(!DATABASE_URL)("cohort invites on Postgres", () => {
     const body = (await res.json()) as { participantId: string; signInLinkIssued: boolean };
     participantId = body.participantId;
     expect(body.signInLinkIssued).toBe(true);
+    // The invite email's wording comes from real rows: the admin's own
+    // display name and the cohort and program names, read under RLS.
+    expect(issued.at(-1)?.context).toEqual({
+      kind: "invite",
+      role: "mentee",
+      inviterName: "Admin",
+      cohortName: "2026",
+      programName: "Mentoring",
+    });
 
     // Read back as the app role inside this org: the rows are visible here...
     const mine = await withTenant(

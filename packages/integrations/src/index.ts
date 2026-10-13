@@ -11,4 +11,6 @@ export * from "./google/auth.js";
 export * from "./google/calendar.js";
 export * from "./google/document.js";
 export * from "./google/sheet.js";
+export * from "./google/gmail.js";
+export * from "./email/mime.js";
 export * from "./contracts/index.js";

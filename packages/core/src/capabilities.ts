@@ -243,3 +243,41 @@ export interface SheetAdapter extends Adapter {
     idempotencyKey: string;
   }): Promise<void>;
 }
+
+// ---------------------------------------------------------------------------
+// Outbound email — a port, but deliberately NOT one of the eight slots
+// ---------------------------------------------------------------------------
+
+/**
+ * A transactional email: one recipient, a subject, a plain-text body and an
+ * optional HTML alternative. Who it is *from* is the sender's own config, not
+ * a per-message field — a call site that could choose its own From address
+ * could also forge one.
+ */
+export interface EmailMessage {
+  to: string;
+  subject: string;
+  text: string;
+  html?: string;
+}
+
+/**
+ * How sign-in and invite mail leaves the platform (docs/decisions/0011).
+ *
+ * Not a slot: slots are per-tenant bindings the *worker* resolves through
+ * `integration_bindings`, and this is sent by `apps/api`, which holds no
+ * adapters (see the "re-probe on settings save" note in CLAUDE.md). It is
+ * also platform plumbing — the mail a person needs before they can reach
+ * anything a program configured — so it is bound from the environment, and
+ * swapping Gmail for a transactional provider is one new implementation of
+ * this interface.
+ *
+ * `idempotencyKey` is here for parity with every other write port, and it is
+ * a promise only the *fake* can keep: mail providers generally take no key,
+ * so a real sender can double-send when a caller retries. The auth seam does
+ * not retry (best-effort, once), which is why that is tolerable.
+ */
+export interface EmailSender {
+  readonly id: string;
+  send(input: EmailMessage & { idempotencyKey: string }): Promise<{ messageRef: string }>;
+}
